@@ -163,7 +163,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
       </div>
       {open && <>
         {Object.values(node.subfolders).sort((a, b) => a.name.localeCompare(b.name)).map(child => (
-          <TreeNode key={child.fullPath} node={child} depth={depth + 1} selected={selected} removing={removing} snapshots={snapshots} toggleSelect={toggleSelect} handleRemove={handleRemove} handleHideAll={handleHideAll} navigate={navigate} />
+          <TreeNode key={child.fullPath} node={child} depth={depth + 1} selected={selected} removing={removing} snapshots={snapshots} toggleSelect={toggleSelect} handleRemove={handleRemove} handleHideAll={handleHideAll} navigate={navigate} treeToggle={treeToggle} />
         ))}
         {node.videos.map(video => {
           const isSelected = selected.has(video.id)
