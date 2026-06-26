@@ -97,6 +97,8 @@ export default function SettingsPage() {
   const [checkingQdrant, setCheckingQdrant] = useState(false)
   const [purgingQdrant, setPurgingQdrant] = useState(false)
   const [blacklistInput, setBlacklistInput] = useState('')
+  const [applyingBlacklist, setApplyingBlacklist] = useState(false)
+  const [blacklistResult, setBlacklistResult] = useState<{ hidden: number } | null>(null)
 
   useEffect(() => {
     api.getSettings().then(setForm).catch(() => {})
@@ -362,6 +364,25 @@ export default function SettingsPage() {
               <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
                 Glob patterns matched against the full file path. Matching videos are skipped on import and reimport. Existing videos in the library are not affected.
               </p>
+              {(form.import_blacklist ?? []).length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.6rem' }}>
+                  <button className="ghost" disabled={applyingBlacklist} onClick={async () => {
+                    setApplyingBlacklist(true); setBlacklistResult(null)
+                    try {
+                      const r = await api.applyBlacklist()
+                      setBlacklistResult({ hidden: r.hidden })
+                      setTimeout(() => setBlacklistResult(null), 5000)
+                    } finally { setApplyingBlacklist(false) }
+                  }} style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem' }}>
+                    {applyingBlacklist ? <><span className="spinner" style={{ width: 11, height: 11, marginRight: '0.3rem' }} />Applying…</> : 'Apply to existing library'}
+                  </button>
+                  {blacklistResult && (
+                    <span style={{ fontSize: '0.78rem', color: blacklistResult.hidden > 0 ? 'var(--success)' : 'var(--muted)' }}>
+                      {blacklistResult.hidden > 0 ? `✓ Hid ${blacklistResult.hidden} video${blacklistResult.hidden !== 1 ? 's' : ''}` : 'No matches found'}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

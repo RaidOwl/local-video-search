@@ -520,6 +520,22 @@ async def update_settings_endpoint(req: SettingsUpdateRequest):
     return cfg
 
 
+@app.post("/settings/blacklist/apply")
+async def apply_blacklist():
+    """Hide all existing library videos whose paths match the current import blacklist."""
+    import fnmatch as _fnmatch
+    blacklist: list = _effective_cfg().get("import_blacklist", [])
+    if not blacklist:
+        return {"hidden": 0, "matched": []}
+    videos = await db.get_all_videos()
+    matched = []
+    for video in videos:
+        if any(_fnmatch.fnmatch(video.path, pat) for pat in blacklist):
+            await db.update_video(video.id, {'hidden': '1'})
+            matched.append(video.path)
+    return {"hidden": len(matched), "matched": matched}
+
+
 @app.get("/browse")
 async def browse_directory(path: str = "/data/videos/lib1"):
     """List directories and video files within the configured library dirs."""
