@@ -7,6 +7,30 @@ const client = axios.create({
   },
 })
 
+export interface QdrantIssue {
+  type: 'missing' | 'incomplete' | 'orphaned'
+  video_id?: string
+  video_ids?: string[]
+  name?: string
+  db_frames?: number
+  qdrant_points: number
+}
+
+export interface QdrantHealth {
+  reachable: boolean
+  collection_exists: boolean
+  total_points: number
+  issues: QdrantIssue[]
+  summary: {
+    videos_checked: number
+    ok: number
+    missing: number
+    incomplete: number
+    orphaned_points: number
+  }
+  error?: string
+}
+
 export interface AppSettings {
   // Deployment mode (read-only from .env — not editable via UI)
   ai_backend: string
@@ -173,6 +197,16 @@ export const api = {
 
   modelStatus: async (): Promise<{ services: Array<{ name: string; url: string; ok: boolean; models: string[] }> }> => {
     const res = await client.get('/status/models')
+    return res.data
+  },
+
+  qdrantHealth: async (): Promise<QdrantHealth> => {
+    const res = await client.get('/status/qdrant')
+    return res.data
+  },
+
+  purgeOrphanedEmbeddings: async (): Promise<{ deleted_points: number; orphaned_video_ids: string[] }> => {
+    const res = await client.post('/status/qdrant/purge-orphans')
     return res.data
   },
 

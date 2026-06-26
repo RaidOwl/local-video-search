@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { api, AppSettings, Video } from '../services/api'
+import { api, AppSettings, QdrantHealth, Video } from '../services/api'
 
 type ModelStatus = { name: string; url: string; ok: boolean; models: string[] }
 
@@ -93,6 +93,9 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [statuses, setStatuses] = useState<ModelStatus[] | null>(null)
   const [probing, setProbing] = useState(false)
+  const [qdrantHealth, setQdrantHealth] = useState<QdrantHealth | null>(null)
+  const [checkingQdrant, setCheckingQdrant] = useState(false)
+  const [purgingQdrant, setPurgingQdrant] = useState(false)
 
   useEffect(() => {
     api.getSettings().then(setForm).catch(() => {})
@@ -321,6 +324,95 @@ export default function SettingsPage() {
               </p>
             </div>
           </div>
+        </div>
+
+        {/* Vector Store */}
+        <div className="section">
+          <div className="section-header">
+            <h2>Vector Store</h2>
+            <button className="ghost" onClick={async () => {
+              setCheckingQdrant(true)
+              try { setQdrantHealth(await api.qdrantHealth()) }
+              finally { setCheckingQdrant(false) }
+            }} disabled={checkingQdrant} style={{ fontSize: '0.8rem' }}>
+              {checkingQdrant ? <><span className="spinner" style={{ width: 12, height: 12, marginRight: '0.4rem' }} />Checking…</> : '⚡ Check health'}
+            </button>
+          </div>
+
+          {qdrantHealth && (() => {
+            const h = qdrantHealth
+            const allOk = h.reachable && h.collection_exists && h.issues.length === 0
+            const perVideoIssues = h.issues.filter(i => i.type === 'missing' || i.type === 'incomplete')
+            const orphanIssue = h.issues.find(i => i.type === 'orphaned')
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {/* Summary row */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', padding: '0.65rem 0.9rem', background: 'var(--surface)', border: `1px solid ${allOk ? 'var(--border)' : 'var(--error)'}`, borderRadius: 'var(--radius)', fontSize: '0.82rem' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: h.reachable ? 'var(--success)' : 'var(--error)', display: 'inline-block' }} />
+                    {h.reachable ? 'Qdrant reachable' : 'Qdrant unreachable'}
+                  </span>
+                  {h.reachable && (
+                    <>
+                      <span style={{ color: 'var(--muted)' }}>{h.total_points.toLocaleString()} points</span>
+                      <span style={{ color: 'var(--success)' }}>{h.summary.ok} ok</span>
+                      {h.summary.missing > 0 && <span style={{ color: 'var(--error)' }}>{h.summary.missing} missing</span>}
+                      {h.summary.incomplete > 0 && <span style={{ color: 'var(--warning, #f59e0b)' }}>{h.summary.incomplete} incomplete</span>}
+                      {h.summary.orphaned_points > 0 && <span style={{ color: 'var(--muted)' }}>{h.summary.orphaned_points} orphaned pts</span>}
+                      {allOk && <span style={{ color: 'var(--success)' }}>✓ All clean</span>}
+                    </>
+                  )}
+                  {h.error && <span style={{ color: 'var(--error)', fontSize: '0.75rem' }}>{h.error}</span>}
+                </div>
+
+                {/* Per-video issues */}
+                {perVideoIssues.length > 0 && (
+                  <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+                    <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border)', fontSize: '0.78rem', fontWeight: 600, color: 'var(--muted)' }}>
+                      Videos with embedding issues — reprocess to fix
+                    </div>
+                    {perVideoIssues.map(issue => (
+                      <div key={issue.video_id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border)', fontSize: '0.82rem' }}>
+                        <span className={`badge ${issue.type === 'missing' ? 'error' : 'processing'}`}>
+                          <span className="dot" />{issue.type}
+                        </span>
+                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{issue.name}</span>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--muted)', flexShrink: 0 }}>
+                          {issue.qdrant_points}/{issue.db_frames} pts
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Orphaned points */}
+                {orphanIssue && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.65rem 0.9rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: '0.82rem' }}>
+                    <span style={{ flex: 1, color: 'var(--muted)' }}>
+                      {orphanIssue.qdrant_points} orphaned embedding{orphanIssue.qdrant_points !== 1 ? 's' : ''} from {orphanIssue.video_ids?.length} deleted video{(orphanIssue.video_ids?.length ?? 0) !== 1 ? 's' : ''}
+                    </span>
+                    <button className="ghost" disabled={purgingQdrant} onClick={async () => {
+                      setPurgingQdrant(true)
+                      try {
+                        await api.purgeOrphanedEmbeddings()
+                        setQdrantHealth(await api.qdrantHealth())
+                      } finally {
+                        setPurgingQdrant(false)
+                      }
+                    }} style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem' }}>
+                      {purgingQdrant ? <><span className="spinner" style={{ width: 11, height: 11, marginRight: '0.3rem' }} />Purging…</> : 'Purge orphans'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+
+          {!qdrantHealth && !checkingQdrant && (
+            <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--muted)' }}>
+              Run a health check to verify embedding counts match analyzed videos and detect orphaned data from deleted videos.
+            </p>
+          )}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '2rem' }}>

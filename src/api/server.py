@@ -339,6 +339,144 @@ async def model_status():
     return {"services": list(results)}
 
 
+@app.get("/status/qdrant")
+async def qdrant_health():
+    """Check Qdrant health: reachability, collection state, and per-video embedding integrity."""
+    from collections import Counter
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+    out: dict = {
+        "reachable": False,
+        "collection_exists": False,
+        "total_points": 0,
+        "issues": [],
+        "summary": {"videos_checked": 0, "ok": 0, "missing": 0, "incomplete": 0, "orphaned_points": 0},
+    }
+
+    try:
+        client = embed_service.qdrant_client
+        coll = embed_service.collection_name
+        out["reachable"] = True
+
+        collections = [c.name for c in client.get_collections().collections]
+        if coll not in collections:
+            return out
+        out["collection_exists"] = True
+        out["total_points"] = client.count(collection_name=coll).count
+
+        # Single scroll pass to build video_id -> point count map
+        qdrant_counts: Counter = Counter()
+        offset = None
+        while True:
+            records, offset = client.scroll(
+                collection_name=coll,
+                with_payload=["video_id"],
+                with_vectors=False,
+                limit=1000,
+                offset=offset,
+            )
+            for r in records:
+                vid = r.payload.get("video_id") if r.payload else None
+                if vid:
+                    qdrant_counts[vid] += 1
+            if offset is None:
+                break
+
+        videos = await db.get_all_videos()
+        db_ids = {v.id for v in videos}
+        analyzed = [v for v in videos if v.status == "analyzed"]
+        out["summary"]["videos_checked"] = len(analyzed)
+
+        for video in analyzed:
+            q_count = qdrant_counts.get(video.id, 0)
+            db_frames = video.frame_count or 0
+            if q_count == 0:
+                out["issues"].append({
+                    "type": "missing",
+                    "video_id": video.id,
+                    "name": video.display_name or video.name,
+                    "db_frames": db_frames,
+                    "qdrant_points": 0,
+                })
+                out["summary"]["missing"] += 1
+            elif q_count < db_frames:
+                out["issues"].append({
+                    "type": "incomplete",
+                    "video_id": video.id,
+                    "name": video.display_name or video.name,
+                    "db_frames": db_frames,
+                    "qdrant_points": q_count,
+                })
+                out["summary"]["incomplete"] += 1
+            else:
+                out["summary"]["ok"] += 1
+
+        # Orphaned: points in Qdrant for video_ids not in DB at all
+        orphaned_ids = set(qdrant_counts.keys()) - db_ids
+        out["summary"]["orphaned_points"] = sum(qdrant_counts[vid] for vid in orphaned_ids)
+        if orphaned_ids:
+            out["issues"].append({
+                "type": "orphaned",
+                "video_ids": list(orphaned_ids),
+                "qdrant_points": out["summary"]["orphaned_points"],
+            })
+
+    except Exception as e:
+        import traceback
+        out["error"] = str(e)
+        out["traceback"] = traceback.format_exc()
+
+    return out
+
+
+@app.post("/status/qdrant/purge-orphans")
+async def qdrant_purge_orphans():
+    """Delete Qdrant points for video_ids that no longer exist in the database."""
+    from collections import Counter
+    from qdrant_client.models import Filter, FieldCondition, MatchAny
+
+    client = embed_service.qdrant_client
+    coll = embed_service.collection_name
+
+    # Collect all video_ids present in Qdrant
+    qdrant_video_ids: set = set()
+    offset = None
+    while True:
+        records, offset = client.scroll(
+            collection_name=coll,
+            with_payload=["video_id"],
+            with_vectors=False,
+            limit=1000,
+            offset=offset,
+        )
+        for r in records:
+            vid = r.payload.get("video_id") if r.payload else None
+            if vid:
+                qdrant_video_ids.add(vid)
+        if offset is None:
+            break
+
+    videos = await db.get_all_videos()
+    db_ids = {v.id for v in videos}
+    orphaned_ids = list(qdrant_video_ids - db_ids)
+
+    if not orphaned_ids:
+        return {"deleted_points": 0, "orphaned_video_ids": []}
+
+    deleted = 0
+    for vid in orphaned_ids:
+        result = client.delete(
+            collection_name=coll,
+            points_selector=Filter(
+                must=[FieldCondition(key="video_id", match=MatchAny(any=[vid]))]
+            ),
+        )
+        if hasattr(result, "result"):
+            deleted += getattr(result.result, "deleted", 0) or 0
+
+    return {"deleted_points": deleted, "orphaned_video_ids": orphaned_ids}
+
+
 @app.get("/settings")
 async def get_settings_endpoint():
     """Return current effective settings."""
