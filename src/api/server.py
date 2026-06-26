@@ -82,7 +82,17 @@ def _effective_cfg() -> dict:
         base["vram_tier"]        = settings.vram_tier
         base["model_family"]     = settings.model_family
 
-    base.update(_load_override())
+    # For local backends (non-custom), never allow the override file to redirect
+    # model URLs or swap model names — those are always determined by the tier.
+    # Only user-tunable processing settings are overridable.
+    _URL_MODEL_KEYS = {
+        'vllm_embed_url', 'vllm_vlm_url', 'vllm_url', 'qdrant_url',
+        'vllm_embed_model', 'vllm_vlm_model', 'vllm_model',
+    }
+    override = _load_override()
+    if ai_backend != "custom":
+        override = {k: v for k, v in override.items() if k not in _URL_MODEL_KEYS}
+    base.update(override)
     base.setdefault("max_concurrent_jobs", 8)
     base.setdefault("import_blacklist", [])
     return base
