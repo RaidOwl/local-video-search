@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -6,13 +7,11 @@ from typing import Optional, List
 from pathlib import Path
 import asyncio
 import uuid
-import shutil
-import os
 import json
 
 from ..config import get_settings
-from ..local_models import resolve_local_config, TIER_VRAM, TIER_MODELS, BACKEND_URLS
-from ..database import Database, Video, Frame
+from ..local_models import resolve_local_config
+from ..database import Database, Video
 from ..ingest.video_scanner import find_video_files, get_video_metadata, compute_file_hash
 from ..ingest.frame_extractor import FrameExtractor
 from ..embed.embedding_generator import EmbeddingService
@@ -22,13 +21,23 @@ from ..search.segment_retriever import SegmentRetriever
 from ..summarize.video_summarizer import SummarizationService
 from ..transcribe.transcriber import TranscriptionService
 
-app = FastAPI(title="Local Video Search & Summarization")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await db.init_db()
+    await embed_service.ensure_collection()
+    stuck = [v for v in await db.get_all_videos() if v.status == 'processing']
+    for v in stuck:
+        await db.update_video(v.id, {'frame_count': 0})
+        _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
+    asyncio.create_task(_auto_import())
+    yield
+
+app = FastAPI(title="Local Video Search & Summarization", lifespan=lifespan)
 
 # CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -208,12 +217,22 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
     try:
         await db.update_video(video_id, {'status': 'processing', 'frame_count': 0})
         async with _analysis_semaphore:
-            # Clear any leftover frame records from a previous (failed/partial) run
+            # Clear any leftover frame records and embeddings from a previous (failed/partial) run
             await db.delete_frames_for_video(video_id)
+            try:
+                from qdrant_client.models import Filter, FieldCondition, MatchValue
+                embed_service.qdrant_client.delete(
+                    collection_name=embed_service.collection_name,
+                    points_selector=Filter(
+                        must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
+                    ),
+                )
+            except Exception:
+                pass
             # Use persistent per-video frame directory
             frame_dir = FRAMES_DIR / video_id
             frame_dir.mkdir(parents=True, exist_ok=True)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             frames = await loop.run_in_executor(
                 None, lambda: frame_extractor.extract_frames(
                     video_path, str(frame_dir), prefix=f"frame_{video_id}"
@@ -225,7 +244,7 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
                 return
 
             for i, frame_path in enumerate(frames):
-                timestamp = i * settings.frame_extraction_interval
+                timestamp = i * frame_extractor.interval
                 caption = await vlm_service.caption_frame(frame_path, context=context)
                 await embed_service.index_frame(
                     video_id=video_id, frame_path=frame_path,
@@ -267,6 +286,17 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
 
     except asyncio.CancelledError:
         print(f"Analysis cancelled for {video_id}")
+        await db.update_video(video_id, {'status': 'error'})
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            embed_service.qdrant_client.delete(
+                collection_name=embed_service.collection_name,
+                points_selector=Filter(
+                    must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
+                ),
+            )
+        except Exception:
+            pass
         raise
     except Exception as e:
         import traceback
@@ -279,17 +309,6 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
 
 
 # API endpoints
-@app.on_event("startup")
-async def startup():
-    await db.init_db()
-    await embed_service.ensure_collection()
-    # Re-queue any videos left stuck in 'processing' from a previous run
-    stuck = [v for v in await db.get_all_videos() if v.status == 'processing']
-    for v in stuck:
-        await db.update_video(v.id, {'frame_count': 0})
-        _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
-    # Auto-import any new videos from the mounted directory
-    asyncio.create_task(_auto_import())
 
 
 # All mounted video library directories (lib1–lib5 set via VIDEO_DIR_1–5 in .env)
@@ -584,7 +603,7 @@ async def browse_directory(path: str = "/data/videos/lib1"):
 
 
 @app.post("/ingest", response_model=IngestResponse)
-async def ingest_video(request: IngestRequest, background_tasks: BackgroundTasks):
+async def ingest_video(request: IngestRequest):
     """Ingest a video or directory of videos into the library without auto-analyzing."""
     if request.video_path:
         # Single video
@@ -903,17 +922,6 @@ async def stream_video(video_id: str):
         media_type=media_type,
         headers={"Accept-Ranges": "bytes"},
     )
-
-async def get_video_summary(video_id: str):
-    """Get the summary for a video."""
-    video = await db.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-    
-    if not video.summary:
-        return {"summary": None, "status": "not_generated"}
-    
-    return {"summary": video.summary, "status": "generated"}
 
 
 class ReprocessRequest(BaseModel):

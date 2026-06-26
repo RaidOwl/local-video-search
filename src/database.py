@@ -1,9 +1,7 @@
 from sqlalchemy import Column, String, Float, Integer, DateTime, Text, ForeignKey
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, relationship
-from datetime import datetime
-from typing import Optional
-import json
+from datetime import datetime, timezone
 
 Base = declarative_base()
 
@@ -26,8 +24,8 @@ class Video(Base):
     frame_count = Column(Integer, default=0)
     thumbnail_path = Column(String, nullable=True)
     context = Column(Text, nullable=True)  # user-supplied context used during analysis
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     hidden = Column(String, nullable=True, default='0')  # '1' = hidden from library
     frames = relationship("Frame", back_populates="video", cascade="all, delete-orphan")
@@ -42,7 +40,7 @@ class Frame(Base):
     frame_path = Column(String, nullable=False)
     caption = Column(Text, nullable=True)
     embedding_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     video = relationship("Video", back_populates="frames")
 

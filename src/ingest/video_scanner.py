@@ -1,8 +1,6 @@
-import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 import hashlib
-import asyncio
 
 
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.flv'}
@@ -27,44 +25,6 @@ def compute_file_hash(filepath: Path) -> str:
         for chunk in iter(lambda: f.read(8192), b''):
             md5.update(chunk)
     return md5.hexdigest()
-
-
-async def scan_directory(directory: str, known_hashes: dict[str, str] = None) -> dict:
-    """
-    Scan directory for videos and return info about new/changed files.
-    
-    Returns:
-        {
-            "new": [Path, ...],
-            "changed": [Path, ...],
-            "removed": [Path, ...],
-            "unchanged": [Path, ...]
-        }
-    """
-    known_hashes = known_hashes or {}
-    current_files = find_video_files(directory)
-    current_hashes = {}
-    
-    result = {"new": [], "changed": [], "removed": [], "unchanged": []}
-    
-    # Check each current file
-    for filepath in current_files:
-        file_hash = compute_file_hash(filepath)
-        current_hashes[str(filepath)] = file_hash
-        
-        if str(filepath) not in known_hashes:
-            result["new"].append(filepath)
-        elif known_hashes[str(filepath)] != file_hash:
-            result["changed"].append(filepath)
-        else:
-            result["unchanged"].append(filepath)
-    
-    # Find removed files
-    for old_path in known_hashes:
-        if old_path not in current_hashes:
-            result["removed"].append(Path(old_path))
-    
-    return result, current_hashes
 
 
 def get_video_metadata(filepath: Path) -> dict:

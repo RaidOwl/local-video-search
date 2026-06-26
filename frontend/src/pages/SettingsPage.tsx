@@ -132,8 +132,6 @@ export default function SettingsPage() {
     </div>
   )
 
-  const probeByUrl: Record<string, string[]> = {}
-  if (statuses) statuses.forEach(s => { probeByUrl[s.url] = s.models })
   const statusByUrl: Record<string, ModelStatus> = {}
   if (statuses) statuses.forEach(s => { statusByUrl[s.url] = s })
 
@@ -184,7 +182,7 @@ export default function SettingsPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               {URL_GROUPS.map(({ urlKey, modelKey, label, urlDesc, modelDesc }) => {
                 const st = statusByUrl[form[urlKey] as string]
-                const probedModels = probeByUrl[form[urlKey] as string] ?? []
+                const probedModels = st?.models ?? []
                 return (
                   <div key={urlKey} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>

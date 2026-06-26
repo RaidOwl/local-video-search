@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, Video } from '../services/api'
+import { api, Video, AppSettings } from '../services/api'
+import { fmt } from '../utils'
 
 type ViewMode = 'card' | 'tree' | 'folder'
 
@@ -123,6 +124,7 @@ interface ViewProps {
   handleHideAll: (e: React.MouseEvent, videoIds: string[]) => void
   navigate: (path: string) => void
   treeToggle: { open: boolean; seq: number } | null
+  frameInterval: number
 }
 
 function getAllVideoIds(node: FolderNode): string[] {
@@ -132,7 +134,7 @@ function getAllVideoIds(node: FolderNode): string[] {
   ]
 }
 
-function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate, treeToggle }: {
+function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate, treeToggle, frameInterval }: {
   node: FolderNode; depth: number
 } & Omit<ViewProps, 'videos'>) {
   const [open, setOpen] = useState(true)
@@ -163,11 +165,11 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
       </div>
       {open && <>
         {Object.values(node.subfolders).sort((a, b) => a.name.localeCompare(b.name)).map(child => (
-          <TreeNode key={child.fullPath} node={child} depth={depth + 1} selected={selected} removing={removing} snapshots={snapshots} toggleSelect={toggleSelect} handleRemove={handleRemove} handleHideAll={handleHideAll} navigate={navigate} treeToggle={treeToggle} />
+          <TreeNode key={child.fullPath} node={child} depth={depth + 1} selected={selected} removing={removing} snapshots={snapshots} toggleSelect={toggleSelect} handleRemove={handleRemove} handleHideAll={handleHideAll} navigate={navigate} treeToggle={treeToggle} frameInterval={frameInterval} />
         ))}
         {node.videos.map(video => {
           const isSelected = selected.has(video.id)
-          const totalFrames = Math.max(1, Math.floor(video.duration / 5))
+          const totalFrames = Math.max(1, Math.floor(video.duration / frameInterval))
           const eta = etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
           return (
             <div
@@ -204,7 +206,7 @@ function TreeView(props: ViewProps) {
             ))}
             {root.videos.map(video => {
               const isSelected = props.selected.has(video.id)
-              const totalFrames = Math.max(1, Math.floor(video.duration / 5))
+              const totalFrames = Math.max(1, Math.floor(video.duration / props.frameInterval))
               return (
                 <div key={video.id} onClick={() => { if (props.removing !== video.id) props.toggleSelect(video.id) }}
                   style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.3rem 0.5rem', paddingLeft: 34, cursor: 'pointer', background: isSelected ? 'rgba(var(--accent-rgb, 99,102,241), 0.12)' : 'transparent' }}>
@@ -277,7 +279,7 @@ function FolderView(props: ViewProps) {
         {/* Video tiles */}
         {videos.map(video => {
           const isSelected = props.selected.has(video.id)
-          const totalFrames = Math.max(1, Math.floor(video.duration / 5))
+          const totalFrames = Math.max(1, Math.floor(video.duration / props.frameInterval))
           const eta = etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)
           return (
             <div key={video.id}
@@ -328,6 +330,7 @@ export default function VideosPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'analyzed' | 'processing' | 'error'>(() => (localStorage.getItem('vss_status_filter') as any) || 'all')
   const [treeToggle, setTreeToggle] = useState<{ open: boolean; seq: number } | null>(null)
   const snapshots = useRef<Record<string, ProgressSnapshot>>({})
+  const [frameInterval, setFrameInterval] = useState(5)
 
   const loadVideos = useCallback(async () => {
     try { setVideos(await api.listVideos()) } catch { /* ignore */ } finally { setLoading(false) }
@@ -335,6 +338,7 @@ export default function VideosPage() {
 
   useEffect(() => {
     loadVideos()
+    api.getSettings().then((s: AppSettings) => setFrameInterval(s.frame_extraction_interval || 5)).catch(() => {})
     const id = setInterval(async () => {
       const data = await api.listVideos().catch(() => null)
       if (!data) return
@@ -430,7 +434,7 @@ export default function VideosPage() {
       return sortDir === 'asc' ? cmp : -cmp
     })
 
-  const viewProps: ViewProps = { videos: displayedVideos, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate, treeToggle }
+  const viewProps: ViewProps = { videos: displayedVideos, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate, treeToggle, frameInterval }
 
   return (
     <div className="page">
@@ -526,7 +530,7 @@ export default function VideosPage() {
           {viewMode === 'card' && (
           <div className="video-grid">
             {displayedVideos.map(video => {
-              const totalFrames = Math.max(1, Math.floor(video.duration / 5))
+              const totalFrames = Math.max(1, Math.floor(video.duration / frameInterval))
               const eta = etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
               const isSelected = selected.has(video.id)
               return (
@@ -599,12 +603,6 @@ export default function VideosPage() {
       )}
     </div>
   )
-}
-
-function fmt(s: number) {
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60)
-  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
-  return `${m}:${String(sec).padStart(2,'0')}`
 }
 
 const RECENT_CONTEXTS_KEY = 'vss_recent_contexts'

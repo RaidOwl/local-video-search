@@ -1,7 +1,6 @@
 import httpx
 import base64
 from typing import Optional
-from pathlib import Path
 
 
 class CaptionGenerator:

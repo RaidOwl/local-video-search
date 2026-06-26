@@ -1,11 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { api, Video, Segment, VideoFrame } from '../services/api'
-
-function fmt(s: number) {
-  const m = Math.floor(s / 60), sec = Math.floor(s % 60)
-  return `${m}:${String(sec).padStart(2,'0')}`
-}
+import { fmt } from '../utils'
 
 export default function VideoDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -109,7 +105,7 @@ export default function VideoDetailPage() {
     if (!id || reprocessing) return
     setReprocessing(true)
     try {
-      await api.reprocessVideo(id)
+      await api.reprocessVideo(id, video?.context ?? undefined)
       setVideo(v => v ? { ...v, status: 'processing', frame_count: 0, summary: undefined } : v)
     } catch { /* ignore */ } finally { setReprocessing(false) }
   }
@@ -185,6 +181,7 @@ export default function VideoDetailPage() {
           key={video.id}
           src={`/api/videos/${video.id}/stream`}
           controls
+          onError={() => console.error(`Failed to load video stream for ${video.id}`)}
           style={{ width: '100%', maxHeight: 480, borderRadius: 'var(--radius)', background: '#000', display: 'block', outline: 'none' }}
         />
       </div>

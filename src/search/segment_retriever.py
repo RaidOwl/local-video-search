@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List
 from dataclasses import dataclass
 
 
@@ -111,12 +111,3 @@ class SegmentRetriever:
             frame_path=data['frame_paths'][best_idx] if data['frame_paths'] else ''
         )
     
-    def rank_segments(
-        self,
-        segments: List[SegmentResult],
-        query: str
-    ) -> List[SegmentResult]:
-        """Rank segments by relevance to query."""
-        # Simple ranking: combine score with recency
-        # In a real system, you'd re-encode the query and compare
-        return sorted(segments, key=lambda s: s.score, reverse=True)

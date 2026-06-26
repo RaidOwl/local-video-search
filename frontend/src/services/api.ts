@@ -106,12 +106,6 @@ export interface Segment {
   frame_path: string
 }
 
-export interface IngestResponse {
-  video_id: string
-  status: string
-  frames_processed: number
-}
-
 export const api = {
   health: async () => {
     const res = await client.get('/health')
@@ -120,16 +114,6 @@ export const api = {
 
   reimport: async (): Promise<{ total: number }> => {
     const res = await client.post('/reimport')
-    return res.data
-  },
-
-  ingest: async (directory?: string, videoPath?: string): Promise<IngestResponse> => {
-    const res = await client.post('/ingest', { directory, video_path: videoPath })
-    return res.data
-  },
-
-  browse: async (path: string): Promise<{ path: string; parent: string | null; entries: { name: string; path: string; type: 'dir' | 'video' }[] }> => {
-    const res = await client.get('/browse', { params: { path } })
     return res.data
   },
 
@@ -155,11 +139,6 @@ export const api = {
 
   getVideo: async (id: string): Promise<Video> => {
     const res = await client.get(`/videos/${id}`)
-    return res.data
-  },
-
-  getVideoSummary: async (id: string): Promise<{ summary: string | null; status: string }> => {
-    const res = await client.get(`/videos/${id}/summary`)
     return res.data
   },
 

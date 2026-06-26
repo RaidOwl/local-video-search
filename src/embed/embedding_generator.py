@@ -1,7 +1,5 @@
 import httpx
-from typing import List, Optional
-from pathlib import Path
-import asyncio
+from typing import List
 import uuid
 import re
 
@@ -36,12 +34,6 @@ class EmbeddingGenerator:
             response.raise_for_status()
             data = response.json()
             return data["data"][0]["embedding"]
-    
-    async def embed_image(self, image_path: str) -> List[float]:
-        """Generate embedding for an image by embedding its path as text (bge-m3 is text-only)."""
-        # bge-m3 is a text embedding model; embed the file path as a proxy
-        # In practice, embed the caption text instead when available
-        return await self.embed_text(image_path)
     
     async def embed_batch(self, items: List[str]) -> List[List[float]]:
         """Generate embeddings for a batch of texts."""

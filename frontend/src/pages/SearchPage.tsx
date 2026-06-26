@@ -1,15 +1,13 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, SearchResult } from '../services/api'
-
-function fmt(s: number) {
-  const m = Math.floor(s / 60), sec = Math.floor(s % 60)
-  return `${m}:${String(sec).padStart(2,'0')}`
-}
+import { fmt } from '../utils'
 
 const SS_QUERY = 'vss_search_query'
 const SS_RESULTS = 'vss_search_results'
 const SS_THRESHOLD = 'vss_search_threshold'
+const SS_SEARCH_VIDEO = 'vss_search_video'
+const SS_SEARCH_AUDIO = 'vss_search_audio'
 
 export default function SearchPage() {
   const [query, setQuery] = useState(() => sessionStorage.getItem(SS_QUERY) ?? '')
@@ -17,8 +15,8 @@ export default function SearchPage() {
     try { return JSON.parse(sessionStorage.getItem(SS_RESULTS) ?? '[]') } catch { return [] }
   })
   const [threshold, setThreshold] = useState(() => Number(sessionStorage.getItem(SS_THRESHOLD) ?? '0.50'))
-  const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem('vss_search_video') !== '0')
-  const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem('vss_search_audio') !== '0')
+  const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem(SS_SEARCH_VIDEO) !== '0')
+  const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
@@ -85,11 +83,11 @@ export default function SearchPage() {
           </span>
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
-            <input type="checkbox" checked={searchVideo} onChange={e => { setSearchVideo(e.target.checked); sessionStorage.setItem('vss_search_video', e.target.checked ? '1' : '0') }} />
+            <input type="checkbox" checked={searchVideo} onChange={e => { setSearchVideo(e.target.checked); sessionStorage.setItem(SS_SEARCH_VIDEO, e.target.checked ? '1' : '0') }} />
             Video
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
-            <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem('vss_search_audio', e.target.checked ? '1' : '0') }} />
+            <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem(SS_SEARCH_AUDIO, e.target.checked ? '1' : '0') }} />
             Audio
           </label>
         </div>
