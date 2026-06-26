@@ -471,9 +471,14 @@ async def ingest_video(request: IngestRequest, background_tasks: BackgroundTasks
 
 
 @app.get("/search", response_model=SearchResponse)
-async def search_videos(q: str, limit: int = 10, threshold: float = 0.50):
+async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, sources: str = 'both'):
     """Search for videos by natural language query."""
     processed = query_processor.process_query(q)
+    # UI source filter overrides auto-detected intent
+    if sources == 'video':
+        processed['source_intent'] = 'visual'
+    elif sources == 'audio':
+        processed['source_intent'] = 'speech'
 
     # Fetch more raw results so we have enough to group and show segments
     results = await embed_service.search(

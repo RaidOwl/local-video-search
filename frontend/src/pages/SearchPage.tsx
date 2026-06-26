@@ -17,16 +17,20 @@ export default function SearchPage() {
     try { return JSON.parse(sessionStorage.getItem(SS_RESULTS) ?? '[]') } catch { return [] }
   })
   const [threshold, setThreshold] = useState(() => Number(sessionStorage.getItem(SS_THRESHOLD) ?? '0.50'))
+  const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem('vss_search_video') !== '0')
+  const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem('vss_search_audio') !== '0')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
+
+  const sources = searchVideo && searchAudio ? 'both' : searchVideo ? 'video' : searchAudio ? 'audio' : 'both'
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!query.trim()) return
     setLoading(true); setSearched(true)
     try {
-      const res = (await api.search(query, undefined, threshold)).results
+      const res = (await api.search(query, undefined, threshold, sources)).results
       setResults(res)
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
@@ -67,6 +71,15 @@ export default function SearchPage() {
           <span style={{ flexShrink: 0, minWidth: 32, textAlign: 'right', color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
             {Math.round(threshold * 100)}%
           </span>
+          <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
+            <input type="checkbox" checked={searchVideo} onChange={e => { setSearchVideo(e.target.checked); sessionStorage.setItem('vss_search_video', e.target.checked ? '1' : '0') }} />
+            Video
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
+            <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem('vss_search_audio', e.target.checked ? '1' : '0') }} />
+            Audio
+          </label>
         </div>
 
         {searched && !loading && results.length === 0 && (

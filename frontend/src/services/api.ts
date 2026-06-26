@@ -107,8 +107,8 @@ export const api = {
     return res.data
   },
 
-  search: async (query: string, limit?: number, threshold?: number): Promise<{ results: SearchResult[]; query: string }> => {
-    const res = await client.get('/search', { params: { q: query, limit, threshold } })
+  search: async (query: string, limit?: number, threshold?: number, sources?: string): Promise<{ results: SearchResult[]; query: string }> => {
+    const res = await client.get('/search', { params: { q: query, limit, threshold, sources } })
     return res.data
   },
 
