@@ -96,13 +96,14 @@ export default function SettingsPage() {
   const [qdrantHealth, setQdrantHealth] = useState<QdrantHealth | null>(null)
   const [checkingQdrant, setCheckingQdrant] = useState(false)
   const [purgingQdrant, setPurgingQdrant] = useState(false)
+  const [blacklistInput, setBlacklistInput] = useState('')
 
   useEffect(() => {
     api.getSettings().then(setForm).catch(() => {})
     api.modelStatus().then(d => setStatuses(d.services)).catch(() => setStatuses([]))
   }, [])
 
-  const set = (key: keyof AppSettings, value: string | number) =>
+  const set = (key: keyof AppSettings, value: unknown) =>
     setForm(f => f ? { ...f, [key]: value } : f)
 
   const handleSave = async () => {
@@ -321,6 +322,45 @@ export default function SettingsPage() {
               </div>
               <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
                 How many videos can be analyzed at the same time. Lower values reduce GPU/CPU pressure.
+              </p>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.4rem' }}>Import blacklist</label>
+              {(form.import_blacklist ?? []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginBottom: '0.5rem' }}>
+                  {(form.import_blacklist ?? []).map((pat, i) => (
+                    <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, padding: '0.15rem 0.5rem', fontSize: '0.78rem', fontFamily: 'monospace' }}>
+                      {pat}
+                      <button onClick={() => set('import_blacklist', (form.import_blacklist ?? []).filter((_, j) => j !== i))}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '0.9rem', padding: 0, lineHeight: 1 }}>×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                <input
+                  type="text"
+                  value={blacklistInput}
+                  onChange={e => setBlacklistInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && blacklistInput.trim()) {
+                      set('import_blacklist', [...(form.import_blacklist ?? []), blacklistInput.trim()])
+                      setBlacklistInput('')
+                    }
+                  }}
+                  placeholder="e.g. */broll/* or */_archive/*"
+                  style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.85rem' }}
+                />
+                <button className="ghost" onClick={() => {
+                  if (blacklistInput.trim()) {
+                    set('import_blacklist', [...(form.import_blacklist ?? []), blacklistInput.trim()])
+                    setBlacklistInput('')
+                  }
+                }} style={{ flexShrink: 0 }}>Add</button>
+              </div>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
+                Glob patterns matched against the full file path. Matching videos are skipped on import and reimport. Existing videos in the library are not affected.
               </p>
             </div>
           </div>

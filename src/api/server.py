@@ -84,6 +84,7 @@ def _effective_cfg() -> dict:
 
     base.update(_load_override())
     base.setdefault("max_concurrent_jobs", 8)
+    base.setdefault("import_blacklist", [])
     return base
 
 
@@ -287,11 +288,16 @@ VIDEO_SCAN_DIRS = [Path(f"/data/videos/lib{i}") for i in range(1, 6)]
 
 async def _auto_import():
     """Scan all configured video library directories and add new files."""
+    import fnmatch as _fnmatch
+    blacklist: list = _effective_cfg().get("import_blacklist", [])
     for video_dir in VIDEO_SCAN_DIRS:
         if not video_dir.exists():
             continue
         for video_path in find_video_files(str(video_dir)):
-            if await db.get_video_by_path(str(video_path)):
+            path_str = str(video_path)
+            if blacklist and any(_fnmatch.fnmatch(path_str, pat) for pat in blacklist):
+                continue
+            if await db.get_video_by_path(path_str):
                 continue
             video_id = str(uuid.uuid4())
             metadata = get_video_metadata(video_path)
@@ -498,6 +504,7 @@ class SettingsUpdateRequest(BaseModel):
     frame_extraction_interval: Optional[int] = None
     embed_batch_size: Optional[int] = None
     max_concurrent_jobs: Optional[int] = None
+    import_blacklist: Optional[List[str]] = None
     # Note: ai_backend, vram_tier, model_family are .env-only — not overridable via UI
 
 

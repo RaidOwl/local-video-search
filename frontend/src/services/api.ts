@@ -55,6 +55,7 @@ export interface AppSettings {
   frame_extraction_interval: number
   embed_batch_size: number
   max_concurrent_jobs: number
+  import_blacklist: string[]
 }
 
 export interface Video {
