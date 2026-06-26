@@ -189,6 +189,9 @@ services:
       - "${VLLM_MAX_MODEL_LEN:-16384}"
       - --quantization
       - "${VLLM_QUANTIZATION:-fp8}"
+      - --gpu-memory-utilization
+      - "${VLLM_GPU_MEMORY_UTIL:-0.75}"
+      - --enforce-eager
     # No host port binding needed — the API reaches this via Docker's internal
     # network (http://vllm-main:8002). Uncomment to expose for external access:
     # ports:

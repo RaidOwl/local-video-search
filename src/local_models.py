@@ -28,16 +28,21 @@ TIER_MODELS: dict = {
         },
     },
     "vllm": {
+        # FP8 quantizes only the LLM decoder; vision encoder stays BF16.
+        # Practical VRAM needed (with --gpu-memory-utilization 0.75):
+        #   3B  → ~3 GB    mid/low GPU
+        #   7B  → ~7 GB    mid GPU
+        #   32B → ~35 GB   needs ≥80 GB physical VRAM (ultra tier)
         "qwen": {
-            "low":   {"model": "Qwen/Qwen2.5-VL-3B-Instruct",  "embed": "BAAI/bge-m3"},
-            "mid":   {"model": "Qwen/Qwen2.5-VL-7B-Instruct",  "embed": "BAAI/bge-m3"},
-            "high":  {"model": "Qwen/Qwen2.5-VL-32B-Instruct", "embed": "BAAI/bge-m3"},
-            "ultra": {"model": "Qwen/Qwen2.5-VL-72B-Instruct", "embed": "BAAI/bge-m3"},
+            "low":   {"model": "Qwen/Qwen2.5-VL-3B-Instruct", "embed": "BAAI/bge-m3"},
+            "mid":   {"model": "Qwen/Qwen2.5-VL-7B-Instruct", "embed": "BAAI/bge-m3"},
+            "high":  {"model": "Qwen/Qwen2.5-VL-7B-Instruct", "embed": "BAAI/bge-m3"},
+            "ultra": {"model": "Qwen/Qwen2.5-VL-32B-Instruct", "embed": "BAAI/bge-m3"},
         },
         "gemma": {
             "low":   {"model": "google/gemma-3-4b-it",  "embed": "BAAI/bge-m3"},
             "mid":   {"model": "google/gemma-3-12b-it", "embed": "BAAI/bge-m3"},
-            "high":  {"model": "google/gemma-3-27b-it", "embed": "BAAI/bge-m3"},
+            "high":  {"model": "google/gemma-3-12b-it", "embed": "BAAI/bge-m3"},
             "ultra": {"model": "google/gemma-3-27b-it", "embed": "BAAI/bge-m3"},
         },
     },
