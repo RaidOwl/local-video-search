@@ -119,10 +119,18 @@ interface ViewProps {
   snapshots: React.MutableRefObject<Record<string, ProgressSnapshot>>
   toggleSelect: (id: string) => void
   handleRemove: (e: React.MouseEvent, id: string) => void
+  handleHideAll: (e: React.MouseEvent, videoIds: string[]) => void
   navigate: (path: string) => void
 }
 
-function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, handleRemove, navigate }: {
+function getAllVideoIds(node: FolderNode): string[] {
+  return [
+    ...node.videos.map(v => v.id),
+    ...Object.values(node.subfolders).flatMap(getAllVideoIds),
+  ]
+}
+
+function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate }: {
   node: FolderNode; depth: number
 } & Omit<ViewProps, 'videos'>) {
   const [open, setOpen] = useState(true)
@@ -139,10 +147,13 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
         <span>📁</span>
         <span style={{ fontWeight: 500, color: 'var(--text)' }}>{node.name}</span>
         <span style={{ opacity: 0.5 }}>({node.videos.length + Object.values(node.subfolders).reduce(function count(s, n): number { return s + n.videos.length + Object.values(n.subfolders).reduce(count, 0) }, 0)})</span>
+        <span style={{ flex: 1 }} />
+        <button className="icon-btn" title="Hide folder" onClick={e => { e.stopPropagation(); handleHideAll(e, getAllVideoIds(node)) }}
+          style={{ fontSize: '0.72rem', padding: '0.1rem 0.35rem', color: 'var(--muted)', opacity: 0.6 }}>Hide folder</button>
       </div>
       {open && <>
         {Object.values(node.subfolders).sort((a, b) => a.name.localeCompare(b.name)).map(child => (
-          <TreeNode key={child.fullPath} node={child} depth={depth + 1} selected={selected} removing={removing} snapshots={snapshots} toggleSelect={toggleSelect} handleRemove={handleRemove} navigate={navigate} />
+          <TreeNode key={child.fullPath} node={child} depth={depth + 1} selected={selected} removing={removing} snapshots={snapshots} toggleSelect={toggleSelect} handleRemove={handleRemove} handleHideAll={handleHideAll} navigate={navigate} />
         ))}
         {node.videos.map(video => {
           const isSelected = selected.has(video.id)
@@ -304,6 +315,7 @@ export default function VideosPage() {
   const [filterText, setFilterText] = useState(() => localStorage.getItem('vss_filter') ?? '')
   const [sortBy, setSortBy] = useState<'name' | 'duration' | 'status' | 'frames'>(() => (localStorage.getItem('vss_sort_by') as any) || 'name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => (localStorage.getItem('vss_sort_dir') as any) || 'asc')
+  const [showOnlyProcessed, setShowOnlyProcessed] = useState(() => localStorage.getItem('vss_only_processed') === '1')
   const snapshots = useRef<Record<string, ProgressSnapshot>>({})
 
   const loadVideos = useCallback(async () => {
@@ -354,6 +366,15 @@ export default function VideosPage() {
     } catch { /* ignore */ } finally { setRemoving(null) }
   }
 
+  const handleHideAll = async (e: React.MouseEvent, videoIds: string[]) => {
+    e.preventDefault(); e.stopPropagation()
+    if (!window.confirm(`Hide ${videoIds.length} video${videoIds.length !== 1 ? 's' : ''} in this folder? You can restore them from Settings.`)) return
+    await Promise.all(videoIds.map(id => api.hideVideo(id).catch(() => {})))
+    setVideos(prev => prev.filter(v => !videoIds.includes(v.id)))
+    setSelected(prev => { const n = new Set(prev); videoIds.forEach(id => n.delete(id)); return n })
+    videoIds.forEach(id => delete snapshots.current[id])
+  }
+
   const handleReimport = async () => {
     setReimporting(true); setReimportMsg('')
     const before = videos.length
@@ -384,6 +405,7 @@ export default function VideosPage() {
 
   const displayedVideos = [...videos]
     .filter(v => {
+      if (showOnlyProcessed && v.status !== 'analyzed') return false
       if (!filterText.trim()) return true
       const q = filterText.toLowerCase()
       return (v.display_name || v.name).toLowerCase().includes(q) || v.path.toLowerCase().includes(q) || v.tags.some(t => t.toLowerCase().includes(q))
@@ -397,7 +419,7 @@ export default function VideosPage() {
       return sortDir === 'asc' ? cmp : -cmp
     })
 
-  const viewProps: ViewProps = { videos: displayedVideos, selected, removing, snapshots, toggleSelect, handleRemove, navigate }
+  const viewProps: ViewProps = { videos: displayedVideos, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate }
 
   return (
     <div className="page">
@@ -434,6 +456,10 @@ export default function VideosPage() {
               placeholder="Filter by name, path or tag…"
               style={{ flex: 1, fontSize: '0.85rem', padding: '0.45rem 0.75rem' }}
             />
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: 'var(--muted)', whiteSpace: 'nowrap', cursor: 'pointer', flexShrink: 0 }}>
+              <input type="checkbox" checked={showOnlyProcessed} onChange={e => { setShowOnlyProcessed(e.target.checked); localStorage.setItem('vss_only_processed', e.target.checked ? '1' : '0') }} />
+              Analyzed only
+            </label>
             <select
               value={sortBy}
               onChange={e => setSort(e.target.value as any, sortDir)}
