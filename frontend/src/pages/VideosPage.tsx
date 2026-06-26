@@ -122,6 +122,7 @@ interface ViewProps {
   handleRemove: (e: React.MouseEvent, id: string) => void
   handleHideAll: (e: React.MouseEvent, videoIds: string[]) => void
   navigate: (path: string) => void
+  treeToggle: { open: boolean; seq: number } | null
 }
 
 function getAllVideoIds(node: FolderNode): string[] {
@@ -131,10 +132,18 @@ function getAllVideoIds(node: FolderNode): string[] {
   ]
 }
 
-function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate }: {
+function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate, treeToggle }: {
   node: FolderNode; depth: number
 } & Omit<ViewProps, 'videos'>) {
   const [open, setOpen] = useState(true)
+  const lastSeq = useRef(-1)
+
+  useEffect(() => {
+    if (treeToggle && treeToggle.seq !== lastSeq.current) {
+      lastSeq.current = treeToggle.seq
+      setOpen(treeToggle.open)
+    }
+  }, [treeToggle])
   const hasChildren = Object.keys(node.subfolders).length > 0 || node.videos.length > 0
   const indent = depth * 20
 
@@ -317,6 +326,7 @@ export default function VideosPage() {
   const [sortBy, setSortBy] = useState<'name' | 'duration' | 'status' | 'frames'>(() => (localStorage.getItem('vss_sort_by') as any) || 'name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => (localStorage.getItem('vss_sort_dir') as any) || 'asc')
   const [statusFilter, setStatusFilter] = useState<'all' | 'analyzed' | 'processing' | 'error'>(() => (localStorage.getItem('vss_status_filter') as any) || 'all')
+  const [treeToggle, setTreeToggle] = useState<{ open: boolean; seq: number } | null>(null)
   const snapshots = useRef<Record<string, ProgressSnapshot>>({})
 
   const loadVideos = useCallback(async () => {
@@ -420,7 +430,7 @@ export default function VideosPage() {
       return sortDir === 'asc' ? cmp : -cmp
     })
 
-  const viewProps: ViewProps = { videos: displayedVideos, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate }
+  const viewProps: ViewProps = { videos: displayedVideos, selected, removing, snapshots, toggleSelect, handleRemove, handleHideAll, navigate, treeToggle }
 
   return (
     <div className="page">
@@ -505,6 +515,13 @@ export default function VideosPage() {
                 {mode === 'card' ? '⊞' : mode === 'tree' ? '≡' : '📁'}
               </button>
             ))}
+            {viewMode === 'tree' && (
+              <button className="ghost" title={(treeToggle?.open ?? true) ? 'Collapse all' : 'Expand all'}
+                onClick={() => setTreeToggle(prev => ({ open: !(prev?.open ?? true), seq: (prev?.seq ?? 0) + 1 }))}
+                style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', minWidth: 0 }}>
+                {(treeToggle?.open ?? true) ? '▲' : '▼'}
+              </button>
+            )}
           </div>
           {viewMode === 'card' && (
           <div className="video-grid">
