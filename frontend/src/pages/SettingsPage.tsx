@@ -96,6 +96,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     api.getSettings().then(setForm).catch(() => {})
+    api.modelStatus().then(d => setStatuses(d.services)).catch(() => setStatuses([]))
   }, [])
 
   const set = (key: keyof AppSettings, value: string | number) =>
@@ -141,6 +142,30 @@ export default function SettingsPage() {
         </p>
 
         <BackendBanner form={form} />
+
+        {/* Model connectivity — shown for all backends */}
+        {statuses !== null && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem', padding: '0.65rem 0.9rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)' }}>
+            {statuses.length === 0
+              ? <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>No model services configured</span>
+              : statuses.map(svc => (
+                <div key={svc.name} title={svc.ok ? svc.models.join(', ') : `Unreachable: ${svc.url}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem', color: svc.ok ? 'var(--text)' : 'var(--error)', cursor: 'default' }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: svc.ok ? 'var(--success)' : 'var(--error)', display: 'inline-block', flexShrink: 0 }} />
+                  <span>{svc.name}</span>
+                  {svc.ok && svc.models.length > 0 && (
+                    <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--muted)' }}>({svc.models[0]})</span>
+                  )}
+                  {!svc.ok && <span style={{ fontSize: '0.72rem', color: 'var(--error)' }}>offline</span>}
+                </div>
+              ))
+            }
+            <span style={{ flex: 1 }} />
+            <button className="ghost" onClick={handleProbe} disabled={probing} style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem' }}>
+              {probing ? <><span className="spinner" style={{ width: 11, height: 11, marginRight: '0.3rem' }} />…</> : '↺ Refresh'}
+            </button>
+          </div>
+        )}
 
         {/* AI Models — only shown in custom mode (local modes are auto-configured) */}
         {form.ai_backend === 'custom' && (
