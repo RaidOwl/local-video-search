@@ -204,6 +204,56 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
+  # ── Model cache management ────────────────────────────────────────────────
+  # List cached models and their disk usage:
+  #   docker compose --profile prune run --rm cache-list
+  #
+  # Delete all cached model weights (vLLM + Ollama). Models re-download on
+  # next startup. Stop running model containers first.
+  #   docker compose --profile prune run --rm cache-purge
+
+  cache-list:
+    image: alpine
+    container_name: local-vss-cache-list
+    profiles: [prune]
+    volumes:
+      - vllm_cache:/vllm
+      - ollama_data:/ollama
+    command:
+      - sh
+      - -c
+      - |
+        echo "=== vLLM models ==="
+        du -sh /vllm/hub/models--* 2>/dev/null \
+          | sort -h \
+          | sed 's|.*/models--||; s|--|/|' \
+          || echo "  (none)"
+        echo ""
+        echo "=== Ollama models ==="
+        du -sh /ollama/models/manifests/registry.ollama.ai/*/* 2>/dev/null \
+          | sort -h \
+          | sed 's|.*/||' \
+          || echo "  (none)"
+    restart: "no"
+
+  cache-purge:
+    image: alpine
+    container_name: local-vss-cache-purge
+    profiles: [prune]
+    volumes:
+      - vllm_cache:/vllm
+      - ollama_data:/ollama
+    command:
+      - sh
+      - -c
+      - |
+        echo "Clearing vLLM cache..."
+        rm -rf /vllm/hub && echo "  done"
+        echo "Clearing Ollama cache..."
+        rm -rf /ollama/models && echo "  done"
+        echo "All model weights removed. They will re-download on next startup."
+    restart: "no"
+
 volumes:
   ollama_data:
   vllm_cache:
