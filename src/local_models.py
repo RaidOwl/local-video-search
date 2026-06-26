@@ -66,6 +66,7 @@ BACKEND_URLS: dict = {
 
 # ---------------------------------------------------------------------------
 # Tier VRAM guidance (for UI display only)
+# vLLM tiers assume FP8 quantization (default). Ollama uses Q4 automatically.
 # ---------------------------------------------------------------------------
 TIER_VRAM: dict = {
     "low":   "≤8 GB",

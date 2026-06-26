@@ -187,6 +187,8 @@ services:
       - "0.0.0.0"
       - --max-model-len
       - "${VLLM_MAX_MODEL_LEN:-16384}"
+      - --quantization
+      - "${VLLM_QUANTIZATION:-fp8}"
     # No host port binding needed — the API reaches this via Docker's internal
     # network (http://vllm-main:8002). Uncomment to expose for external access:
     # ports:
