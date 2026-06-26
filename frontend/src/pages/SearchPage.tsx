@@ -48,13 +48,25 @@ export default function SearchPage() {
         </p>
 
         <form onSubmit={handleSearch} className="search-bar">
-          <input
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="e.g. 'what video was I talking about the AMD Strix Halo?'"
-            style={{ fontSize: '1rem', padding: '0.75rem 1rem' }}
-            autoFocus
-          />
+          <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="e.g. 'what video was I talking about the AMD Strix Halo?'"
+              style={{ fontSize: '1rem', padding: '0.75rem 1rem', paddingRight: query ? '2.25rem' : '1rem', flex: 1 }}
+              autoFocus
+            />
+            {query && (
+              <button type="button" onClick={() => {
+                setQuery('')
+                setResults([])
+                setSearched(false)
+                sessionStorage.removeItem(SS_QUERY)
+                sessionStorage.removeItem(SS_RESULTS)
+              }} style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '1.1rem', padding: '0.2rem 0.3rem', lineHeight: 1, opacity: 0.6 }}
+                title="Clear search">×</button>
+            )}
+          </div>
           <button type="submit" disabled={loading} style={{ padding: '0.75rem 1.4rem' }}>
             {loading ? <span className="spinner" /> : 'Search'}
           </button>
