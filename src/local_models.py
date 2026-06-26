@@ -70,8 +70,8 @@ BACKEND_URLS: dict = {
 TIER_VRAM: dict = {
     "low":   "≤8 GB",
     "mid":   "≤16 GB",
-    "high":  "≤24 GB",
-    "ultra": "24 GB+",
+    "high":  "≤48 GB",
+    "ultra": "≥80 GB",
 }
 
 
