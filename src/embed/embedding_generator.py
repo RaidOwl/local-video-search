@@ -1,0 +1,158 @@
+import httpx
+from typing import List, Optional
+from pathlib import Path
+import asyncio
+import uuid
+
+
+class EmbeddingGenerator:
+    """Generate embeddings using vLLM OpenAI-compatible API with bge-m3."""
+    
+    def __init__(self, vllm_url: str, model: str = "BAAI/bge-m3"):
+        self.vllm_url = vllm_url.rstrip('/')
+        self.model = model
+    
+    async def embed_text(self, text: str) -> List[float]:
+        """Generate embedding for a text string."""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{self.vllm_url}/v1/embeddings",
+                json={"model": self.model, "input": text}
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["data"][0]["embedding"]
+    
+    async def embed_image(self, image_path: str) -> List[float]:
+        """Generate embedding for an image by embedding its path as text (bge-m3 is text-only)."""
+        # bge-m3 is a text embedding model; embed the file path as a proxy
+        # In practice, embed the caption text instead when available
+        return await self.embed_text(image_path)
+    
+    async def embed_batch(self, items: List[str]) -> List[List[float]]:
+        """Generate embeddings for a batch of texts."""
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{self.vllm_url}/v1/embeddings",
+                json={"model": self.model, "input": items}
+            )
+            response.raise_for_status()
+            data = response.json()
+            return [item["embedding"] for item in sorted(data["data"], key=lambda x: x["index"])]
+
+
+class EmbeddingService:
+    """Service for managing embeddings and Qdrant storage."""
+    
+    def __init__(
+        self,
+        vllm_url: str,
+        qdrant_url: str,
+        collection_name: str = "video_frames"
+    ):
+        self.generator = EmbeddingGenerator(vllm_url)
+        self.qdrant_url = qdrant_url
+        self.collection_name = collection_name
+        self._qdrant_client = None
+    
+    @property
+    def qdrant_client(self):
+        if self._qdrant_client is None:
+            from qdrant_client import QdrantClient
+            self._qdrant_client = QdrantClient(url=self.qdrant_url)
+        return self._qdrant_client
+    
+    async def ensure_collection(self, vector_size: int = 1024):
+        """Ensure the collection exists in Qdrant."""
+        from qdrant_client.models import Distance, VectorParams
+        
+        client = self.qdrant_client
+        collections = [c.name for c in client.get_collections().collections]
+        
+        if self.collection_name not in collections:
+            client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(
+                    size=vector_size,
+                    distance=Distance.COSINE
+                )
+            )
+    
+    async def index_frame(
+        self,
+        video_id: str,
+        frame_path: str,
+        timestamp: float,
+        caption: str = None
+    ):
+        """Index a single frame with its embedding."""
+        # Embed the caption text; fall back to frame path if no caption
+        text_to_embed = caption if caption else frame_path
+        embedding = await self.generator.embed_text(text_to_embed)
+        
+        if not embedding:
+            return None
+        
+        from qdrant_client.models import PointStruct
+        
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_{timestamp}"))
+        
+        payload = {
+            "video_id": video_id,
+            "frame_path": frame_path,
+            "timestamp": timestamp,
+            "caption": caption or ""
+        }
+        
+        self.qdrant_client.upsert(
+            collection_name=self.collection_name,
+            points=[PointStruct(
+                id=point_id,
+                vector=embedding,
+                payload=payload
+            )]
+        )
+        
+        return point_id
+    
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        video_id: str = None
+    ) -> List[dict]:
+        """Search for similar frames."""
+        embedding = await self.generator.embed_text(query)
+        
+        if not embedding:
+            return []
+        
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        
+        filter_condition = None
+        if video_id:
+            filter_condition = Filter(
+                must=[FieldCondition(
+                    key="video_id",
+                    match=MatchValue(value=video_id)
+                )]
+            )
+        
+        results = self.qdrant_client.search(
+            collection_name=self.collection_name,
+            query_vector=embedding,
+            query_filter=filter_condition,
+            limit=limit
+        )
+        
+        return [
+            {
+                "id": hit.id,
+                "score": hit.score,
+                "video_id": hit.payload.get("video_id"),
+                "frame_path": hit.payload.get("frame_path"),
+                "timestamp": hit.payload.get("timestamp"),
+                "caption": hit.payload.get("caption", "")
+            }
+            for hit in results
+        ]

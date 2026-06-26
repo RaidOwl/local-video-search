@@ -1,0 +1,1 @@
+# Local Video Search and Summarization

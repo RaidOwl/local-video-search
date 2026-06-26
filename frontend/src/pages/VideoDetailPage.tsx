@@ -1,0 +1,324 @@
+import { useState, useEffect, useRef } from 'react'
+import { useParams, Link } from 'react-router-dom'
+import { api, Video, Segment, VideoFrame } from '../services/api'
+
+function fmt(s: number) {
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60)
+  return `${m}:${String(sec).padStart(2,'0')}`
+}
+
+export default function VideoDetailPage() {
+  const { id } = useParams<{ id: string }>()
+  const [video, setVideo] = useState<Video | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [query, setQuery] = useState('')
+  const [segments, setSegments] = useState<Segment[]>([])
+  const [searching, setSearching] = useState(false)
+  const [summarizing, setSummarizing] = useState(false)
+  const [reprocessing, setReprocessing] = useState(false)
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput, setNameInput] = useState('')
+  const [tagInput, setTagInput] = useState('')
+  const [frames, setFrames] = useState<VideoFrame[]>([])
+  const [showFramePicker, setShowFramePicker] = useState(false)
+  const [transcript, setTranscript] = useState<Array<{ timestamp: number; text: string }> | null>(null)
+  const [showTranscript, setShowTranscript] = useState(false)
+  const pollRef = useRef<number | null>(null)
+
+  const loadVideo = async () => {
+    if (!id) return
+    try { setVideo(await api.getVideo(id)) } catch { /* ignore */ } finally { setLoading(false) }
+  }
+
+  useEffect(() => {
+    loadVideo()
+  }, [id])
+
+  // Load frames when video is analyzed
+  useEffect(() => {
+    if (!id || !video || video.status !== 'analyzed') return
+    api.getVideoFrames(id).then(d => setFrames(d.frames)).catch(() => {})
+    api.getTranscript(id).then(d => setTranscript(d.segments)).catch(() => {})
+  }, [id, video?.status])
+
+  const setThumbnail = async (framePath: string) => {
+    if (!id || !video) return
+    const updated = await api.updateVideo(id, { thumbnail_path: framePath })
+    setVideo(updated)
+    setShowFramePicker(false)
+  }
+
+  // Poll while processing
+  useEffect(() => {
+    if (!video) return
+    if (video.status === 'processing') {
+      pollRef.current = window.setInterval(async () => {
+        const v = await api.getVideo(id!).catch(() => null)
+        if (!v) return
+        setVideo(v)
+        if (v.status !== 'processing') clearInterval(pollRef.current!)
+      }, 4000)
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [video?.status])
+
+  const handleSummarize = async () => {
+    if (!id || !video) return
+    setSummarizing(true)
+    try {
+      await api.summarizeVideo(id)
+      // Poll for result
+      const poll = setInterval(async () => {
+        const v = await api.getVideo(id).catch(() => null)
+        if (!v) return
+        if (v.summary) { setVideo(v); clearInterval(poll); setSummarizing(false) }
+      }, 3000)
+      setTimeout(() => { clearInterval(poll); setSummarizing(false) }, 300000)
+    } catch { setSummarizing(false) }
+  }
+
+  // On load: if no summary but status is analyzed, check if one was generated while away
+  useEffect(() => {
+    if (!video || video.summary || video.status !== 'analyzed') return
+    api.getVideo(id!).then(v => { if (v.summary) setVideo(v) }).catch(() => null)
+  }, [video?.id])
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!query.trim() || !id) return
+    setSearching(true)
+    try {
+      const data = await api.searchSegments(id, query)
+      setSegments(data.segments)
+    } catch { /* ignore */ }
+    finally { setSearching(false) }
+  }
+
+  const handleReprocess = async () => {
+    if (!id || reprocessing) return
+    setReprocessing(true)
+    try {
+      await api.reprocessVideo(id)
+      setVideo(v => v ? { ...v, status: 'processing', frame_count: 0, summary: undefined } : v)
+    } catch { /* ignore */ } finally { setReprocessing(false) }
+  }
+
+  const saveName = async () => {
+    if (!id || !video) return
+    const updated = await api.updateVideo(id, { display_name: nameInput.trim() || null as unknown as string })
+    setVideo(updated); setEditingName(false)
+  }
+
+  const addTag = async (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter' || !tagInput.trim() || !id || !video) return
+    e.preventDefault()
+    const newTag = tagInput.trim()
+    if (video.tags.includes(newTag)) { setTagInput(''); return }
+    const updated = await api.updateVideo(id, { tags: [...video.tags, newTag] })
+    setVideo(updated); setTagInput('')
+  }
+
+  const removeTag = async (tag: string) => {
+    if (!id || !video) return
+    const updated = await api.updateVideo(id, { tags: video.tags.filter(t => t !== tag) })
+    setVideo(updated)
+  }
+
+  if (loading) return <div className="page" style={{ display:'flex', alignItems:'center', gap:'0.75rem', justifyContent:'center', marginTop:'4rem', color:'var(--muted)' }}><span className="spinner" /> Loading…</div>
+  if (!video) return <div className="page"><p>Video not found.</p></div>
+
+  return (
+    <div className="page">
+      <div className="breadcrumb"><Link to="/videos">← Videos</Link></div>
+
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', marginBottom: '1.5rem' }}>
+        <div style={{ flex: 1 }}>
+          {editingName ? (
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <input value={nameInput} onChange={e => setNameInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveName()} style={{ fontSize: '1.2rem', fontWeight: 700, maxWidth: 400 }} autoFocus />
+              <button onClick={saveName}>Save</button>
+              <button className="ghost" onClick={() => setEditingName(false)}>Cancel</button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <h1 style={{ fontSize: '1.4rem' }}>{video.display_name || video.name}</h1>
+              <button className="icon-btn" onClick={() => { setNameInput(video.display_name || video.name); setEditingName(true) }} title="Rename">✏️</button>
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+            <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{fmt(video.duration)} duration</span>
+            {video.frame_count > 0 && <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{video.frame_count} frames indexed</span>}
+            {video.status === 'analyzed' && <span className="badge analyzed"><span className="dot" />Analyzed</span>}
+            {video.status === 'ready' && <span className="badge queued">Ready</span>}
+            {video.status === 'processing' && video.frame_count === 0 && <span className="badge queued">Queued</span>}
+            {video.status === 'processing' && video.frame_count > 0 && <span className="badge analyzing"><span className="dot" />Analyzing…</span>}
+            {video.status === 'error' && <span className="badge error"><span className="dot" />Error</span>}
+          </div>
+        </div>
+        <button
+          className="ghost"
+          onClick={handleReprocess}
+          disabled={reprocessing || video.status === 'processing'}
+          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem' }}
+          title={video.status === 'processing' ? 'Already analyzing' : 'Re-run full analysis'}
+        >
+          {reprocessing ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : (video.status === 'analyzed' || video.status === 'error') ? '↺ Re-analyze' : '▶ Analyze'}
+        </button>
+      </div>
+
+      {/* Video player */}
+      <div style={{ marginBottom: '1.5rem' }}>
+        <video
+          key={video.id}
+          src={`/api/videos/${video.id}/stream`}
+          controls
+          style={{ width: '100%', maxHeight: 480, borderRadius: 'var(--radius)', background: '#000', display: 'block', outline: 'none' }}
+        />
+      </div>
+
+      {/* Frame picker (thumbnail selection) */}
+      {video.status === 'analyzed' && (
+        <div style={{ marginBottom: '1.5rem' }}>
+          <button className="ghost" style={{ fontSize: '0.8rem' }} onClick={() => setShowFramePicker(v => !v)}>
+            {showFramePicker ? 'Hide frames' : video.thumbnail_path ? '🖼 Change thumbnail' : '🖼 Pick thumbnail'}
+          </button>
+          {showFramePicker && frames.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.5rem', marginTop: '0.75rem' }}>
+              {frames.map(f => (
+                <div
+                  key={f.id}
+                  onClick={() => setThumbnail(f.path)}
+                  style={{
+                    cursor: 'pointer', borderRadius: 8, overflow: 'hidden',
+                    border: `2px solid ${video.thumbnail_path === f.path ? 'var(--accent)' : 'var(--border)'}`,
+                    transition: 'border-color 0.15s'
+                  }}
+                  title={`${fmt(f.timestamp)} — click to set as thumbnail`}
+                >
+                  <img src={`/api/frames/${video.id}/${encodeURIComponent(f.path.split('/').pop()!)}`} alt={fmt(f.timestamp)} style={{ width: '100%', height: 90, objectFit: 'cover', display: 'block' }} />
+                  <div style={{ fontSize: '0.72rem', color: 'var(--muted)', padding: '0.2rem 0.4rem', background: 'var(--surface)' }}>{fmt(f.timestamp)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tags */}
+      <div className="section">
+        <div className="section-header"><h2>Tags</h2></div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.75rem' }}>
+          {video.tags.map(t => (
+            <span key={t} className="tag">{t}<button onClick={() => removeTag(t)}>×</button></span>
+          ))}
+          {video.tags.length === 0 && <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>No tags — add one below</span>}
+        </div>
+        <input
+          value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={addTag}
+          placeholder="Add tag and press Enter" style={{ maxWidth: 280 }}
+        />
+      </div>
+
+      <hr className="divider" />
+
+      {/* Summary */}
+      <div className="section">
+        <div className="section-header">
+          <h2>AI Summary</h2>
+          {video.status === 'analyzed' && !summarizing && (
+            <button className="ghost" onClick={handleSummarize} style={{ fontSize: '0.82rem' }}>
+              {video.summary ? 'Regenerate' : 'Generate Summary'}
+            </button>
+          )}
+        </div>
+        {video.status === 'processing' && (
+          <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>
+            <span className="spinner" style={{ marginRight: '0.5rem' }} />
+            Video is still being analyzed ({video.frame_count} frames so far)…
+          </p>
+        )}
+        {video.status === 'analyzed' && !video.summary && !summarizing && (
+          <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>No summary yet. Click "Generate Summary" to create one.</p>
+        )}
+        {summarizing && (
+          <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>
+            <span className="spinner" style={{ marginRight: '0.5rem' }} />
+            Generating summary…
+          </p>
+        )}
+        {video.summary && !summarizing && <div className="summary-box">{video.summary}</div>}
+      </div>
+
+      <hr className="divider" />
+
+      {/* Transcript */}
+      <div className="section">
+        <div className="section-header">
+          <h2>
+            Transcript
+            {transcript !== null && (
+              <span style={{ marginLeft: '0.6rem', fontSize: '0.75rem', fontWeight: 400, color: 'var(--muted)' }}>
+                {transcript.length === 0 ? '— no audio detected' : `${transcript.length} segments`}
+              </span>
+            )}
+          </h2>
+          {transcript && transcript.length > 0 && (
+            <button className="ghost" style={{ fontSize: '0.82rem' }} onClick={() => setShowTranscript(v => !v)}>
+              {showTranscript ? 'Hide' : 'Show'}
+            </button>
+          )}
+        </div>
+        {showTranscript && transcript && transcript.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', maxHeight: 360, overflowY: 'auto', paddingRight: '0.25rem' }}>
+            {transcript.map((seg, i) => (
+              <div key={i} style={{ display: 'flex', gap: '0.75rem', fontSize: '0.875rem', lineHeight: 1.5 }}>
+                <span style={{ color: 'var(--accent)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.8rem', paddingTop: '0.1rem' }}>{fmt(seg.timestamp)}</span>
+                <span style={{ color: 'var(--text)' }}>{seg.text}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {video.status === 'processing' && (
+          <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>Transcript will be available once analysis completes.</p>
+        )}
+      </div>
+
+      <hr className="divider" />
+
+      {/* Segment search */}
+      <div className="section">
+        <div className="section-header"><h2>Search Within Video</h2></div>
+        <form onSubmit={handleSearch} className="search-bar">
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. 'when does the AMD Strix Halo appear'" />
+          <button type="submit" disabled={searching || video.status === 'processing'}>
+            {searching ? 'Searching…' : 'Search'}
+          </button>
+        </form>
+        {video.status === 'processing' && (
+          <p style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>Search available once analysis is complete.</p>
+        )}
+        {segments.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginTop: '1rem' }}>
+            {segments.map((seg, i) => {
+              const isTranscript = seg.caption.startsWith('[transcript]')
+              return (
+                <div key={i} className="segment-card">
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <span className="segment-time">{fmt(seg.start_time)} – {fmt(seg.end_time)}</span>
+                    <span className="segment-type">{isTranscript ? '🎤 speech' : '🖼 visual'}</span>
+                  </div>
+                  <p className="segment-caption">{isTranscript ? seg.caption.replace('[transcript] ', '') : seg.caption}</p>
+                  <span className="segment-score">Score: {seg.score.toFixed(3)}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {segments.length === 0 && query && !searching && (
+          <p style={{ color: 'var(--muted)', fontSize: '0.875rem', marginTop: '1rem' }}>No matching moments found.</p>
+        )}
+      </div>
+    </div>
+  )
+}

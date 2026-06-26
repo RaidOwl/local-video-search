@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: local-vss-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    restart: unless-stopped
+
+  local-vss-api:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    container_name: local-vss-api
+    environment:
+      VLLM_EMBED_URL: ${VLLM_EMBED_URL:-http://localhost:8001}
+      VLLM_VLM_URL: ${VLLM_VLM_URL:-http://localhost:8002}
+      VLLM_URL: ${VLLM_URL:-http://localhost:8000}
+      QDRANT_URL: http://qdrant:6333
+      VIDEO_DIR: /data/videos
+      DATABASE_URL: sqlite+aiosqlite:////data/metadata.db
+      FRAME_EXTRACTION_INTERVAL: ${FRAME_EXTRACTION_INTERVAL:-5}
+      EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-16}
+    volumes:
+      - ${VIDEO_DIR_PATH:-./data/videos}:/data/videos:ro
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+
+  local-vss-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: local-vss-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - local-vss-api
+    restart: unless-stopped
