@@ -593,9 +593,9 @@ def _video_to_response(v) -> VideoResponse:
 
 
 @app.get("/videos", response_model=List[VideoResponse])
-async def list_videos():
-    """List all indexed videos."""
-    videos = await db.get_all_videos()
+async def list_videos(hidden: bool = False):
+    """List videos. Pass ?hidden=true to list hidden videos instead."""
+    videos = await db.get_all_videos(hidden=hidden)
     return [_video_to_response(v) for v in videos]
 
 
@@ -632,23 +632,20 @@ async def update_video(video_id: str, req: VideoUpdateRequest):
 
 @app.delete("/videos/{video_id}", status_code=204)
 async def delete_video(video_id: str):
-    """Delete a video record and all its indexed vectors."""
+    """Hide a video from the library (soft delete). Use POST /videos/{id}/unhide to restore."""
     video = await db.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-    # Remove from Qdrant
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
-    try:
-        embed_service.qdrant_client.delete(
-            collection_name=embed_service.collection_name,
-            points_selector=Filter(
-                must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
-            ),
-        )
-    except Exception:
-        pass  # collection may not exist yet
-    # Remove from DB
-    await db.delete_video(video_id)
+    await db.update_video(video_id, {'hidden': '1'})
+
+
+@app.post("/videos/{video_id}/unhide", status_code=204)
+async def unhide_video(video_id: str):
+    """Restore a hidden video back into the library."""
+    video = await db.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    await db.update_video(video_id, {'hidden': '0'})
 
 
 @app.get("/videos/{video_id}/frames")

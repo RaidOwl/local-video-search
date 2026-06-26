@@ -1,17 +1,26 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import SearchPage from './pages/SearchPage'
 import VideosPage from './pages/VideosPage'
 import VideoDetailPage from './pages/VideoDetailPage'
 import SettingsPage from './pages/SettingsPage'
 import NavBar from './components/NavBar'
 import { api } from './services/api'
+import axios from 'axios'
 
 function App() {
   const [health, setHealth] = useState<boolean>(false)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth(false))
+    const check = () => {
+      api.health()
+        .then(() => setHealth(true))
+        .catch(err => { if (!axios.isCancel(err)) setHealth(false) })
+    }
+    check()
+    intervalRef.current = setInterval(check, 5000)
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [])
 
   return (

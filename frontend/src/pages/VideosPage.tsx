@@ -4,17 +4,6 @@ import { api, Video } from '../services/api'
 
 type ViewMode = 'card' | 'tree' | 'folder'
 
-// ── path helpers ──────────────────────────────────────────────────────────────
-
-function commonDirPrefix(paths: string[]): string {
-  if (!paths.length) return ''
-  const dirs = paths.map(p => p.split('/').slice(0, -1))
-  const minLen = Math.min(...dirs.map(d => d.length))
-  let i = 0
-  while (i < minLen && dirs.every(d => d[i] === dirs[0][i])) i++
-  return dirs[0].slice(0, i).join('/')
-}
-
 interface FolderNode {
   name: string
   fullPath: string
@@ -22,11 +11,15 @@ interface FolderNode {
   videos: Video[]
 }
 
+// Strip at the lib mount root (/data/videos/libN) rather than the deepest
+// common ancestor, so intermediate folders like '2022_Before' stay visible.
+const VIDEO_MOUNT_ROOT = '/data/videos'
+const LIB_SEGMENT = /^lib\d+$/
+
 function buildTree(videos: Video[]): { root: FolderNode; prefix: string } {
-  const prefix = commonDirPrefix(videos.map(v => v.path))
-  const root: FolderNode = { name: prefix.split('/').pop() || '/', fullPath: prefix, subfolders: {}, videos: [] }
+  const root: FolderNode = { name: 'videos', fullPath: VIDEO_MOUNT_ROOT, subfolders: {}, videos: [] }
   for (const v of videos) {
-    const rel = v.path.startsWith(prefix + '/') ? v.path.slice(prefix.length + 1) : v.path
+    const rel = v.path.startsWith(VIDEO_MOUNT_ROOT + '/') ? v.path.slice(VIDEO_MOUNT_ROOT.length + 1) : v.path
     const parts = rel.split('/')
     let node = root
     for (let i = 0; i < parts.length - 1; i++) {
@@ -38,7 +31,18 @@ function buildTree(videos: Video[]): { root: FolderNode; prefix: string } {
     }
     node.videos.push(v)
   }
-  return { root, prefix }
+  // Skip past the libN mount nodes — if only one lib is in use, drop into it
+  // so users see their folder structure directly rather than a lib1/ wrapper.
+  const libChildren = Object.values(root.subfolders)
+  if (libChildren.length === 1 && LIB_SEGMENT.test(libChildren[0].name) && root.videos.length === 0) {
+    return { root: libChildren[0], prefix: libChildren[0].fullPath }
+  }
+  // Multiple libs: show libN nodes at top level
+  const allLib = libChildren.every(n => LIB_SEGMENT.test(n.name))
+  if (allLib && root.videos.length === 0) {
+    return { root, prefix: VIDEO_MOUNT_ROOT }
+  }
+  return { root, prefix: VIDEO_MOUNT_ROOT }
 }
 
 function getNodeByPath(root: FolderNode, fullPath: string): FolderNode | null {
@@ -158,7 +162,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
               <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0 }}>{fmt(video.duration)}</span>
               <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
               <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.3rem', color: 'var(--muted)', flexShrink: 0 }}>→</button>
-              <button className="icon-btn" title="Remove" onClick={e => handleRemove(e, video.id)} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--muted)', flexShrink: 0 }}>✕</button>
+              <button className="icon-btn" title="Hide" onClick={e => handleRemove(e, video.id)} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--muted)', flexShrink: 0 }}>✕</button>
             </div>
           )
         })}
@@ -191,7 +195,7 @@ function TreeView(props: ViewProps) {
                   <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
                   <StatusBadge status={video.status} frameCount={video.frame_count} eta={etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} />
                   <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.3rem', color: 'var(--muted)' }}>→</button>
-                  <button className="icon-btn" title="Remove" onClick={e => props.handleRemove(e, video.id)} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--muted)' }}>✕</button>
+                  <button className="icon-btn" title="Hide" onClick={e => props.handleRemove(e, video.id)} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--muted)' }}>✕</button>
                 </div>
               )
             })}
@@ -340,10 +344,10 @@ export default function VideosPage() {
 
   const handleRemove = async (e: React.MouseEvent, videoId: string) => {
     e.preventDefault(); e.stopPropagation()
-    if (!window.confirm('Remove this video from the library?')) return
+    if (!window.confirm('Hide this video from the library? You can restore it from Settings.')) return
     setRemoving(videoId)
     try {
-      await api.deleteVideo(videoId)
+      await api.hideVideo(videoId)
       setVideos(prev => prev.filter(v => v.id !== videoId))
       setSelected(prev => { const n = new Set(prev); n.delete(videoId); return n })
       delete snapshots.current[videoId]

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { api, AppSettings } from '../services/api'
+import { useState, useEffect, useCallback } from 'react'
+import { api, AppSettings, Video } from '../services/api'
 
 type ModelStatus = { name: string; url: string; ok: boolean; models: string[] }
 
@@ -290,6 +290,50 @@ export default function SettingsPage() {
           {saved && <span style={{ color: 'var(--success)', fontSize: '0.85rem' }}>✓ Saved</span>}
           {error && <span style={{ color: 'var(--error)', fontSize: '0.85rem' }}>{error}</span>}
         </div>
+
+        <HiddenVideos />
+      </div>
+    </div>
+  )
+}
+
+function HiddenVideos() {
+  const [videos, setVideos] = useState<Video[] | null>(null)
+  const [unhiding, setUnhiding] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    api.listHiddenVideos().then(setVideos).catch(() => setVideos([]))
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const handleUnhide = async (id: string) => {
+    setUnhiding(id)
+    try {
+      await api.unhideVideo(id)
+      setVideos(prev => prev ? prev.filter(v => v.id !== id) : prev)
+    } catch { /* ignore */ } finally { setUnhiding(null) }
+  }
+
+  if (!videos || videos.length === 0) return null
+
+  return (
+    <div className="section" style={{ marginTop: '2rem' }}>
+      <div className="section-header"><h2>Hidden Videos</h2></div>
+      <p style={{ margin: '0 0 1rem', fontSize: '0.82rem', color: 'var(--muted)' }}>
+        Videos you've hidden from the library. Unhide to restore them.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+        {videos.map(v => (
+          <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.5rem 0.75rem' }}>
+            <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.display_name || v.name}</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0, fontFamily: 'monospace' }}>{v.path.split('/').slice(-2).join('/')}</span>
+            <button className="ghost" onClick={() => handleUnhide(v.id)} disabled={unhiding === v.id}
+              style={{ fontSize: '0.78rem', padding: '0.2rem 0.6rem', flexShrink: 0 }}>
+              {unhiding === v.id ? '…' : 'Unhide'}
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   )

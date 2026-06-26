@@ -122,6 +122,11 @@ export const api = {
     return res.data
   },
 
+  listHiddenVideos: async (): Promise<Video[]> => {
+    const res = await client.get('/videos', { params: { hidden: true } })
+    return res.data
+  },
+
   getVideo: async (id: string): Promise<Video> => {
     const res = await client.get(`/videos/${id}`)
     return res.data
@@ -142,8 +147,12 @@ export const api = {
     return res.data
   },
 
-  deleteVideo: async (id: string): Promise<void> => {
+  hideVideo: async (id: string): Promise<void> => {
     await client.delete(`/videos/${id}`)
+  },
+
+  unhideVideo: async (id: string): Promise<void> => {
+    await client.post(`/videos/${id}/unhide`)
   },
 
   reprocessVideo: async (id: string, context?: string): Promise<{ status: string; video_id: string }> => {

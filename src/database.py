@@ -29,6 +29,7 @@ class Video(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    hidden = Column(String, nullable=True, default='0')  # '1' = hidden from library
     frames = relationship("Frame", back_populates="video", cascade="all, delete-orphan")
 
 
@@ -57,7 +58,7 @@ class Database:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Migrate: add columns introduced after initial schema
-            for col in ['context TEXT', 'thumbnail_path TEXT']:
+            for col in ['context TEXT', 'thumbnail_path TEXT', 'hidden TEXT DEFAULT 0']:
                 col_name = col.split()[0]
                 try:
                     await conn.execute(text(f'ALTER TABLE videos ADD COLUMN {col}'))
@@ -94,11 +95,16 @@ class Database:
             result = await session.execute(select(Video).where(Video.path == path))
             return result.scalars().first()
 
-    async def get_all_videos(self) -> list[Video]:
-        """Get all videos."""
+    async def get_all_videos(self, hidden: bool = False) -> list[Video]:
+        """Get all videos. By default excludes hidden videos."""
         async with self.session_maker() as session:
             from sqlalchemy import select
-            result = await session.execute(select(Video).order_by(Video.created_at.desc()))
+            q = select(Video).order_by(Video.created_at.desc())
+            if hidden:
+                q = q.where(Video.hidden == '1')
+            else:
+                q = q.where((Video.hidden == None) | (Video.hidden != '1'))
+            result = await session.execute(q)
             return list(result.scalars().all())
     
     async def update_video_summary(self, video_id: str, summary: str):
