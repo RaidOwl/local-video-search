@@ -14,6 +14,9 @@ export default function NavBar() {
           <NavLink to="/videos" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Videos
           </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
+            Settings
+          </NavLink>
         </div>
       </div>
     </nav>

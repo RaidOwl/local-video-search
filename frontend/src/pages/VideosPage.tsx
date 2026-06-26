@@ -297,6 +297,9 @@ export default function VideosPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [showModal, setShowModal] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem('vss_view_mode') as ViewMode) || 'card')
+  const [filterText, setFilterText] = useState(() => localStorage.getItem('vss_filter') ?? '')
+  const [sortBy, setSortBy] = useState<'name' | 'duration' | 'status' | 'frames'>(() => (localStorage.getItem('vss_sort_by') as any) || 'name')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => (localStorage.getItem('vss_sort_dir') as any) || 'asc')
   const snapshots = useRef<Record<string, ProgressSnapshot>>({})
 
   const loadVideos = useCallback(async () => {
@@ -364,8 +367,33 @@ export default function VideosPage() {
   const navigate = useNavigate()
 
   const setView = (v: ViewMode) => { setViewMode(v); localStorage.setItem('vss_view_mode', v) }
+  const setSort = (by: typeof sortBy, dir: typeof sortDir) => {
+    setSortBy(by); setSortDir(dir)
+    localStorage.setItem('vss_sort_by', by); localStorage.setItem('vss_sort_dir', dir)
+  }
+  const toggleSortDir = () => {
+    const next = sortDir === 'asc' ? 'desc' : 'asc'
+    setSortDir(next); localStorage.setItem('vss_sort_dir', next)
+  }
 
-  const viewProps: ViewProps = { videos, selected, removing, snapshots, toggleSelect, handleRemove, navigate }
+  const STATUS_ORDER: Record<string, number> = { processing: 0, analyzed: 1, ready: 2, error: 3 }
+
+  const displayedVideos = [...videos]
+    .filter(v => {
+      if (!filterText.trim()) return true
+      const q = filterText.toLowerCase()
+      return (v.display_name || v.name).toLowerCase().includes(q) || v.path.toLowerCase().includes(q) || v.tags.some(t => t.toLowerCase().includes(q))
+    })
+    .sort((a, b) => {
+      let cmp = 0
+      if (sortBy === 'name') cmp = (a.display_name || a.name).localeCompare(b.display_name || b.name)
+      else if (sortBy === 'duration') cmp = a.duration - b.duration
+      else if (sortBy === 'status') cmp = (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+      else if (sortBy === 'frames') cmp = a.frame_count - b.frame_count
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+
+  const viewProps: ViewProps = { videos: displayedVideos, selected, removing, snapshots, toggleSelect, handleRemove, navigate }
 
   return (
     <div className="page">
@@ -394,6 +422,31 @@ export default function VideosPage() {
         <div className="empty"><h3>No videos yet</h3><p>Videos in <code>/data/videos</code> will appear here automatically on startup.</p></div>
       ) : (
         <>
+            {/* Filter + sort bar */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem' }}>
+            <input
+              value={filterText}
+              onChange={e => { setFilterText(e.target.value); localStorage.setItem('vss_filter', e.target.value) }}
+              placeholder="Filter by name, path or tag…"
+              style={{ flex: 1, fontSize: '0.85rem', padding: '0.45rem 0.75rem' }}
+            />
+            <select
+              value={sortBy}
+              onChange={e => setSort(e.target.value as any, sortDir)}
+              style={{ fontSize: '0.82rem', padding: '0.45rem 0.5rem', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', cursor: 'pointer' }}
+            >
+              <option value="name">Name</option>
+              <option value="duration">Duration</option>
+              <option value="status">Status</option>
+              <option value="frames">Frames</option>
+            </select>
+            <button className="ghost" onClick={toggleSortDir} title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+              style={{ fontSize: '0.85rem', padding: '0.45rem 0.6rem', minWidth: 0 }}>
+              {sortDir === 'asc' ? '↑' : '↓'}
+            </button>
+          </div>
+
+          {/* Selection + view mode toolbar */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', padding: '0.6rem 1rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', minHeight: '2.6rem' }}>
             {selected.size > 0 ? (
               <>
@@ -402,7 +455,9 @@ export default function VideosPage() {
                 <button className="ghost" style={{ fontSize: '0.85rem' }} onClick={() => setSelected(new Set())}>Clear</button>
               </>
             ) : (
-              <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Click videos to select · use ▶ Analyze to process them</span>
+              <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                {filterText.trim() ? `${displayedVideos.length} of ${videos.length} videos` : 'Click videos to select · use ▶ Analyze to process them'}
+              </span>
             )}
             <span style={{ flex: 1 }} />
             {(['card', 'tree', 'folder'] as ViewMode[]).map(mode => (
@@ -416,7 +471,7 @@ export default function VideosPage() {
           </div>
           {viewMode === 'card' && (
           <div className="video-grid">
-            {videos.map(video => {
+            {displayedVideos.map(video => {
               const totalFrames = Math.max(1, Math.floor(video.duration / 5))
               const eta = etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
               const isSelected = selected.has(video.id)

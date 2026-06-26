@@ -8,8 +8,10 @@ import asyncio
 import uuid
 import shutil
 import os
+import json
 
 from ..config import get_settings
+from ..local_models import resolve_local_config, TIER_VRAM, TIER_MODELS, BACKEND_URLS
 from ..database import Database, Video, Frame
 from ..ingest.video_scanner import find_video_files, get_video_metadata, compute_file_hash
 from ..ingest.frame_extractor import FrameExtractor
@@ -37,16 +39,91 @@ settings = get_settings()
 # Database
 db = Database(settings.database_url)
 
+# Settings override file (persists user changes across restarts)
+SETTINGS_OVERRIDE_PATH = Path("/data/settings_override.json")
+
+def _load_override() -> dict:
+    if SETTINGS_OVERRIDE_PATH.exists():
+        try:
+            return json.loads(SETTINGS_OVERRIDE_PATH.read_text())
+        except Exception:
+            return {}
+    return {}
+
+def _effective_cfg() -> dict:
+    ai_backend = settings.ai_backend
+
+    if ai_backend == "custom":
+        base = {
+            "vllm_embed_url":   settings.vllm_embed_url,
+            "vllm_vlm_url":     settings.vllm_vlm_url,
+            "vllm_url":         settings.vllm_url,
+            "qdrant_url":       settings.qdrant_url,
+            "vllm_embed_model": settings.vllm_embed_model,
+            "vllm_vlm_model":   settings.vllm_vlm_model,
+            "vllm_model":       settings.vllm_model,
+            "whisper_model":    settings.whisper_model,
+            "frame_extraction_interval": settings.frame_extraction_interval,
+            "embed_batch_size": settings.embed_batch_size,
+            "ai_backend":       "custom",
+        }
+    else:
+        base = resolve_local_config(
+            backend=ai_backend,
+            family=settings.model_family,
+            tier=settings.vram_tier,
+            settings=settings,
+        )
+        base["qdrant_url"]       = settings.qdrant_url
+        base["whisper_model"]    = settings.whisper_model
+        base["frame_extraction_interval"] = settings.frame_extraction_interval
+        base["embed_batch_size"] = settings.embed_batch_size
+        base["ai_backend"]       = ai_backend
+        base["vram_tier"]        = settings.vram_tier
+        base["model_family"]     = settings.model_family
+
+    base.update(_load_override())
+    return base
+
+
+def _backend_warning(cfg: dict) -> str | None:
+    """Return a warning string if the backend/platform combo is problematic."""
+    import platform
+    backend = cfg.get("ai_backend", "custom")
+    arch = platform.machine()
+    if backend == "vllm" and arch in ("arm64", "aarch64"):
+        return (
+            "vLLM requires an NVIDIA GPU and does not support Apple Silicon. "
+            "Use AI_BACKEND=ollama-native instead — install Ollama on your Mac "
+            "and it will use Metal automatically."
+        )
+    if backend == "ollama" and arch in ("arm64", "aarch64"):
+        return (
+            "Ollama in Docker loses Metal acceleration on Apple Silicon. "
+            "Consider AI_BACKEND=ollama-native for full GPU performance."
+        )
+    return None
+
+_cfg = _effective_cfg()
+
 # Services
-embed_service = EmbeddingService(settings.vllm_embed_url, settings.qdrant_url)
-vlm_service = VLMService(settings.vllm_vlm_url)
-summarizer_service = SummarizationService(settings.vllm_url)
-transcription_service = TranscriptionService(model_size="base")
+embed_service = EmbeddingService(_cfg["vllm_embed_url"], _cfg["qdrant_url"], model=_cfg["vllm_embed_model"])
+vlm_service = VLMService(_cfg["vllm_vlm_url"], model=_cfg["vllm_vlm_model"])
+summarizer_service = SummarizationService(_cfg["vllm_url"], model=_cfg["vllm_model"])
+transcription_service = TranscriptionService(model_size=_cfg["whisper_model"])
 query_processor = QueryProcessor()
 segment_retriever = SegmentRetriever()
 
 # Frame extractor
-frame_extractor = FrameExtractor(interval=settings.frame_extraction_interval)
+frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"])
+
+def _reinit_services(cfg: dict):
+    global embed_service, vlm_service, summarizer_service, frame_extractor, transcription_service
+    embed_service = EmbeddingService(cfg["vllm_embed_url"], cfg["qdrant_url"], model=cfg["vllm_embed_model"])
+    vlm_service = VLMService(cfg["vllm_vlm_url"], model=cfg["vllm_vlm_model"])
+    summarizer_service = SummarizationService(cfg["vllm_url"], model=cfg["vllm_model"])
+    transcription_service = TranscriptionService(model_size=cfg["whisper_model"])
+    frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]))
 
 # Persistent frame storage directory
 FRAMES_DIR = Path("/data/frames")
@@ -199,12 +276,16 @@ async def startup():
     asyncio.create_task(_auto_import())
 
 
+# All mounted video library directories (lib1–lib5 set via VIDEO_DIR_1–5 in .env)
+VIDEO_SCAN_DIRS = [Path(f"/data/videos/lib{i}") for i in range(1, 6)]
+
+
 async def _auto_import():
-    """Scan /data/videos and add any new video files to the library."""
-    video_dir = Path("/data/videos")
-    if not video_dir.exists():
-        return
-    for video_path in find_video_files(str(video_dir)):
+    """Scan all configured video library directories and add new files."""
+    for video_dir in VIDEO_SCAN_DIRS:
+        if not video_dir.exists():
+            continue
+        for video_path in find_video_files(str(video_dir)):
         if await db.get_video_by_path(str(video_path)):
             continue
         video_id = str(uuid.uuid4())
@@ -225,7 +306,7 @@ async def health():
 
 @app.post("/reimport")
 async def reimport():
-    """Scan /data/videos and add any new videos to the library."""
+    """Scan all configured video library directories and add any new videos."""
     await _auto_import()
     videos = await db.get_all_videos()
     return {"total": len(videos)}
@@ -235,6 +316,7 @@ async def reimport():
 async def model_status():
     """Check reachability of each AI model endpoint."""
     import httpx
+    cfg = _effective_cfg()
     async def probe(url: str, name: str) -> dict:
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
@@ -245,16 +327,51 @@ async def model_status():
             return {"name": name, "url": url, "ok": False, "models": []}
 
     results = await asyncio.gather(
-        probe(settings.vllm_embed_url, "Embeddings"),
-        probe(settings.vllm_vlm_url, "Vision (VLM)"),
-        probe(settings.vllm_url, "Summarizer"),
+        probe(cfg["vllm_embed_url"], "Embeddings"),
+        probe(cfg["vllm_vlm_url"], "Vision (VLM)"),
+        probe(cfg["vllm_url"], "Summarizer"),
     )
     return {"services": list(results)}
 
 
+@app.get("/settings")
+async def get_settings_endpoint():
+    """Return current effective settings."""
+    cfg = _effective_cfg()
+    warning = _backend_warning(cfg)
+    video_dirs = [str(d) for d in VIDEO_SCAN_DIRS if d.exists() and any(d.iterdir())]
+    return {**cfg, "backend_warning": warning, "video_dirs": video_dirs}
+
+
+class SettingsUpdateRequest(BaseModel):
+    vllm_embed_url: Optional[str] = None
+    vllm_vlm_url: Optional[str] = None
+    vllm_url: Optional[str] = None
+    qdrant_url: Optional[str] = None
+    vllm_embed_model: Optional[str] = None
+    vllm_vlm_model: Optional[str] = None
+    vllm_model: Optional[str] = None
+    whisper_model: Optional[str] = None
+    frame_extraction_interval: Optional[int] = None
+    embed_batch_size: Optional[int] = None
+    # Note: ai_backend, vram_tier, model_family are .env-only — not overridable via UI
+
+
+@app.put("/settings")
+async def update_settings_endpoint(req: SettingsUpdateRequest):
+    """Persist settings overrides and reinitialize services."""
+    override = _load_override()
+    for field, val in req.model_dump(exclude_none=True).items():
+        override[field] = val
+    SETTINGS_OVERRIDE_PATH.write_text(json.dumps(override, indent=2))
+    cfg = _effective_cfg()
+    _reinit_services(cfg)
+    return cfg
+
+
 @app.get("/browse")
-async def browse_directory(path: str = "/data/videos"):
-    """List directories and video files within /data/videos for path autocomplete."""
+async def browse_directory(path: str = "/data/videos/lib1"):
+    """List directories and video files within the configured library dirs."""
     base = Path("/data/videos").resolve()
     try:
         target = Path(path).resolve()
@@ -353,43 +470,65 @@ async def ingest_video(request: IngestRequest, background_tasks: BackgroundTasks
 
 
 @app.get("/search", response_model=SearchResponse)
-async def search_videos(q: str, limit: int = 10):
+async def search_videos(q: str, limit: int = 10, threshold: float = 0.50):
     """Search for videos by natural language query."""
     processed = query_processor.process_query(q)
-    
+
+    # Fetch more raw results so we have enough to group and show segments
     results = await embed_service.search(
         query=processed["search_terms"],
-        limit=limit
+        limit=limit * 5,
+        score_threshold=threshold,
+        source_intent=processed["source_intent"]
     )
-    
-    # Group by video
-    video_results = {}
+
+    # Group by video, collecting all raw hits
+    video_hits: dict = {}
     for r in results:
         vid = r.get("video_id")
-        if vid not in video_results:
-            video_results[vid] = {
-                "video_id": vid,
-                "score": r.get("score", 0),
-                "matching_frames": 1
-            }
+        if vid not in video_hits:
+            video_hits[vid] = {"score": r.get("score", 0), "hits": []}
         else:
-            video_results[vid]["score"] = max(video_results[vid]["score"], r.get("score", 0))
-            video_results[vid]["matching_frames"] += 1
-    
-    # Fetch video details
+            video_hits[vid]["score"] = max(video_hits[vid]["score"], r.get("score", 0))
+        video_hits[vid]["hits"].append(r)
+
+    # Fetch video details and build top-N segments per video
     final_results = []
-    for vid, data in video_results.items():
+    for vid, data in video_hits.items():
         video = await db.get_video(vid)
-        if video:
-            final_results.append({
-                "video_id": vid,
-                "name": video.name,
-                "path": video.path,
-                "duration": video.duration,
-                "score": data["score"],
-                "matching_frames": data["matching_frames"]
-            })
-    
+        if not video:
+            continue
+        for h in data["hits"]:
+            h["video_name"] = video.name
+        segments = segment_retriever.group_segments(data["hits"], vid)
+        top_segments = [
+            {
+                "video_id": s.video_id,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+                "caption": s.caption,
+                "score": s.score,
+                "frame_path": s.frame_path,
+            }
+            for s in segments[:5]
+        ]
+        final_results.append({
+            "video_id": vid,
+            "name": video.name,
+            "path": video.path,
+            "duration": video.duration,
+            "score": data["score"],
+            "matching_frames": len(segments),
+            "segments": top_segments,
+        })
+
+    # Only return videos where the best-matching segment is above threshold
+    final_results = [r for r in final_results if r["score"] >= threshold]
+
+    # Sort by score descending, cap to limit
+    final_results.sort(key=lambda x: x["score"], reverse=True)
+    final_results = final_results[:limit]
+
     return SearchResponse(results=final_results, query=q)
 
 
@@ -401,7 +540,8 @@ async def search_segments(video_id: str, q: str, limit: int = 20):
     results = await embed_service.search(
         query=processed["search_terms"],
         limit=limit,
-        video_id=video_id
+        video_id=video_id,
+        source_intent=processed["source_intent"]
     )
     
     # Get video info

@@ -27,17 +27,31 @@ class VideoSummarizer:
         """
         if not captions:
             return "No captions available for summarization."
-        
-        # Build context from captions
+
+        sorted_captions = sorted(captions, key=lambda x: x.get('timestamp', 0))
+
+        visual = [c for c in sorted_captions if not c.get('caption', '').startswith('[transcript]')]
+        transcript = [c for c in sorted_captions if c.get('caption', '').startswith('[transcript]')]
+
+        def sample(items, n):
+            if len(items) <= n:
+                return items
+            step = len(items) / n
+            return [items[int(i * step)] for i in range(n)]
+
+        # 5 visual frames for scene context + up to 60 transcript segments for spoken content
+        selected = sample(visual, 5) + sample(transcript, 60)
+        selected.sort(key=lambda x: x.get('timestamp', 0))
+
         caption_texts = []
-        for c in sorted(captions, key=lambda x: x.get('timestamp', 0)):
+        for c in selected:
             ts = c.get('timestamp', 0)
             text = c.get('caption', '')
-            if not text.startswith('[transcript]'):
-                caption_texts.append(f"[{self._format_timestamp(ts)}] {text}")
+            if text.startswith('[transcript]'):
+                caption_texts.append(f"[{self._format_timestamp(ts)}] {text[len('[transcript] '):]}")
             else:
-                caption_texts.append(f"[{self._format_timestamp(ts)}] (speech) {text[len('[transcript] '):]}")
-        
+                caption_texts.append(f"[{self._format_timestamp(ts)}] (visual) {text}")
+
         context = "\n".join(caption_texts)
         
         system_prompt = (
@@ -52,7 +66,7 @@ class VideoSummarizer:
             f"based on these timestamped frame captions:\n\n{context}"
         )
         
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(
                 f"{self.vllm_url}/v1/chat/completions",
                 json={

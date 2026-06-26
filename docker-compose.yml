@@ -1,11 +1,31 @@
 version: '3.8'
 
+# ── How to run ──────────────────────────────────────────────────────────────
+#
+#  Custom mode  (default, bring your own models):
+#    docker compose up -d
+#
+#  Ollama in Docker  (CPU or NVIDIA GPU on Linux):
+#    AI_BACKEND=ollama docker compose --profile ollama up -d
+#
+#  Ollama on host  (BEST for Apple Silicon — full Metal acceleration):
+#    brew install ollama && ollama serve   ← run on Mac host
+#    AI_BACKEND=ollama-native docker compose up -d
+#
+#  vLLM  (NVIDIA GPU required, needs nvidia-container-toolkit):
+#    AI_BACKEND=vllm docker compose --profile vllm up -d
+#
+# ────────────────────────────────────────────────────────────────────────────
+
 services:
+
+  # ── Core ──────────────────────────────────────────────────────────────────
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: local-vss-qdrant
     ports:
-      - "6333:6333"
+      - "${QDRANT_PORT:-6333}:6333"
     volumes:
       - ./data/qdrant:/qdrant/storage
     restart: unless-stopped
@@ -16,21 +36,36 @@ services:
       dockerfile: docker/app/Dockerfile
     container_name: local-vss-api
     environment:
+      # Deployment mode (set in .env)
+      AI_BACKEND: ${AI_BACKEND:-custom}
+      VRAM_TIER: ${VRAM_TIER:-mid}
+      MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
+      # Custom-mode endpoints (ignored in local modes — auto-configured)
       VLLM_EMBED_URL: ${VLLM_EMBED_URL:-http://localhost:8001}
       VLLM_VLM_URL: ${VLLM_VLM_URL:-http://localhost:8002}
       VLLM_URL: ${VLLM_URL:-http://localhost:8000}
+      VLLM_EMBED_MODEL: ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
+      VLLM_VLM_MODEL: ${VLLM_VLM_MODEL:-llava-hf/llava-v1.6-vicuna-7b-hf}
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-8B}
+      # Infrastructure
       QDRANT_URL: http://qdrant:6333
-      VIDEO_DIR: /data/videos
       DATABASE_URL: sqlite+aiosqlite:////data/metadata.db
       FRAME_EXTRACTION_INTERVAL: ${FRAME_EXTRACTION_INTERVAL:-5}
       EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-16}
     volumes:
-      - ${VIDEO_DIR_PATH:-./data/videos}:/data/videos:ro
+      # Up to 5 video library directories — set VIDEO_DIR_1..5 in .env
+      # Unused slots default to ./data/placeholder (empty dir, auto-created by Docker)
+      - ${VIDEO_DIR_1:-./data/videos}:/data/videos/lib1:ro
+      - ${VIDEO_DIR_2:-./data/placeholder}:/data/videos/lib2:ro
+      - ${VIDEO_DIR_3:-./data/placeholder}:/data/videos/lib3:ro
+      - ${VIDEO_DIR_4:-./data/placeholder}:/data/videos/lib4:ro
+      - ${VIDEO_DIR_5:-./data/placeholder}:/data/videos/lib5:ro
       - ./data:/data
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     depends_on:
-      - qdrant
+      qdrant:
+        condition: service_started
     restart: unless-stopped
 
   local-vss-frontend:
@@ -39,7 +74,132 @@ services:
       dockerfile: Dockerfile
     container_name: local-vss-frontend
     ports:
-      - "3000:80"
+      - "${FRONTEND_PORT:-3000}:80"
     depends_on:
       - local-vss-api
     restart: unless-stopped
+
+  # ── Ollama profile ────────────────────────────────────────────────────────
+  # Start with: docker compose --profile ollama up -d
+  # Note: on Apple Silicon use AI_BACKEND=ollama-native instead (runs on host)
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: local-vss-ollama
+    profiles: [ollama]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # GPU support — remove the deploy block if running CPU-only
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: local-vss-ollama-init
+    profiles: [ollama]
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
+      VRAM_TIER: ${VRAM_TIER:-mid}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Resolve model names from MODEL_FAMILY + VRAM_TIER
+        if [ "$MODEL_FAMILY" = "gemma" ]; then
+          case "$VRAM_TIER" in
+            low)   MAIN_MODEL="gemma3:4b"  ;;
+            high)  MAIN_MODEL="gemma3:27b" ;;
+            ultra) MAIN_MODEL="gemma3:27b" ;;
+            *)     MAIN_MODEL="gemma3:12b" ;;
+          esac
+        else
+          case "$VRAM_TIER" in
+            low)   MAIN_MODEL="qwen2.5vl:3b"  ;;
+            high)  MAIN_MODEL="qwen2.5vl:32b" ;;
+            ultra) MAIN_MODEL="qwen2.5vl:72b" ;;
+            *)     MAIN_MODEL="qwen2.5vl:7b"  ;;
+          esac
+        fi
+        EMBED_MODEL="nomic-embed-text"
+        echo "==> Waiting for Ollama to be ready..."
+        until ollama list >/dev/null 2>&1; do sleep 2; done
+        echo "==> Pulling embed model: $EMBED_MODEL"
+        ollama list | grep -q "$EMBED_MODEL" || ollama pull "$EMBED_MODEL"
+        echo "==> Pulling main model: $MAIN_MODEL"
+        ollama list | grep -q "$MAIN_MODEL" || ollama pull "$MAIN_MODEL"
+        echo "==> Models ready."
+    restart: "no"
+
+  # ── vLLM profile ──────────────────────────────────────────────────────────
+  # Start with: docker compose --profile vllm up -d
+  # Requires: NVIDIA GPU + nvidia-container-toolkit installed on host
+  # One multimodal model handles both vision captioning and summarization.
+
+  vllm-embed:
+    image: vllm/vllm-openai:latest
+    container_name: local-vss-vllm-embed
+    profiles: [vllm]
+    command:
+      - --model
+      - ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
+      - --port
+      - "8001"
+      - --host
+      - "0.0.0.0"
+      - --task
+      - embed
+    # No host port binding needed — the API reaches this via Docker's internal
+    # network (http://vllm-embed:8001). Uncomment to expose for external access:
+    # ports:
+    #   - "${VLLM_EMBED_PORT:-8001}:8001"
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  vllm-main:
+    image: vllm/vllm-openai:latest
+    container_name: local-vss-vllm-main
+    profiles: [vllm]
+    command:
+      - --model
+      - ${VLLM_MAIN_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}
+      - --port
+      - "8002"
+      - --host
+      - "0.0.0.0"
+    # No host port binding needed — the API reaches this via Docker's internal
+    # network (http://vllm-main:8002). Uncomment to expose for external access:
+    # ports:
+    #   - "${VLLM_MAIN_PORT:-8002}:8002"
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  vllm_cache:

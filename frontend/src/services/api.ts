@@ -7,6 +7,31 @@ const client = axios.create({
   },
 })
 
+export interface AppSettings {
+  // Deployment mode (read-only from .env — not editable via UI)
+  ai_backend: string
+  vram_tier?: string
+  model_family?: string
+  backend_warning?: string
+  video_dirs?: string[]
+  // Resolved model info (local modes only)
+  _resolved_model?: string
+  _resolved_embed?: string
+  _resolved_tier?: string
+  _resolved_family?: string
+  // Editable settings
+  vllm_embed_url: string
+  vllm_vlm_url: string
+  vllm_url: string
+  qdrant_url: string
+  vllm_embed_model: string
+  vllm_vlm_model: string
+  vllm_model: string
+  whisper_model: string
+  frame_extraction_interval: number
+  embed_batch_size: number
+}
+
 export interface Video {
   id: string
   name: string
@@ -35,6 +60,14 @@ export interface SearchResult {
   duration: number
   score: number
   matching_frames: number
+  segments: Array<{
+    video_id: string
+    start_time: number
+    end_time: number
+    caption: string
+    score: number
+    frame_path: string
+  }>
 }
 
 export interface Segment {
@@ -74,8 +107,8 @@ export const api = {
     return res.data
   },
 
-  search: async (query: string, limit?: number): Promise<{ results: SearchResult[]; query: string }> => {
-    const res = await client.get('/search', { params: { q: query, limit } })
+  search: async (query: string, limit?: number, threshold?: number): Promise<{ results: SearchResult[]; query: string }> => {
+    const res = await client.get('/search', { params: { q: query, limit, threshold } })
     return res.data
   },
 
@@ -130,6 +163,16 @@ export const api = {
 
   modelStatus: async (): Promise<{ services: Array<{ name: string; url: string; ok: boolean; models: string[] }> }> => {
     const res = await client.get('/status/models')
+    return res.data
+  },
+
+  getSettings: async (): Promise<AppSettings> => {
+    const res = await client.get('/settings')
+    return res.data
+  },
+
+  updateSettings: async (s: Partial<AppSettings>): Promise<AppSettings> => {
+    const res = await client.put('/settings', s)
     return res.data
   },
 }

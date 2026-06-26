@@ -48,9 +48,10 @@ class EmbeddingService:
         self,
         vllm_url: str,
         qdrant_url: str,
-        collection_name: str = "video_frames"
+        collection_name: str = "video_frames",
+        model: str = "BAAI/bge-m3"
     ):
-        self.generator = EmbeddingGenerator(vllm_url)
+        self.generator = EmbeddingGenerator(vllm_url, model=model)
         self.qdrant_url = qdrant_url
         self.collection_name = collection_name
         self._qdrant_client = None
@@ -119,16 +120,18 @@ class EmbeddingService:
         self,
         query: str,
         limit: int = 10,
-        video_id: str = None
+        video_id: str = None,
+        score_threshold: float = 0.45,
+        source_intent: str = 'mixed'
     ) -> List[dict]:
-        """Search for similar frames."""
+        """Search for similar frames, optionally filtered by source type."""
         embedding = await self.generator.embed_text(query)
-        
+
         if not embedding:
             return []
-        
+
         from qdrant_client.models import Filter, FieldCondition, MatchValue
-        
+
         filter_condition = None
         if video_id:
             filter_condition = Filter(
@@ -137,15 +140,19 @@ class EmbeddingService:
                     match=MatchValue(value=video_id)
                 )]
             )
-        
+
+        # Fetch extra results so post-filtering by source type doesn't starve us
+        fetch_limit = limit if source_intent == 'mixed' else limit * 3
+
         results = self.qdrant_client.search(
             collection_name=self.collection_name,
             query_vector=embedding,
             query_filter=filter_condition,
-            limit=limit
+            limit=fetch_limit,
+            score_threshold=score_threshold
         )
-        
-        return [
+
+        hits = [
             {
                 "id": hit.id,
                 "score": hit.score,
@@ -156,3 +163,11 @@ class EmbeddingService:
             }
             for hit in results
         ]
+
+        # Post-filter by source intent
+        if source_intent == 'speech':
+            hits = [h for h in hits if h["caption"].startswith('[transcript]')]
+        elif source_intent == 'visual':
+            hits = [h for h in hits if not h["caption"].startswith('[transcript]')]
+
+        return hits[:limit]

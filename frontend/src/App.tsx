@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import SearchPage from './pages/SearchPage'
 import VideosPage from './pages/VideosPage'
 import VideoDetailPage from './pages/VideoDetailPage'
+import SettingsPage from './pages/SettingsPage'
 import NavBar from './components/NavBar'
 import { api } from './services/api'
 
@@ -27,6 +28,7 @@ function App() {
             <Route path="/" element={<SearchPage />} />
             <Route path="/videos" element={<VideosPage />} />
             <Route path="/videos/:id" element={<VideoDetailPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
       </div>

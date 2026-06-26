@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, SearchResult } from '../services/api'
 
 function fmt(s: number) {
@@ -7,17 +7,31 @@ function fmt(s: number) {
   return `${m}:${String(sec).padStart(2,'0')}`
 }
 
+const SS_QUERY = 'vss_search_query'
+const SS_RESULTS = 'vss_search_results'
+const SS_THRESHOLD = 'vss_search_threshold'
+
 export default function SearchPage() {
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchResult[]>([])
+  const [query, setQuery] = useState(() => sessionStorage.getItem(SS_QUERY) ?? '')
+  const [results, setResults] = useState<SearchResult[]>(() => {
+    try { return JSON.parse(sessionStorage.getItem(SS_RESULTS) ?? '[]') } catch { return [] }
+  })
+  const [threshold, setThreshold] = useState(() => Number(sessionStorage.getItem(SS_THRESHOLD) ?? '0.50'))
   const [loading, setLoading] = useState(false)
-  const [searched, setSearched] = useState(false)
+  const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
+  const navigate = useNavigate()
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!query.trim()) return
     setLoading(true); setSearched(true)
-    try { setResults((await api.search(query)).results) } catch { /* ignore */ }
+    try {
+      const res = (await api.search(query, undefined, threshold)).results
+      setResults(res)
+      sessionStorage.setItem(SS_QUERY, query)
+      sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
+      sessionStorage.setItem(SS_THRESHOLD, String(threshold))
+    } catch { /* ignore */ }
     finally { setLoading(false) }
   }
 
@@ -42,6 +56,19 @@ export default function SearchPage() {
           </button>
         </form>
 
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem', color: 'var(--muted)', fontSize: '0.82rem' }}>
+          <span style={{ flexShrink: 0 }}>Min relevance</span>
+          <input
+            type="range" min={0.1} max={0.9} step={0.05}
+            value={threshold}
+            onChange={e => setThreshold(Number(e.target.value))}
+            style={{ flex: 1, accentColor: 'var(--accent)', cursor: 'pointer' }}
+          />
+          <span style={{ flexShrink: 0, minWidth: 32, textAlign: 'right', color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
+            {Math.round(threshold * 100)}%
+          </span>
+        </div>
+
         {searched && !loading && results.length === 0 && (
           <div className="empty" style={{ paddingTop: '2rem' }}>
             <h3>No results</h3>
@@ -54,14 +81,16 @@ export default function SearchPage() {
             <p style={{ color: 'var(--muted)', fontSize: '0.82rem', marginBottom: '1rem' }}>
               {results.length} video{results.length !== 1 ? 's' : ''} matched
             </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               {results.map(r => (
-                <Link to={`/videos/${r.video_id}?q=${encodeURIComponent(query)}`} key={r.video_id}
-                  style={{ textDecoration: 'none' }}>
-                  <div className="video-card" style={{ flexDirection: 'row', alignItems: 'center', gap: '1rem' }}>
+                <div key={r.video_id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', background: 'var(--surface)' }}>
+                  {/* Video header row */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.9rem 1rem' }}>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>{r.name}</div>
-                      <div className="video-meta">
+                      <Link to={`/videos/${r.video_id}?q=${encodeURIComponent(query)}`} style={{ textDecoration: 'none' }}>
+                        <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: '1rem' }}>{r.name}</div>
+                      </Link>
+                      <div className="video-meta" style={{ marginTop: '0.2rem' }}>
                         <span>{fmt(r.duration)}</span>
                         <span>{r.matching_frames} matching segment{r.matching_frames !== 1 ? 's' : ''}</span>
                       </div>
@@ -73,7 +102,40 @@ export default function SearchPage() {
                       <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>relevance</div>
                     </div>
                   </div>
-                </Link>
+
+                  {/* Matching segments */}
+                  {r.segments && r.segments.length > 0 && (
+                    <div style={{ borderTop: '1px solid var(--border)' }}>
+                      {r.segments.map((seg, i) => (
+                        <div
+                          key={i}
+                          onClick={() => navigate(`/videos/${r.video_id}?t=${Math.floor(seg.start_time)}`)}
+                          style={{
+                            display: 'flex', alignItems: 'flex-start', gap: '0.75rem',
+                            padding: '0.6rem 1rem',
+                            borderBottom: i < r.segments.length - 1 ? '1px solid var(--border)' : 'none',
+                            cursor: 'pointer',
+                            transition: 'background 0.1s',
+                          }}
+                          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover)')}
+                          onMouseLeave={e => (e.currentTarget.style.background = '')}
+                        >
+                          <span style={{
+                            fontFamily: 'monospace', fontSize: '0.78rem',
+                            color: 'var(--accent)', flexShrink: 0,
+                            background: 'rgba(99,102,241,0.12)', borderRadius: 4,
+                            padding: '0.1rem 0.4rem', marginTop: '0.1rem'
+                          }}>
+                            {fmt(seg.start_time)}
+                          </span>
+                          <span style={{ fontSize: '0.82rem', color: 'var(--text)', lineHeight: 1.4 }}>
+                            {seg.caption.replace(/^\[transcript\]\s*/i, '')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           </div>

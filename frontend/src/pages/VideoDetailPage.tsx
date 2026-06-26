@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { api, Video, Segment, VideoFrame } from '../services/api'
 
 function fmt(s: number) {
@@ -9,6 +9,9 @@ function fmt(s: number) {
 
 export default function VideoDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
+  const seekTo = searchParams.get('t') ? Number(searchParams.get('t')) : null
+  const videoRef = useRef<HTMLVideoElement>(null)
   const [video, setVideo] = useState<Video | null>(null)
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
@@ -24,6 +27,14 @@ export default function VideoDetailPage() {
   const [transcript, setTranscript] = useState<Array<{ timestamp: number; text: string }> | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
   const pollRef = useRef<number | null>(null)
+
+  // Seek to timestamp from ?t= param once video metadata is loaded
+  useEffect(() => {
+    if (seekTo === null || !videoRef.current) return
+    const el = videoRef.current
+    const doSeek = () => { el.currentTime = seekTo }
+    if (el.readyState >= 1) { doSeek() } else { el.addEventListener('loadedmetadata', doSeek, { once: true }) }
+  }, [seekTo, video?.id])
 
   const loadVideo = async () => {
     if (!id) return
@@ -170,6 +181,7 @@ export default function VideoDetailPage() {
       {/* Video player */}
       <div style={{ marginBottom: '1.5rem' }}>
         <video
+          ref={videoRef}
           key={video.id}
           src={`/api/videos/${video.id}/stream`}
           controls

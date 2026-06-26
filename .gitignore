@@ -22,6 +22,8 @@ data/*.db
 data/*.db-journal
 data/videos/
 data/frames/
+data/qdrant/
+data/placeholder/
 
 # IDE
 .idea/
