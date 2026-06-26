@@ -315,7 +315,7 @@ export default function VideosPage() {
   const [filterText, setFilterText] = useState(() => localStorage.getItem('vss_filter') ?? '')
   const [sortBy, setSortBy] = useState<'name' | 'duration' | 'status' | 'frames'>(() => (localStorage.getItem('vss_sort_by') as any) || 'name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => (localStorage.getItem('vss_sort_dir') as any) || 'asc')
-  const [showOnlyProcessed, setShowOnlyProcessed] = useState(() => localStorage.getItem('vss_only_processed') === '1')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'analyzed' | 'processing' | 'error'>(() => (localStorage.getItem('vss_status_filter') as any) || 'all')
   const snapshots = useRef<Record<string, ProgressSnapshot>>({})
 
   const loadVideos = useCallback(async () => {
@@ -405,7 +405,7 @@ export default function VideosPage() {
 
   const displayedVideos = [...videos]
     .filter(v => {
-      if (showOnlyProcessed && v.status !== 'analyzed') return false
+      if (statusFilter !== 'all' && v.status !== statusFilter) return false
       if (!filterText.trim()) return true
       const q = filterText.toLowerCase()
       return (v.display_name || v.name).toLowerCase().includes(q) || v.path.toLowerCase().includes(q) || v.tags.some(t => t.toLowerCase().includes(q))
@@ -456,10 +456,16 @@ export default function VideosPage() {
               placeholder="Filter by name, path or tag…"
               style={{ flex: 1, fontSize: '0.85rem', padding: '0.45rem 0.75rem' }}
             />
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: 'var(--muted)', whiteSpace: 'nowrap', cursor: 'pointer', flexShrink: 0 }}>
-              <input type="checkbox" checked={showOnlyProcessed} onChange={e => { setShowOnlyProcessed(e.target.checked); localStorage.setItem('vss_only_processed', e.target.checked ? '1' : '0') }} />
-              Analyzed only
-            </label>
+            <select
+              value={statusFilter}
+              onChange={e => { setStatusFilter(e.target.value as any); localStorage.setItem('vss_status_filter', e.target.value) }}
+              style={{ fontSize: '0.82rem', padding: '0.45rem 0.5rem', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', cursor: 'pointer', flexShrink: 0 }}
+            >
+              <option value="all">All</option>
+              <option value="analyzed">Analyzed</option>
+              <option value="processing">In progress</option>
+              <option value="error">Errored</option>
+            </select>
             <select
               value={sortBy}
               onChange={e => setSort(e.target.value as any, sortDir)}
