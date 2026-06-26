@@ -286,17 +286,17 @@ async def _auto_import():
         if not video_dir.exists():
             continue
         for video_path in find_video_files(str(video_dir)):
-        if await db.get_video_by_path(str(video_path)):
-            continue
-        video_id = str(uuid.uuid4())
-        metadata = get_video_metadata(video_path)
-        await db.create_video({
-            "id": video_id, "name": video_path.stem, "path": str(video_path),
-            "duration": metadata.get("duration", 0), "width": metadata.get("width", 0),
-            "height": metadata.get("height", 0), "size": metadata.get("size", 0),
-            "file_hash": compute_file_hash(video_path),
-        })
-        await db.update_video(video_id, {"status": "ready"})
+            if await db.get_video_by_path(str(video_path)):
+                continue
+            video_id = str(uuid.uuid4())
+            metadata = get_video_metadata(video_path)
+            await db.create_video({
+                "id": video_id, "name": video_path.stem, "path": str(video_path),
+                "duration": metadata.get("duration", 0), "width": metadata.get("width", 0),
+                "height": metadata.get("height", 0), "size": metadata.get("size", 0),
+                "file_hash": compute_file_hash(video_path),
+            })
+            await db.update_video(video_id, {"status": "ready"})
 
 
 @app.get("/health")

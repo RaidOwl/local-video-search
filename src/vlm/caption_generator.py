@@ -59,8 +59,8 @@ class CaptionGenerator:
 class VLMService:
     """Service for managing VLM captioning."""
     
-    def __init__(self, vllm_url: str):
-        self.generator = CaptionGenerator(vllm_url)
+    def __init__(self, vllm_url: str, model: str = "llava-hf/llava-v1.6-vicuna-7b-hf"):
+        self.generator = CaptionGenerator(vllm_url, model=model)
     
     async def caption_frame(self, frame_path: str, context: str = '') -> str:
         """Generate caption for a single frame."""

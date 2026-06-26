@@ -98,8 +98,8 @@ class VideoSummarizer:
 class SummarizationService:
     """Service for managing video summarization."""
     
-    def __init__(self, vllm_url: str):
-        self.summarizer = VideoSummarizer(vllm_url)
+    def __init__(self, vllm_url: str, model: str = "Qwen/Qwen3-8B"):
+        self.summarizer = VideoSummarizer(vllm_url, model=model)
     
     async def summarize_video(
         self,
