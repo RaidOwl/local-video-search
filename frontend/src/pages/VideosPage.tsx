@@ -85,14 +85,15 @@ function ModelStatusBar() {
 interface ProgressSnapshot { frameCount: number; ts: number }
 
 function etaLabel(snap: ProgressSnapshot | undefined, current: number, totalFrames: number): string | null {
-  if (!snap || snap.frameCount === current || current === 0) return null
+  if (!snap || current === 0 || totalFrames <= 0) return null
   const elapsed = (Date.now() - snap.ts) / 1000
   const delta = current - snap.frameCount
-  if (delta <= 0 || elapsed <= 0) return null
-  const rate = delta / elapsed // frames per second
+  if (delta <= 0 || elapsed < 1) return null
+  const rate = delta / elapsed // frames per second (cumulative average)
   const remaining = totalFrames - current
   if (remaining <= 0) return null
   const secs = Math.round(remaining / rate)
+  if (secs < 10) return null // avoid meaningless "~0s" or "~3s"
   if (secs < 60) return `~${secs}s`
   return `~${Math.round(secs / 60)}m`
 }
@@ -329,13 +330,12 @@ export default function VideosPage() {
       if (!data) return
       setVideos(prev => {
         for (const v of prev) {
-          if (v.status === 'processing' && v.frame_count > 0) {
-            const existing = snapshots.current[v.id]
+          if (v.status === 'processing') {
             const next = data.find(d => d.id === v.id)
-            if (next && next.frame_count !== v.frame_count) {
-              snapshots.current[v.id] = { frameCount: v.frame_count, ts: Date.now() }
-            } else if (!existing) {
-              snapshots.current[v.id] = { frameCount: v.frame_count, ts: Date.now() }
+            // Set baseline once on the first observed frame, backdated by one
+            // poll interval so the elapsed time is never 0 on the first render.
+            if (next && next.frame_count > 0 && !snapshots.current[v.id]) {
+              snapshots.current[v.id] = { frameCount: 0, ts: Date.now() - 5000 }
             }
           }
         }
