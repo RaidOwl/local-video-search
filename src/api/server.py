@@ -91,13 +91,14 @@ def _backend_warning(cfg: dict) -> str | None:
     import platform
     backend = cfg.get("ai_backend", "custom")
     arch = platform.machine()
-    if backend == "vllm" and arch in ("arm64", "aarch64"):
+    is_apple_silicon = arch in ("arm64", "aarch64") and platform.system() == "Darwin"
+    if backend == "vllm" and is_apple_silicon:
         return (
             "vLLM requires an NVIDIA GPU and does not support Apple Silicon. "
             "Use AI_BACKEND=ollama-native instead — install Ollama on your Mac "
             "and it will use Metal automatically."
         )
-    if backend == "ollama" and arch in ("arm64", "aarch64"):
+    if backend == "ollama" and is_apple_silicon:
         return (
             "Ollama in Docker loses Metal acceleration on Apple Silicon. "
             "Consider AI_BACKEND=ollama-native for full GPU performance."
