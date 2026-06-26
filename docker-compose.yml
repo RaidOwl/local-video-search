@@ -147,7 +147,7 @@ services:
   # One multimodal model handles both vision captioning and summarization.
 
   vllm-embed:
-    image: vllm/vllm-openai:latest
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: local-vss-vllm-embed
     profiles: [vllm]
     command:
@@ -175,7 +175,7 @@ services:
     restart: unless-stopped
 
   vllm-main:
-    image: vllm/vllm-openai:latest
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: local-vss-vllm-main
     profiles: [vllm]
     command:
@@ -185,6 +185,8 @@ services:
       - "8002"
       - --host
       - "0.0.0.0"
+      - --max-model-len
+      - "${VLLM_MAX_MODEL_LEN:-16384}"
     # No host port binding needed — the API reaches this via Docker's internal
     # network (http://vllm-main:8002). Uncomment to expose for external access:
     # ports:
