@@ -332,10 +332,11 @@ export default function VideosPage() {
         for (const v of prev) {
           if (v.status === 'processing') {
             const next = data.find(d => d.id === v.id)
-            // Set baseline once on the first observed frame, backdated by one
-            // poll interval so the elapsed time is never 0 on the first render.
+            // Set baseline on first observation using the *current* frame count,
+            // not 0. This measures rate going forward, so if the page loads
+            // mid-analysis the already-completed frames don't inflate the rate.
             if (next && next.frame_count > 0 && !snapshots.current[v.id]) {
-              snapshots.current[v.id] = { frameCount: 0, ts: Date.now() - 5000 }
+              snapshots.current[v.id] = { frameCount: next.frame_count, ts: Date.now() }
             }
           }
         }
