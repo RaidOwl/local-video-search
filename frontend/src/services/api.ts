@@ -30,6 +30,7 @@ export interface AppSettings {
   whisper_model: string
   frame_extraction_interval: number
   embed_batch_size: number
+  max_concurrent_jobs: number
 }
 
 export interface Video {

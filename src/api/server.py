@@ -83,6 +83,7 @@ def _effective_cfg() -> dict:
         base["model_family"]     = settings.model_family
 
     base.update(_load_override())
+    base.setdefault("max_concurrent_jobs", 8)
     return base
 
 
@@ -106,6 +107,7 @@ def _backend_warning(cfg: dict) -> str | None:
     return None
 
 _cfg = _effective_cfg()
+_analysis_semaphore = asyncio.Semaphore(int(_cfg.get("max_concurrent_jobs", 8)))
 
 # Services
 embed_service = EmbeddingService(_cfg["vllm_embed_url"], _cfg["qdrant_url"], model=_cfg["vllm_embed_model"])
@@ -119,12 +121,13 @@ segment_retriever = SegmentRetriever()
 frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"])
 
 def _reinit_services(cfg: dict):
-    global embed_service, vlm_service, summarizer_service, frame_extractor, transcription_service
+    global embed_service, vlm_service, summarizer_service, frame_extractor, transcription_service, _analysis_semaphore
     embed_service = EmbeddingService(cfg["vllm_embed_url"], cfg["qdrant_url"], model=cfg["vllm_embed_model"])
     vlm_service = VLMService(cfg["vllm_vlm_url"], model=cfg["vllm_vlm_model"])
     summarizer_service = SummarizationService(cfg["vllm_url"], model=cfg["vllm_model"])
     transcription_service = TranscriptionService(model_size=cfg["whisper_model"])
     frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]))
+    _analysis_semaphore = asyncio.Semaphore(int(cfg.get("max_concurrent_jobs", 8)))
 
 # Persistent frame storage directory
 FRAMES_DIR = Path("/data/frames")
@@ -193,62 +196,63 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
     """Process a video: extract frames, caption, transcribe audio, and index."""
     try:
         await db.update_video(video_id, {'status': 'processing', 'frame_count': 0})
-        # Clear any leftover frame records from a previous (failed/partial) run
-        await db.delete_frames_for_video(video_id)
-        # Use persistent per-video frame directory
-        frame_dir = FRAMES_DIR / video_id
-        frame_dir.mkdir(parents=True, exist_ok=True)
-        loop = asyncio.get_event_loop()
-        frames = await loop.run_in_executor(
-            None, lambda: frame_extractor.extract_frames(
-                video_path, str(frame_dir), prefix=f"frame_{video_id}"
+        async with _analysis_semaphore:
+            # Clear any leftover frame records from a previous (failed/partial) run
+            await db.delete_frames_for_video(video_id)
+            # Use persistent per-video frame directory
+            frame_dir = FRAMES_DIR / video_id
+            frame_dir.mkdir(parents=True, exist_ok=True)
+            loop = asyncio.get_event_loop()
+            frames = await loop.run_in_executor(
+                None, lambda: frame_extractor.extract_frames(
+                    video_path, str(frame_dir), prefix=f"frame_{video_id}"
+                )
             )
-        )
 
-        if not frames:
-            await db.update_video(video_id, {'status': 'error'})
-            return
+            if not frames:
+                await db.update_video(video_id, {'status': 'error'})
+                return
 
-        for i, frame_path in enumerate(frames):
-            timestamp = i * settings.frame_extraction_interval
-            caption = await vlm_service.caption_frame(frame_path, context=context)
-            await embed_service.index_frame(
-                video_id=video_id, frame_path=frame_path,
-                timestamp=timestamp, caption=caption
+            for i, frame_path in enumerate(frames):
+                timestamp = i * settings.frame_extraction_interval
+                caption = await vlm_service.caption_frame(frame_path, context=context)
+                await embed_service.index_frame(
+                    video_id=video_id, frame_path=frame_path,
+                    timestamp=timestamp, caption=caption
+                )
+                frame_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_frame_{i}"))
+                await db.create_frame({
+                    "id": frame_id, "video_id": video_id,
+                    "timestamp": timestamp, "frame_path": frame_path,
+                    "caption": caption, "embedding_id": frame_id
+                })
+                await db.update_video(video_id, {'frame_count': i + 1})
+
+            # Set first frame as default thumbnail if none set
+            video_check = await db.get_video(video_id)
+            if frames and not video_check.thumbnail_path:
+                await db.update_video(video_id, {'thumbnail_path': str(frames[0])})
+
+            print(f"Transcribing audio for {video_id}...")
+            segments = await loop.run_in_executor(
+                None, transcription_service.transcribe_video, video_path
             )
-            frame_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_frame_{i}"))
-            await db.create_frame({
-                "id": frame_id, "video_id": video_id,
-                "timestamp": timestamp, "frame_path": frame_path,
-                "caption": caption, "embedding_id": frame_id
-            })
-            await db.update_video(video_id, {'frame_count': i + 1})
+            print(f"Whisper: {len(segments)} transcript segment(s) for {video_id}")
 
-        # Set first frame as default thumbnail if none set
-        video_check = await db.get_video(video_id)
-        if frames and not video_check.thumbnail_path:
-            await db.update_video(video_id, {'thumbnail_path': str(frames[0])})
+            for seg in segments:
+                text = f"[transcript] {seg.text}"
+                await embed_service.index_frame(
+                    video_id=video_id, frame_path="",
+                    timestamp=seg.start, caption=text
+                )
+                seg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_transcript_{seg.start}"))
+                await db.create_frame({
+                    "id": seg_id, "video_id": video_id,
+                    "timestamp": seg.start, "frame_path": "",
+                    "caption": text, "embedding_id": seg_id
+                })
 
-        print(f"Transcribing audio for {video_id}...")
-        segments = await loop.run_in_executor(
-            None, transcription_service.transcribe_video, video_path
-        )
-        print(f"Whisper: {len(segments)} transcript segment(s) for {video_id}")
-
-        for seg in segments:
-            text = f"[transcript] {seg.text}"
-            await embed_service.index_frame(
-                video_id=video_id, frame_path="",
-                timestamp=seg.start, caption=text
-            )
-            seg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_transcript_{seg.start}"))
-            await db.create_frame({
-                "id": seg_id, "video_id": video_id,
-                "timestamp": seg.start, "frame_path": "",
-                "caption": text, "embedding_id": seg_id
-            })
-
-        await db.update_video(video_id, {'status': 'analyzed'})
+            await db.update_video(video_id, {'status': 'analyzed'})
 
     except asyncio.CancelledError:
         print(f"Analysis cancelled for {video_id}")
@@ -355,6 +359,7 @@ class SettingsUpdateRequest(BaseModel):
     whisper_model: Optional[str] = None
     frame_extraction_interval: Optional[int] = None
     embed_batch_size: Optional[int] = None
+    max_concurrent_jobs: Optional[int] = None
     # Note: ai_backend, vram_tier, model_family are .env-only — not overridable via UI
 
 
