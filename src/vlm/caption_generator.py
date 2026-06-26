@@ -64,9 +64,17 @@ class VLMService:
     
     async def caption_frame(self, frame_path: str, context: str = '') -> str:
         """Generate caption for a single frame."""
-        prompt = 'Describe this frame from a video in detail.'
         if context:
-            prompt = f'Context about this video: {context}\n\nDescribe this frame from the video in detail, keeping the context in mind.'
+            prompt = (
+                f'This video is about: {context}\n\n'
+                'Describe what is happening in this video frame in 1-2 plain sentences. '
+                'Include the main subject, action, and setting. No lists, no headers, no markdown.'
+            )
+        else:
+            prompt = (
+                'Describe what is happening in this video frame in 1-2 plain sentences. '
+                'Include the main subject, action, and setting. No lists, no headers, no markdown.'
+            )
         return await self.generator.caption_image(frame_path, prompt=prompt)
     
     async def caption_frames(self, frame_paths: list[str]) -> list[str]:

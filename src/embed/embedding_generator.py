@@ -3,6 +3,20 @@ from typing import List, Optional
 from pathlib import Path
 import asyncio
 import uuid
+import re
+
+
+def _clean_for_embed(text: str) -> str:
+    """Strip markdown formatting so verbose captions embed cleanly against short queries."""
+    # Remove headers (### Heading)
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    # Remove bold/italic (**text**, *text*, __text__)
+    text = re.sub(r'[*_]{1,3}([^*_\n]+)[*_]{1,3}', r'\1', text)
+    # Remove bullet points
+    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
+    # Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
 class EmbeddingGenerator:
@@ -89,7 +103,7 @@ class EmbeddingService:
         """Index a single frame with its embedding."""
         # Embed the caption text; fall back to frame path if no caption
         text_to_embed = caption if caption else frame_path
-        embedding = await self.generator.embed_text(text_to_embed)
+        embedding = await self.generator.embed_text(_clean_for_embed(text_to_embed))
         
         if not embedding:
             return None
@@ -125,7 +139,7 @@ class EmbeddingService:
         source_intent: str = 'mixed'
     ) -> List[dict]:
         """Search for similar frames, optionally filtered by source type."""
-        embedding = await self.generator.embed_text(query)
+        embedding = await self.generator.embed_text(_clean_for_embed(query))
 
         if not embedding:
             return []
