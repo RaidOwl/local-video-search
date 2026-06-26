@@ -211,11 +211,6 @@ export const api = {
     return res.data
   },
 
-  applyBlacklist: async (): Promise<{ hidden: number; matched: string[] }> => {
-    const res = await client.post('/settings/blacklist/apply')
-    return res.data
-  },
-
   getSettings: async (): Promise<AppSettings> => {
     const res = await client.get('/settings')
     return res.data

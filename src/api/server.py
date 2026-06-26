@@ -508,6 +508,22 @@ class SettingsUpdateRequest(BaseModel):
     # Note: ai_backend, vram_tier, model_family are .env-only — not overridable via UI
 
 
+async def _sync_blacklist():
+    """Auto-hide videos matching blacklist patterns; restore those no longer matching."""
+    import fnmatch as _fnmatch
+    blacklist: list = _effective_cfg().get("import_blacklist", [])
+    # Need all videos regardless of hidden state to sync correctly
+    all_videos = await db.get_all_videos(include_all=True)
+    for video in all_videos:
+        matches = bool(blacklist) and any(_fnmatch.fnmatch(video.path, pat) for pat in blacklist)
+        currently_blacklisted = video.hidden == 'blacklist'
+        manually_hidden = video.hidden == '1'
+        if matches and not manually_hidden and not currently_blacklisted:
+            await db.update_video(video.id, {'hidden': 'blacklist'})
+        elif not matches and currently_blacklisted:
+            await db.update_video(video.id, {'hidden': '0'})
+
+
 @app.put("/settings")
 async def update_settings_endpoint(req: SettingsUpdateRequest):
     """Persist settings overrides and reinitialize services."""
@@ -517,23 +533,9 @@ async def update_settings_endpoint(req: SettingsUpdateRequest):
     SETTINGS_OVERRIDE_PATH.write_text(json.dumps(override, indent=2))
     cfg = _effective_cfg()
     _reinit_services(cfg)
+    asyncio.create_task(_sync_blacklist())
     return cfg
 
-
-@app.post("/settings/blacklist/apply")
-async def apply_blacklist():
-    """Hide all existing library videos whose paths match the current import blacklist."""
-    import fnmatch as _fnmatch
-    blacklist: list = _effective_cfg().get("import_blacklist", [])
-    if not blacklist:
-        return {"hidden": 0, "matched": []}
-    videos = await db.get_all_videos()
-    matched = []
-    for video in videos:
-        if any(_fnmatch.fnmatch(video.path, pat) for pat in blacklist):
-            await db.update_video(video.id, {'hidden': '1'})
-            matched.append(video.path)
-    return {"hidden": len(matched), "matched": matched}
 
 
 @app.get("/browse")

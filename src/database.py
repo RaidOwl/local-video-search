@@ -95,15 +95,21 @@ class Database:
             result = await session.execute(select(Video).where(Video.path == path))
             return result.scalars().first()
 
-    async def get_all_videos(self, hidden: bool = False) -> list[Video]:
-        """Get all videos. By default excludes hidden videos."""
+    async def get_all_videos(self, hidden: bool = False, include_all: bool = False) -> list[Video]:
+        """Get all videos. By default excludes hidden videos.
+        hidden=True  → only manually-hidden ('1')
+        include_all  → every row regardless of hidden state
+        """
         async with self.session_maker() as session:
             from sqlalchemy import select
             q = select(Video).order_by(Video.created_at.desc())
-            if hidden:
+            if include_all:
+                pass
+            elif hidden:
                 q = q.where(Video.hidden == '1')
             else:
-                q = q.where((Video.hidden == None) | (Video.hidden != '1'))
+                # Exclude both manually hidden ('1') and blacklist-hidden ('blacklist')
+                q = q.where((Video.hidden == None) | (Video.hidden.notin_(['1', 'blacklist'])))
             result = await session.execute(q)
             return list(result.scalars().all())
     
