@@ -50,11 +50,13 @@ services:
       DATABASE_URL: sqlite+aiosqlite:////data/metadata.db
       FRAME_EXTRACTION_INTERVAL: ${FRAME_EXTRACTION_INTERVAL:-5}
       EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-16}
-      # Cache HuggingFace models (cross-encoder etc.) on the persistent data volume
-      HF_HOME: /data/hf_cache
+      # Cache HuggingFace models (reranker, etc.) under the shared models volume
+      HF_HOME: /models/huggingface
     volumes:
       # Source code mount — allows scp + restart to deploy Python changes without rebuild
       - ./src:/app/src
+      # Model weights — relocate to a larger drive by setting MODELS_DIR in .env
+      - ${MODELS_DIR:-./data/models}:/models
       # Up to 5 video library directories — set VIDEO_DIR_1..5 in .env
       # Unused slots default to ./data/placeholder (empty dir, auto-created by Docker)
       - ${VIDEO_DIR_1:-./data/videos}:/data/videos/lib1:ro
@@ -99,7 +101,7 @@ services:
     ports:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
-      - ollama_data:/root/.ollama
+      - ${MODELS_DIR:-./data/models}/ollama:/root/.ollama
     # GPU support — remove the deploy block if running CPU-only
     deploy:
       resources:
@@ -173,7 +175,7 @@ services:
     # ports:
     #   - "${VLLM_EMBED_PORT:-8001}:8001"
     volumes:
-      - vllm_cache:/root/.cache/huggingface
+      - ${MODELS_DIR:-./data/models}/huggingface:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -206,7 +208,7 @@ services:
     # ports:
     #   - "${VLLM_MAIN_PORT:-8002}:8002"
     volumes:
-      - vllm_cache:/root/.cache/huggingface
+      - ${MODELS_DIR:-./data/models}/huggingface:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -229,20 +231,19 @@ services:
     container_name: local-vss-cache-list
     profiles: [prune]
     volumes:
-      - vllm_cache:/vllm
-      - ollama_data:/ollama
+      - ${MODELS_DIR:-./data/models}:/models
     command:
       - sh
       - -c
       - |
-        echo "=== vLLM models ==="
-        du -sh /vllm/hub/models--* 2>/dev/null \
+        echo "=== HuggingFace models (reranker / vLLM / embed) ==="
+        du -sh /models/huggingface/hub/models--* 2>/dev/null \
           | sort -h \
           | sed 's|.*/models--||; s|--|/|' \
           || echo "  (none)"
         echo ""
         echo "=== Ollama models ==="
-        du -sh /ollama/models/manifests/registry.ollama.ai/*/* 2>/dev/null \
+        du -sh /models/ollama/models/manifests/registry.ollama.ai/*/* 2>/dev/null \
           | sort -h \
           | sed 's|.*/||' \
           || echo "  (none)"
@@ -253,19 +254,14 @@ services:
     container_name: local-vss-cache-purge
     profiles: [prune]
     volumes:
-      - vllm_cache:/vllm
-      - ollama_data:/ollama
+      - ${MODELS_DIR:-./data/models}:/models
     command:
       - sh
       - -c
       - |
-        echo "Clearing vLLM cache..."
-        rm -rf /vllm/hub && echo "  done"
+        echo "Clearing HuggingFace cache..."
+        rm -rf /models/huggingface/hub && echo "  done"
         echo "Clearing Ollama cache..."
-        rm -rf /ollama/models && echo "  done"
+        rm -rf /models/ollama/models && echo "  done"
         echo "All model weights removed. They will re-download on next startup."
     restart: "no"
-
-volumes:
-  ollama_data:
-  vllm_cache:
