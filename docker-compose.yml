@@ -189,20 +189,46 @@ services:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: local-vss-vllm-main
     profiles: [vllm]
-    command:
-      - --model
-      - ${VLLM_MAIN_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
-      - --port
-      - "8002"
-      - --host
-      - "0.0.0.0"
-      - --max-model-len
-      - "${VLLM_MAX_MODEL_LEN:-16384}"
-      - --quantization
-      - "${VLLM_QUANTIZATION:-fp8}"
-      - --gpu-memory-utilization
-      - "${VLLM_GPU_MEMORY_UTIL:-0.75}"
-      - --enforce-eager
+    # The VLM model is auto-selected from MODEL_FAMILY + VRAM_TIER, matching the
+    # API's tier registry (src/local_models.py) so the container and the API
+    # always agree on which model is loaded. Change the model by setting
+    # VRAM_TIER (low | mid | high | ultra) in .env — no separate model var.
+    environment:
+      MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
+      VRAM_TIER: ${VRAM_TIER:-mid}
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-16384}
+      VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-fp8}
+      VLLM_GPU_MEMORY_UTIL: ${VLLM_GPU_MEMORY_UTIL:-0.75}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # Resolve the VLM model (HF repo IDs) from MODEL_FAMILY + VRAM_TIER.
+        # Keep these mappings in sync with TIER_MODELS in src/local_models.py.
+        if [ "$$MODEL_FAMILY" = "gemma" ]; then
+          case "$$VRAM_TIER" in
+            low)   MAIN_MODEL="google/gemma-3-4b-it"  ;;
+            high)  MAIN_MODEL="google/gemma-3-12b-it" ;;
+            ultra) MAIN_MODEL="google/gemma-3-27b-it" ;;
+            *)     MAIN_MODEL="google/gemma-3-12b-it" ;;
+          esac
+        else
+          case "$$VRAM_TIER" in
+            low)   MAIN_MODEL="Qwen/Qwen2.5-VL-3B-Instruct"  ;;
+            high)  MAIN_MODEL="Qwen/Qwen2.5-VL-32B-Instruct" ;;
+            ultra) MAIN_MODEL="Qwen/Qwen2.5-VL-72B-Instruct" ;;
+            *)     MAIN_MODEL="Qwen/Qwen2.5-VL-7B-Instruct"  ;;
+          esac
+        fi
+        echo "==> Starting vLLM (family=$$MODEL_FAMILY tier=$$VRAM_TIER) model=$$MAIN_MODEL"
+        exec python3 -m vllm.entrypoints.openai.api_server \
+          --model "$$MAIN_MODEL" \
+          --port 8002 \
+          --host 0.0.0.0 \
+          --max-model-len "$$VLLM_MAX_MODEL_LEN" \
+          --quantization "$$VLLM_QUANTIZATION" \
+          --gpu-memory-utilization "$$VLLM_GPU_MEMORY_UTIL" \
+          --enforce-eager
     # No host port binding needed — the API reaches this via Docker's internal
     # network (http://vllm-main:8002). Uncomment to expose for external access:
     # ports:
