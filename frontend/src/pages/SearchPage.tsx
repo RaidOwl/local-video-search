@@ -38,12 +38,29 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="page">
-      <div style={{ maxWidth: 680, margin: '0 auto', paddingTop: '3rem' }}>
-        <h1 style={{ textAlign: 'center', marginBottom: '0.5rem' }}>Search Your Videos</h1>
-        <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '0.9rem', marginBottom: '2rem' }}>
-          Ask anything — searches both visual content and spoken words
-        </p>
+    <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div style={{
+        maxWidth: 680, margin: '0 auto', width: '100%',
+        ...(searched
+          ? { paddingTop: '2rem' }
+          : { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', paddingBottom: '10rem' }
+        )
+      }}>
+        {!searched && (
+          <>
+            <h1 style={{
+              textAlign: 'center', marginBottom: '0.5rem',
+              background: 'linear-gradient(135deg, var(--text) 20%, var(--accent-hover) 100%)',
+              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+              fontSize: '2.4rem', letterSpacing: '-0.03em', lineHeight: 1.2
+            }}>
+              Local Video Search
+            </h1>
+            <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '0.95rem', marginBottom: '2.5rem' }}>
+              Ask anything — searches both visual content and spoken words
+            </p>
+          </>
+        )}
 
         <form onSubmit={handleSearch} className="search-bar">
           <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
@@ -61,7 +78,7 @@ export default function SearchPage() {
                 setSearched(false)
                 sessionStorage.removeItem(SS_QUERY)
                 sessionStorage.removeItem(SS_RESULTS)
-              }} style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '1.1rem', padding: '0.2rem 0.3rem', lineHeight: 1, opacity: 0.6 }}
+              }} style={{ position: 'absolute', right: '0.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '1.1rem', padding: '0.2rem 0.3rem', lineHeight: 1, opacity: 0.6, boxShadow: 'none' }}
                 title="Clear search">×</button>
             )}
           </div>
@@ -106,7 +123,7 @@ export default function SearchPage() {
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               {results.map(r => (
-                <div key={r.video_id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', background: 'var(--surface)' }}>
+                <div key={r.video_id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', background: 'var(--surface)', boxShadow: '0 1px 3px rgba(0,0,0,0.3), 0 2px 8px rgba(0,0,0,0.15)' }}>
                   {/* Video header row */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.9rem 1rem' }}>
                     <div style={{ flex: 1 }}>
@@ -134,20 +151,27 @@ export default function SearchPage() {
                           key={i}
                           onClick={() => navigate(`/videos/${r.video_id}?t=${Math.floor(seg.start_time)}`)}
                           style={{
-                            display: 'flex', alignItems: 'flex-start', gap: '0.75rem',
+                            display: 'flex', alignItems: 'center', gap: '0.75rem',
                             padding: '0.6rem 1rem',
                             borderBottom: i < r.segments.length - 1 ? '1px solid var(--border)' : 'none',
                             cursor: 'pointer',
                             transition: 'background 0.1s',
                           }}
-                          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hover)')}
+                          onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface2)')}
                           onMouseLeave={e => (e.currentTarget.style.background = '')}
                         >
+                          {seg.frame_path && (
+                            <img
+                              src={`/api/frames/${r.video_id}/${encodeURIComponent(seg.frame_path.split('/').pop()!)}`}
+                              alt="" loading="lazy"
+                              style={{ width: 80, height: 52, objectFit: 'cover', borderRadius: 5, flexShrink: 0, background: 'var(--surface2)' }}
+                            />
+                          )}
                           <span style={{
                             fontFamily: 'monospace', fontSize: '0.78rem',
                             color: 'var(--accent)', flexShrink: 0,
                             background: 'rgba(99,102,241,0.12)', borderRadius: 4,
-                            padding: '0.1rem 0.4rem', marginTop: '0.1rem'
+                            padding: '0.1rem 0.4rem', alignSelf: 'flex-start', marginTop: '0.1rem'
                           }}>
                             {fmt(seg.start_time)}
                           </span>
