@@ -177,7 +177,7 @@ transcription_service = TranscriptionService(model_size=_cfg["whisper_model"])
 query_processor = QueryProcessor()
 segment_retriever = SegmentRetriever()
 
-# Cross-encoder re-ranker — lazy-loaded on first enhanced search
+# Cross-encoder re-ranker — warmed at startup, always applied for ranking precision
 _reranker = None
 
 # Frame extractor

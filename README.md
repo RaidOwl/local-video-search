@@ -1,4 +1,4 @@
-d# Local Video Search & Summarization
+# Local Video Search & Summarization
 
 A self-hosted video search and summarization system powered by local AI models. Index your video library, search in natural language, get AI-generated summaries, and browse every moment with a visual segments timeline.
 
@@ -6,6 +6,7 @@ A self-hosted video search and summarization system powered by local AI models. 
 
 - **Natural Language Search** — Ask questions like "Find the moment where the car crashes" or "Show me cooking scenes"
 - **Segment-Level Results** — Results point to the exact timestamp within a video, not just which file
+- **Precision Reranking** — A local cross-encoder reranks every search so results respect fine details (e.g. "blonde woman" vs "blonde man"), with a relevance slider to tune strictness
 - **Visual Frame Analysis** — Vision-language model (VLM) captions every frame during analysis
 - **Speech Transcription** — Whisper transcribes spoken audio; transcript segments are fully searchable
 - **AI Summarization** — On-demand video summaries powered by a local LLM
@@ -191,7 +192,9 @@ car driving through a tunnel at night
 person writing on a whiteboard
 ```
 
-Results link directly to the timestamp in the video.
+Results link directly to the timestamp in the video. Use the **Min relevance** slider to control how strict matches must be — higher values return only near-exact matches, lower values cast a wider net. Every search is reranked by a local cross-encoder for precision, so results respect fine details rather than just keyword overlap.
+
+> On first launch the reranker model (`BAAI/bge-reranker-base`, ~1.1 GB) downloads automatically and is cached under `./data` so it persists across restarts. It runs on CPU inside the API container — no extra GPU required.
 
 ## AI Backends
 
@@ -257,8 +260,8 @@ Browser (port 3000)
                  SQLite        Qdrant        AI Models
               (metadata)     (vectors)   (VLM / Embed / LLM)
                                               │
-                                        faster-whisper
-                                        (transcription, CPU)
+                                        faster-whisper (transcription, CPU)
+                                        bge-reranker   (search reranking, CPU)
 ```
 
 ## Project Structure
@@ -271,7 +274,7 @@ local-video-search/
 │   ├── ingest/        # Video scanning and frame extraction (ffmpeg)
 │   ├── search/        # Query processing and segment retrieval
 │   ├── summarize/     # LLM summarization
-│   ├── transcription/ # faster-whisper speech-to-text
+│   ├── transcribe/    # faster-whisper speech-to-text
 │   ├── config.py      # Environment + settings management
 │   └── database.py    # SQLAlchemy models (Video, Frame)
 ├── frontend/

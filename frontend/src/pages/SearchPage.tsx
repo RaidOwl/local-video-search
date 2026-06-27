@@ -207,6 +207,15 @@ export default function SearchPage() {
             </div>
           </div>
         )}
+
+        {searched && !loading && results.length === 0 && (
+          <div style={{ marginTop: '2.5rem', textAlign: 'center', color: 'var(--muted)' }}>
+            <p style={{ fontSize: '1rem', color: 'var(--text)', marginBottom: '0.4rem' }}>No matches found</p>
+            <p style={{ fontSize: '0.85rem' }}>
+              Try lowering the minimum relevance, rephrasing your search, or checking that the videos have been analyzed.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )
