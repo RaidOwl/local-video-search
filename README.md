@@ -32,7 +32,114 @@ Transcription (Whisper) runs on CPU inside the API container — no extra GPU ne
 
 ## Quick Start
 
-### 1. Clone & configure
+### Step 1 — Pick your AI backend
+
+The system needs three AI models: an **embedding model** (converts text/frames to vectors for search), a **vision model** (captions video frames), and a **text LLM** (generates summaries). How you run them determines which backend to use.
+
+---
+
+#### Ollama (recommended for most users)
+
+Ollama is the easiest way to get started. It downloads and runs quantized models automatically.
+
+**Apple Silicon Mac (M1/M2/M3/M4)**
+
+Docker on Mac runs inside a Linux VM which cuts off GPU access. Ollama must run on the host to use Metal acceleration:
+
+```bash
+brew install ollama
+ollama serve          # keep this running in the background
+```
+
+Then set in `.env`:
+```env
+AI_BACKEND=ollama-native
+VRAM_TIER=mid         # or low / high depending on your unified memory
+```
+
+Start the stack normally — no extra profile needed:
+```bash
+docker compose up -d
+```
+
+**Linux with NVIDIA GPU**
+
+Ollama can run inside Docker with full GPU passthrough:
+
+```env
+AI_BACKEND=ollama
+VRAM_TIER=mid
+```
+
+```bash
+docker compose --profile ollama up -d
+```
+
+**CPU-only / no GPU**
+
+Set `VRAM_TIER=low` and `AI_BACKEND=ollama`. The 3B model will run on CPU — slow but functional.
+
+---
+
+#### vLLM (NVIDIA only, higher quality)
+
+vLLM runs models in FP8 rather than Ollama's Q4 quantization, giving better output quality at the cost of needing more VRAM and a modern NVIDIA GPU (Hopper H100, Ada RTX 40xx, or Blackwell GB10/B200).
+
+```env
+AI_BACKEND=vllm
+VRAM_TIER=mid         # 7B FP8 needs ~16 GB VRAM
+```
+
+```bash
+docker compose --profile vllm up -d
+```
+
+> **Note:** vLLM does not support Apple Silicon or AMD GPUs.
+
+---
+
+#### Custom (bring your own servers)
+
+Use this if you already have Ollama, vLLM, LiteLLM, or any OpenAI-compatible server running. Point each URL at your existing endpoints:
+
+```env
+AI_BACKEND=custom
+
+# Embedding model (OpenAI /v1/embeddings compatible)
+VLLM_EMBED_URL=http://10.0.0.30:8001
+VLLM_EMBED_MODEL=BAAI/bge-m3
+
+# Vision / captioning model (supports image_url in messages)
+VLLM_VLM_URL=http://10.0.0.19:8000
+VLLM_VLM_MODEL=llava-hf/llava-v1.6-vicuna-7b-hf
+
+# Text LLM for summaries
+VLLM_URL=http://10.0.0.30:8000
+VLLM_MODEL=Qwen/Qwen3-8B
+```
+
+```bash
+docker compose up -d   # no profile needed
+```
+
+---
+
+#### Model size tiers
+
+`VRAM_TIER` controls which model size is selected for local backends (`ollama`, `ollama-native`, `vllm`). `MODEL_FAMILY` selects the model family (`qwen` = Qwen2.5-VL, `gemma` = Gemma 3).
+
+| Tier | Ollama (Q4) | vLLM (FP8) | Approx. VRAM |
+|------|-------------|------------|--------------|
+| `low` | 3B | 3B | ≥ 8 GB |
+| `mid` | 7B | 7B | ≥ 10–16 GB |
+| `high` | 32B | 7B | ≥ 20 GB |
+| `ultra` | 32B | 32B | ≥ 80 GB |
+
+> vLLM FP8 quantizes only the LLM decoder; the vision encoder stays BF16 (~8 GB extra). On Apple Silicon, VRAM is unified memory shared with the system — leave headroom.
+
+---
+
+### Step 2 — Clone & configure
 
 ```bash
 git clone https://github.com/RaidOwl/local-video-search.git
@@ -40,47 +147,41 @@ cd local-video-search
 cp .env.example .env
 ```
 
-Edit `.env` — the key settings:
+Edit `.env` based on your chosen backend (see above), then set your video directory:
 
 ```env
-# Choose your AI backend: custom | ollama | ollama-native | vllm
-AI_BACKEND=ollama
-
-# Model size for local backends (low / mid / high / ultra)
-VRAM_TIER=mid
-
-# One or more video library directories (read-only mounts)
 VIDEO_DIR_1=/path/to/your/videos
+# VIDEO_DIR_2=/another/path   # up to 5 directories supported
 ```
 
-See `.env.example` for all options including custom model endpoints and port overrides.
+See `.env.example` for all options including port overrides and frame extraction settings.
 
-### 2. Start services
+### Step 3 — Start services
 
 ```bash
-# Default (custom backend or ollama-native)
+# ollama-native or custom
 docker compose up -d
 
-# Ollama in Docker (CPU or NVIDIA Linux)
+# ollama in Docker
 docker compose --profile ollama up -d
 
-# vLLM in Docker (NVIDIA GPU required)
+# vllm in Docker
 docker compose --profile vllm up -d
 ```
 
-### 3. Open the UI
+### Step 4 — Open the UI
 
 Navigate to **http://localhost:3000**
 
-On first launch, go to **Settings** to verify your AI backend, configure Whisper quality (Low / Medium / High), set the frame extraction interval, and toggle auto-analyze.
+Go to **Settings** to verify your AI backend, configure Whisper transcription quality (Low / Medium / High), set the frame extraction interval, and toggle auto-analyze on import.
 
-### 4. Add & analyze videos
+### Step 5 — Add & analyze videos
 
-1. Go to **Videos** → click **Import** to scan your configured video directories
-2. Select videos and click **Analyze** — the system extracts frames, captions them via VLM, and transcribes audio via Whisper
+1. **Videos** → **Import** — scans your configured directories and adds any new files
+2. Select videos → **Analyze** — extracts frames, captions them via VLM, transcribes audio via Whisper
 3. Once status shows **Analyzed**, search or browse segments immediately
 
-### 5. Search
+### Step 6 — Search
 
 ```
 cooking scenes with garlic
@@ -97,8 +198,8 @@ Results link directly to the timestamp in the video.
 |-------|-------------|
 | `custom` | Bring your own servers. Set `VLLM_EMBED_URL`, `VLLM_VLM_URL`, `VLLM_URL` in `.env` |
 | `ollama` | Ollama runs in Docker. Good for NVIDIA Linux or CPU. |
-| `ollama-native` | Ollama runs on your host machine. **Best for Apple Silicon** — full Metal acceleration. Run `ollama serve` first. |
-| `vllm` | vLLM runs in Docker. Requires NVIDIA GPU + nvidia-container-toolkit. |
+| `ollama-native` | Ollama runs on your host machine. **Required for Apple Silicon** — Docker VMs can't access Metal. Run `ollama serve` first. |
+| `vllm` | vLLM runs in Docker. Requires NVIDIA GPU (Hopper/Ada/Blackwell) + nvidia-container-toolkit. |
 
 ## API
 
