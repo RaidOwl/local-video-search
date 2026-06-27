@@ -328,7 +328,7 @@ export default function VideosPage() {
   const [filterText, setFilterText] = useState(() => localStorage.getItem('vss_filter') ?? '')
   const [sortBy, setSortBy] = useState<'name' | 'duration' | 'status' | 'frames'>(() => (localStorage.getItem('vss_sort_by') as any) || 'name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => (localStorage.getItem('vss_sort_dir') as any) || 'asc')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'analyzed' | 'processing' | 'error'>(() => (localStorage.getItem('vss_status_filter') as any) || 'all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'analyzed' | 'processing' | 'error' | 'ready'>(() => (localStorage.getItem('vss_status_filter') as any) || 'all')
   const [treeToggle, setTreeToggle] = useState<{ open: boolean; seq: number } | null>(null)
   const snapshots = useRef<Record<string, ProgressSnapshot>>({})
   const [frameInterval, setFrameInterval] = useState(5)
@@ -345,7 +345,7 @@ export default function VideosPage() {
       if (!data) return
       setVideos(prev => {
         for (const v of prev) {
-          if (v.status === 'processing') {
+          if (v.status === 'processing' || v.status === 'retranscribing') {
             const next = data.find(d => d.id === v.id)
             // Set baseline on first observation using the *current* frame count,
             // not 0. This measures rate going forward, so if the page loads
@@ -357,7 +357,6 @@ export default function VideosPage() {
         }
         return data
       })
-      if (data.every(v => v.status !== 'processing')) clearInterval(id)
     }, 5000)
     return () => clearInterval(id)
   }, [loadVideos])
@@ -483,6 +482,7 @@ export default function VideosPage() {
               style={{ fontSize: '0.82rem', padding: '0.45rem 0.5rem', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', cursor: 'pointer', flexShrink: 0 }}
             >
               <option value="all">All</option>
+              <option value="ready">Ready</option>
               <option value="analyzed">Analyzed</option>
               <option value="processing">In progress</option>
               <option value="error">Errored</option>
