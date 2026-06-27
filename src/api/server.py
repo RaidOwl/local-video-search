@@ -283,13 +283,22 @@ async def _expand_query(q: str) -> list[str]:
 
 
 async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
-    """Re-rank candidate segments using a local cross-encoder model.
+    """Re-rank candidate segments with a local cross-encoder and assign each an
+    absolute relevance score.
 
-    Uses cross-encoder/ms-marco-MiniLM-L-6-v2 (~23 MB, runs on CPU).
-    Lazy-loaded on first call; weights cached in /data/hf_cache so they
-    survive container rebuilds.  Final score blends Qdrant + cross-encoder:
-        0.4 * qdrant_score + 0.6 * sigmoid(cross_encoder_raw)
-    Falls back to original scores on any failure.
+    Architecture: bi-encoder (BGE-M3 / Qdrant) retrieves candidates for recall;
+    this cross-encoder (ms-marco-MiniLM-L-6-v2, ~23 MB, CPU) judges true
+    query↔caption relevance for precision.  The cross-encoder is the *sole*
+    authority on the final score — we deliberately do NOT blend in the Qdrant
+    cosine, because blending re-injects the bi-encoder's mistakes.
+
+    The model's raw logit is calibrated: positive ⇒ relevant, negative ⇒ not.
+    A plain sigmoid maps it to a stable 0–1 relevance probability that is
+    consistent across queries (the same clip scores ~the same every search) and
+    is NOT renormalized so the top hit is never artificially forced to 100%.
+
+    Lazy-loaded on first call; weights cached in /data/hf_cache so they survive
+    container rebuilds.  Falls back to original Qdrant scores on any failure.
     """
     if not segments:
         return segments
@@ -316,14 +325,16 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
         raw_scores = await loop.run_in_executor(None, _reranker.predict, pairs)
 
         def _sigmoid(x: float) -> float:
-            return 1.0 / (1.0 + _math.exp(-x / 3.0))  # /3 softens the curve
+            # Standard sigmoid of the raw logit — gives an absolute, calibrated
+            # relevance probability that stays comparable across queries.
+            x = max(-30.0, min(30.0, x))
+            return 1.0 / (1.0 + _math.exp(-x))
 
-        norm = [_sigmoid(float(s)) for s in raw_scores]
-        print(f"Re-rank '{query}': top={sorted(norm, reverse=True)[:8]}")
+        for seg, raw in zip(segments, raw_scores):
+            seg["score"] = _sigmoid(float(raw))
 
-        for seg, ns in zip(segments, norm):
-            seg["score"] = 0.4 * seg["score"] + 0.6 * ns
-
+        segments.sort(key=lambda s: s["score"], reverse=True)
+        print(f"Re-rank '{query}': top={[round(s['score'], 3) for s in segments[:8]]}")
         return segments
 
     except Exception as e:
@@ -962,22 +973,12 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
                 "frame_path": s.frame_path,
             })
 
-    # Cross-encoder re-ranking when enhanced mode is on
+    # Cross-encoder re-ranking when enhanced mode is on.
+    # Qdrant + keyword boost above served only to pick candidates (recall);
+    # the cross-encoder now assigns the final absolute relevance score (precision).
     if expand:
         all_segments.sort(key=lambda s: s["score"], reverse=True)
         all_segments = await _rerank_segments(q, all_segments)
-        # Normalize blended scores so the top result = 1.0, making the user's
-        # threshold slider meaningful.  Require a minimum absolute score (0.25)
-        # so a search with no good matches returns nothing rather than the
-        # "least bad" results.
-        if all_segments:
-            max_s = max(s["score"] for s in all_segments)
-            if max_s >= 0.25:
-                for s in all_segments:
-                    s["score"] = s["score"] / max_s
-            else:
-                for s in all_segments:
-                    s["score"] = 0.0
 
     # Re-group by video for the response
     video_segs: dict = {}
