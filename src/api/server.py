@@ -502,8 +502,8 @@ async def model_status():
 
     results = await asyncio.gather(
         probe(cfg["vllm_embed_url"], "Embeddings"),
-        probe(cfg["vllm_vlm_url"], "Vision (VLM)"),
-        probe(cfg["vllm_url"], "Summarizer"),
+        probe(cfg["vllm_vlm_url"], "Vision AI"),
+        probe(cfg["vllm_url"], "Summarization"),
     )
     return {"services": list(results)}
 
@@ -1230,7 +1230,12 @@ async def download_clip(video_id: str, start: float, end: float, background_task
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
-    await proc.wait()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=120)
+    except asyncio.TimeoutError:
+        proc.kill()
+        background_tasks.add_task(os.unlink, clip_path)
+        raise HTTPException(status_code=500, detail="Clip extraction timed out")
     if proc.returncode != 0:
         background_tasks.add_task(os.unlink, clip_path)
         raise HTTPException(status_code=500, detail="Clip extraction failed")
@@ -1340,7 +1345,7 @@ async def _retranscribe_audio(video_id: str, video_path: str):
         raise
     except Exception as e:
         print(f"Retranscription error for {video_id}: {e}")
-        await db.update_video(video_id, {'status': 'analyzed'})
+        await db.update_video(video_id, {'status': 'error'})
     finally:
         _active_tasks.pop(video_id, None)
 
@@ -1387,9 +1392,12 @@ async def summarize_video(video_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="Video not found")
     
     async def generate_summary():
-        captions = await db.get_captions_for_video(video_id)
-        summary = await summarizer_service.summarize_video(captions, video.name)
-        await db.update_video_summary(video_id, summary)
+        try:
+            captions = await db.get_captions_for_video(video_id)
+            summary = await summarizer_service.summarize_video(captions, video.name)
+            await db.update_video_summary(video_id, summary)
+        except Exception as e:
+            print(f"Summary generation failed for {video_id}: {e}")
     
     background_tasks.add_task(generate_summary)
     

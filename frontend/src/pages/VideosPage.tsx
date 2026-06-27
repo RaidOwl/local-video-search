@@ -466,7 +466,7 @@ export default function VideosPage() {
           <span className="spinner" /> Loading…
         </div>
       ) : videos.length === 0 ? (
-        <div className="empty"><h3>No videos yet</h3><p>Videos in <code>/data/videos</code> will appear here automatically on startup.</p></div>
+        <div className="empty"><h3>No videos yet</h3><p>Add video files to your configured library folders and they'll appear here automatically.</p></div>
       ) : (
         <>
             {/* Filter + sort bar */}
@@ -669,7 +669,7 @@ function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
 
         <div>
           <label style={{ fontSize: '0.82rem', color: 'var(--muted)', display: 'block', marginBottom: '0.4rem' }}>
-            Context <span style={{ fontWeight: 400 }}>(optional — helps LLaVA understand what it's looking at)</span>
+            Context <span style={{ fontWeight: 400 }}>(optional — helps the AI better understand the video)</span>
           </label>
           <textarea
             value={context}

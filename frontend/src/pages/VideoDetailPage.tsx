@@ -268,7 +268,7 @@ export default function VideoDetailPage() {
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
             <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{fmt(video.duration)} duration</span>
-            {video.frame_count > 0 && <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{video.frame_count} frames indexed</span>}
+            {video.frame_count > 0 && <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>{video.frame_count} scenes analyzed</span>}
             {(video.status === 'analyzed' || video.status === 'retranscribing') && <>
               <span className="badge analyzed"><span className="dot" />Analyzed</span>
               {video.analyzed_at && <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>{(() => {
@@ -383,7 +383,7 @@ export default function VideoDetailPage() {
         {(video.status === 'processing' || video.status === 'transcribing') && (
           <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>
             <span className="spinner" style={{ marginRight: '0.5rem' }} />
-            {video.status === 'transcribing' ? `Transcribing audio (${video.frame_count} frames indexed)…` : `Video is still being analyzed (${video.frame_count} frames so far)…`}
+            {video.status === 'transcribing' ? 'Transcribing audio…' : `Video is still being analyzed (${video.frame_count} scenes so far)…`}
           </p>
         )}
         {video.status === 'analyzed' && !video.summary && !summarizing && (
@@ -420,7 +420,7 @@ export default function VideoDetailPage() {
                     border: '1px solid var(--border)', borderRadius: 'var(--radius)',
                     display: 'flex', alignItems: 'center', gap: '0.3rem',
                   }}
-                  title="Re-run Whisper transcription only (keeps visual frames)"
+                  title="Re-transcribe audio only (keeps visual analysis)"
                 >
                   {retranscribing ? (() => {
                     const elapsed = retranscribeElapsed
@@ -571,7 +571,7 @@ export default function VideoDetailPage() {
             onClick={e => e.stopPropagation()}>
             <p style={{ margin: '0 0 0.5rem', fontWeight: 600 }}>Re-analyze video?</p>
             <p style={{ margin: '0 0 1.25rem', fontSize: '0.875rem', color: 'var(--muted)' }}>
-              This video already has {video.frame_count} frames indexed. Resume from the last checkpoint, or start over from scratch?
+              This video was partially analyzed ({video.frame_count} scenes complete). Resume from where it left off, or start completely over?
             </p>
             <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
               <button className="ghost" onClick={() => setShowResumeDialog(false)}>Cancel</button>
