@@ -587,6 +587,9 @@ export default function VideosPage() {
                       <span>{fmt(video.duration)}</span>
                       {video.frame_count > 0 && <span>{video.frame_count} frames</span>}
                       <span style={{ flex: 1 }} />
+                      {video.status === 'analyzed' && !video.has_transcript && (
+                        <span title="No audio transcription — spoken words won't appear in search results" style={{ fontSize: '0.7rem', color: 'var(--warning)', marginRight: '0.4rem', lineHeight: 1 }}>🔇</span>
+                      )}
                       <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
                     </div>
                     {video.status === 'processing' && video.frame_count > 0 && (

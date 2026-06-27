@@ -74,6 +74,7 @@ export interface Video {
   thumbnail_path: string | null
   context: string | null
   analyzed_at?: string | null
+  has_transcript: boolean
 }
 
 export interface VideoFrame {

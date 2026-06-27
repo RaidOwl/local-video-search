@@ -223,6 +223,7 @@ class VideoResponse(BaseModel):
     thumbnail_path: Optional[str] = None
     context: Optional[str] = None
     analyzed_at: Optional[str] = None
+    has_transcript: bool = False
 
 
 class VideoUpdateRequest(BaseModel):
@@ -397,7 +398,7 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
                     _point_id=win_id,
                 )
 
-            await db.update_video(video_id, {'status': 'analyzed'})
+        await db.update_video(video_id, {'status': 'analyzed', 'has_transcript': 1})
 
     except asyncio.CancelledError:
         print(f"Analysis cancelled for {video_id}")
@@ -994,6 +995,7 @@ def _video_to_response(v) -> VideoResponse:
         thumbnail_path=getattr(v, 'thumbnail_path', None),
         context=getattr(v, 'context', None),
         analyzed_at=_analyzed_at,
+        has_transcript=bool(getattr(v, 'has_transcript', 0)),
     )
 
 
@@ -1339,7 +1341,7 @@ async def _retranscribe_audio(video_id: str, video_path: str):
                 caption=f"[transcript] {combined}", _point_id=win_id,
             )
 
-        await db.update_video(video_id, {'status': 'analyzed'})
+        await db.update_video(video_id, {'status': 'analyzed', 'has_transcript': 1})
     except asyncio.CancelledError:
         await db.update_video(video_id, {'status': 'analyzed'})
         raise

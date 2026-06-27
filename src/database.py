@@ -29,6 +29,7 @@ class Video(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     hidden = Column(String, nullable=True, default='0')  # '1' = hidden from library
+    has_transcript = Column(Integer, nullable=True, default=0)  # 1 = audio transcription indexed
     frames = relationship("Frame", back_populates="video", cascade="all, delete-orphan")
 
 
@@ -57,7 +58,7 @@ class Database:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Migrate: add columns introduced after initial schema
-            for col in ['context TEXT', 'thumbnail_path TEXT', 'hidden TEXT DEFAULT 0']:
+            for col in ['context TEXT', 'thumbnail_path TEXT', 'hidden TEXT DEFAULT 0', 'has_transcript INTEGER DEFAULT 0']:
                 col_name = col.split()[0]
                 try:
                     await conn.execute(text(f'ALTER TABLE videos ADD COLUMN {col}'))
