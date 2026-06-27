@@ -71,7 +71,7 @@ function ModelStatusBar() {
   if (!services) return null
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
       {services.map(svc => (
         <div key={svc.name} title={svc.ok ? svc.models.join(', ') : `Unreachable: ${svc.url}`}
           style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', color: svc.ok ? 'var(--muted)' : 'var(--error)', cursor: 'default' }}>
@@ -441,22 +441,23 @@ export default function VideosPage() {
 
   return (
     <div className="page">
-      <div className="page-header">
+      <div className="page-header" style={{ marginBottom: '1rem' }}>
         <div>
           <h1>Video Library</h1>
           <p style={{ color: 'var(--muted)', marginTop: '0.4rem', fontSize: '0.88rem' }}>
             {videos.length} video{videos.length !== 1 ? 's' : ''}{processingCount > 0 && ` · ${processingCount} analyzing`}
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          {reimportMsg && <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{reimportMsg}</span>}
-          <button className="ghost" onClick={handleReimport} disabled={reimporting} style={{ fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
-            {reimporting ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Scanning…</> : '↻ Reimport'}
-          </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.6rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            {reimportMsg && <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{reimportMsg}</span>}
+            <button className="ghost" onClick={handleReimport} disabled={reimporting} style={{ fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
+              {reimporting ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Scanning…</> : '↻ Reimport'}
+            </button>
+          </div>
+          <ModelStatusBar />
         </div>
       </div>
-
-      <ModelStatusBar />
 
       {loading ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '3rem', justifyContent: 'center', color: 'var(--muted)' }}>
