@@ -295,10 +295,10 @@ export default function VideoDetailPage() {
           className="ghost"
           onClick={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? handleCancel : handleReprocess}
           disabled={reprocessing || cancelling}
-          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', color: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined, borderColor: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined }}
+          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined, borderColor: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined }}
           title={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'Stop' : 'Re-run full analysis'}
         >
-          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Stopping…</> : reprocessing ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : (video.status === 'processing' || video.status === 'transcribing') ? <><Square size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Stop</> : video.status === 'retranscribing' ? <><Square size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Stop Audio</> : (video.status === 'analyzed' || video.status === 'error') ? <><RotateCcw size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Re-analyze</> : <><Play size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Analyze</>}
+          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13 }} />Stopping…</> : reprocessing ? <><span className="spinner" style={{ width: 13, height: 13 }} />Starting…</> : (video.status === 'processing' || video.status === 'transcribing') ? <><Square size={12} /> Stop</> : video.status === 'retranscribing' ? <><Square size={12} /> Stop Audio</> : (video.status === 'analyzed' || video.status === 'error') ? <><RotateCcw size={12} /> Re-analyze</> : <><Play size={12} /> Analyze</>}
         </button>
       </div>
 
@@ -317,13 +317,12 @@ export default function VideoDetailPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem' }}>
         {video.status === 'analyzed' && (
           <>
-            <button className="ghost" style={{ fontSize: '0.82rem' }} onClick={() => setShowFramePicker(v => !v)}>
-              {showFramePicker ? <><X size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Hide frames</> : video.thumbnail_path ? 'Change thumbnail' : 'Set thumbnail'}
+            <button className="ghost" style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }} onClick={() => setShowFramePicker(v => !v)}>
+              {showFramePicker ? <><X size={12} /> Hide frames</> : video.thumbnail_path ? 'Change thumbnail' : 'Set thumbnail'}
             </button>
             {thumbnailSaved && <span style={{ fontSize: '0.78rem', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: 3 }}><Check size={12} /> Saved</span>}
           </>
         )}
-        <span style={{ flex: 1 }} />
         <a
           href={`/api/videos/${video.id}/download`}
           download
@@ -436,7 +435,7 @@ export default function VideoDetailPage() {
                       ? ` · ~${Math.ceil((estTotal - elapsed) / 60)}m left`
                       : ''
                     return <><span className="spinner" style={{ width: 10, height: 10 }} /> {elapsedStr}{etaStr}</>
-                  })() : video.status === 'retranscribing' ? <><RotateCcw size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Restart Audio</> : <><RotateCcw size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Audio</>}
+                  })() : video.status === 'retranscribing' ? <><RotateCcw size={12} /> Restart Audio</> : <><RotateCcw size={12} /> Audio</>}
                 </button>
               )}
               {(['all', 'visual', 'speech'] as const).map(f => (
@@ -445,13 +444,14 @@ export default function VideoDetailPage() {
                   onClick={() => setSegFilter(f)}
                   style={{
                     fontSize: '0.76rem', padding: '0.2rem 0.5rem', cursor: 'pointer',
+                    display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
                     background: segFilter === f ? 'var(--accent)' : 'transparent',
                     color: segFilter === f ? '#fff' : 'var(--muted)',
                     border: `1px solid ${segFilter === f ? 'var(--accent)' : 'var(--border)'}`,
                     borderRadius: 'var(--radius)',
                   }}
                 >
-                  {f === 'all' ? 'All' : f === 'visual' ? <><Film size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Visual</> : <><Mic size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Speech</>}
+                  {f === 'all' ? 'All' : f === 'visual' ? <><Film size={11} /> Visual</> : <><Mic size={11} /> Speech</>}
                 </button>
               ))}
             </div>
