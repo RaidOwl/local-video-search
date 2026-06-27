@@ -966,15 +966,25 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
     if expand:
         all_segments.sort(key=lambda s: s["score"], reverse=True)
         all_segments = await _rerank_segments(q, all_segments)
+        # Normalize blended scores so the top result = 1.0, making the user's
+        # threshold slider meaningful.  Require a minimum absolute score (0.25)
+        # so a search with no good matches returns nothing rather than the
+        # "least bad" results.
+        if all_segments:
+            max_s = max(s["score"] for s in all_segments)
+            if max_s >= 0.25:
+                for s in all_segments:
+                    s["score"] = s["score"] / max_s
+            else:
+                for s in all_segments:
+                    s["score"] = 0.0
 
     # Re-group by video for the response
     video_segs: dict = {}
     for seg in all_segments:
         video_segs.setdefault(seg["video_id"], []).append(seg)
 
-    # After re-ranking the blended scores are on a different scale than raw Qdrant
-    # cosine similarity, so use a fixed floor instead of the user threshold.
-    seg_threshold = 0.2 if expand else threshold
+    seg_threshold = threshold
 
     final_results = []
     for vid, segs in video_segs.items():
