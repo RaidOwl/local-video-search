@@ -21,11 +21,14 @@ export default function VideoDetailPage() {
   const [tagInput, setTagInput] = useState('')
   const [frames, setFrames] = useState<VideoFrame[]>([])
   const [showFramePicker, setShowFramePicker] = useState(false)
+  const [savingThumbnail, setSavingThumbnail] = useState(false)
+  const [thumbnailSaved, setThumbnailSaved] = useState(false)
   const [transcript, setTranscript] = useState<Array<{ id: string; timestamp: number; text: string }> | null>(null)
   const [segFilter, setSegFilter] = useState<'all' | 'visual' | 'speech'>('all')
   const [editingSegId, setEditingSegId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState('')
   const [savingSegId, setSavingSegId] = useState<string | null>(null)
+  const [showResumeDialog, setShowResumeDialog] = useState(false)
   const pollRef = useRef<number | null>(null)
 
   // Seek to timestamp from ?t= param once video metadata is loaded
@@ -53,10 +56,18 @@ export default function VideoDetailPage() {
   }, [id, video?.status])
 
   const setThumbnail = async (framePath: string) => {
-    if (!id || !video) return
-    const updated = await api.updateVideo(id, { thumbnail_path: framePath })
-    setVideo(updated)
-    setShowFramePicker(false)
+    if (!id || !video || savingThumbnail) return
+    setSavingThumbnail(true)
+    try {
+      const updated = await api.updateVideo(id, { thumbnail_path: framePath })
+      setVideo(updated)
+      setThumbnailSaved(true)
+      setTimeout(() => { setThumbnailSaved(false); setShowFramePicker(false) }, 1000)
+    } catch {
+      alert('Failed to save thumbnail — check console for details.')
+    } finally {
+      setSavingThumbnail(false)
+    }
   }
 
   // Poll while processing
@@ -105,12 +116,22 @@ export default function VideoDetailPage() {
     finally { setSearching(false) }
   }
 
-  const handleReprocess = async () => {
+  const handleReprocess = () => {
     if (!id || reprocessing) return
+    if ((video?.frame_count ?? 0) > 0) {
+      setShowResumeDialog(true)
+    } else {
+      doReprocess(false)
+    }
+  }
+
+  const doReprocess = async (resume: boolean) => {
+    if (!id) return
+    setShowResumeDialog(false)
     setReprocessing(true)
     try {
-      await api.reprocessVideo(id, video?.context ?? undefined)
-      setVideo(v => v ? { ...v, status: 'processing', frame_count: 0, summary: undefined } : v)
+      await api.reprocessVideo(id, video?.context ?? undefined, resume)
+      setVideo(v => v ? { ...v, status: 'processing', frame_count: resume ? (v.frame_count ?? 0) : 0, summary: resume ? v.summary : undefined } : v)
     } catch { /* ignore */ } finally { setReprocessing(false) }
   }
 
@@ -303,9 +324,12 @@ export default function VideoDetailPage() {
       {/* Frame picker (thumbnail selection) */}
       {video.status === 'analyzed' && (
         <div style={{ marginBottom: '1.5rem' }}>
-          <button className="ghost" style={{ fontSize: '0.8rem' }} onClick={() => setShowFramePicker(v => !v)}>
-            {showFramePicker ? 'Hide frames' : video.thumbnail_path ? '🖼 Change thumbnail' : '🖼 Pick thumbnail'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <button className="ghost" style={{ fontSize: '0.8rem' }} onClick={() => setShowFramePicker(v => !v)}>
+              {showFramePicker ? 'Hide frames' : video.thumbnail_path ? '🖼 Change thumbnail' : '🖼 Pick thumbnail'}
+            </button>
+            {thumbnailSaved && <span style={{ fontSize: '0.78rem', color: 'var(--success)' }}>✓ Thumbnail saved</span>}
+          </div>
           {showFramePicker && frames.length > 0 && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.5rem', marginTop: '0.75rem' }}>
               {frames.map(f => (
@@ -313,9 +337,9 @@ export default function VideoDetailPage() {
                   key={f.id}
                   onClick={() => setThumbnail(f.path)}
                   style={{
-                    cursor: 'pointer', borderRadius: 8, overflow: 'hidden',
+                    cursor: savingThumbnail ? 'wait' : 'pointer', borderRadius: 8, overflow: 'hidden',
                     border: `2px solid ${video.thumbnail_path === f.path ? 'var(--accent)' : 'var(--border)'}`,
-                    transition: 'border-color 0.15s'
+                    transition: 'border-color 0.15s', opacity: savingThumbnail ? 0.6 : 1
                   }}
                   title={`${fmt(f.timestamp)} — click to set as thumbnail`}
                 >
@@ -538,6 +562,24 @@ export default function VideoDetailPage() {
           <p style={{ color: 'var(--muted)', fontSize: '0.875rem', marginTop: '1rem' }}>No matching moments found.</p>
         )}
       </div>
+
+      {showResumeDialog && video && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+          onClick={() => setShowResumeDialog(false)}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '1.5rem', maxWidth: 380, width: '90%' }}
+            onClick={e => e.stopPropagation()}>
+            <p style={{ margin: '0 0 0.5rem', fontWeight: 600 }}>Re-analyze video?</p>
+            <p style={{ margin: '0 0 1.25rem', fontSize: '0.875rem', color: 'var(--muted)' }}>
+              This video already has {video.frame_count} frames indexed. Resume from the last checkpoint, or start over from scratch?
+            </p>
+            <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
+              <button className="ghost" onClick={() => setShowResumeDialog(false)}>Cancel</button>
+              <button className="ghost" onClick={() => doReprocess(false)}>Start over</button>
+              <button onClick={() => doReprocess(true)}>Resume</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -278,32 +278,42 @@ async def _expand_query(q: str) -> list[str]:
         return []
 
 
-def _start_analysis(video_path: str, video_id: str, context: str = '') -> None:
+def _start_analysis(video_path: str, video_id: str, context: str = '', resume: bool = False) -> None:
     """Cancel any existing task for this video, then start a fresh one."""
     existing = _active_tasks.get(video_id)
     if existing and not existing.done():
         existing.cancel()
-    task = asyncio.create_task(process_video(video_path, video_id, context=context))
+    task = asyncio.create_task(process_video(video_path, video_id, context=context, resume=resume))
     _active_tasks[video_id] = task
 
 # Background tasks
-async def process_video(video_path: str, video_id: str, context: str = ''):
+async def process_video(video_path: str, video_id: str, context: str = '', resume: bool = False):
     """Process a video: extract frames, caption, transcribe audio, and index."""
     try:
-        await db.update_video(video_id, {'status': 'processing', 'frame_count': 0})
+        await db.update_video(video_id, {'status': 'processing'})
         async with _analysis_semaphore:
-            # Clear any leftover frame records and embeddings from a previous (failed/partial) run
-            await db.delete_frames_for_video(video_id)
-            try:
-                from qdrant_client.models import Filter, FieldCondition, MatchValue
-                embed_service.qdrant_client.delete(
-                    collection_name=embed_service.collection_name,
-                    points_selector=Filter(
-                        must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
-                    ),
-                )
-            except Exception:
-                pass
+            if not resume:
+                # Full restart: clear any leftover frame records and embeddings
+                await db.update_video(video_id, {'frame_count': 0})
+                await db.delete_frames_for_video(video_id)
+                try:
+                    from qdrant_client.models import Filter, FieldCondition, MatchValue
+                    embed_service.qdrant_client.delete(
+                        collection_name=embed_service.collection_name,
+                        points_selector=Filter(
+                            must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
+                        ),
+                    )
+                except Exception:
+                    pass
+                existing_frame_ids: set[str] = set()
+                has_existing_transcript = False
+            else:
+                # Resume: collect which frame IDs and transcript segments already exist
+                existing_db_frames = await db.get_frames_for_video(video_id)
+                existing_frame_ids = {f.id for f in existing_db_frames}
+                has_existing_transcript = any(f.frame_path == '' for f in existing_db_frames)
+
             # Use persistent per-video frame directory
             frame_dir = FRAMES_DIR / video_id
             frame_dir.mkdir(parents=True, exist_ok=True)
@@ -319,13 +329,16 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
                 return
 
             for i, frame_path in enumerate(frames):
+                frame_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_frame_{i}"))
+                if frame_id in existing_frame_ids:
+                    # Already captioned and indexed in a previous run — skip
+                    continue
                 timestamp = i * frame_extractor.interval
                 caption = await vlm_service.caption_frame(frame_path, context=context)
                 await embed_service.index_frame(
                     video_id=video_id, frame_path=frame_path,
                     timestamp=timestamp, caption=caption
                 )
-                frame_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_frame_{i}"))
                 await db.create_frame({
                     "id": frame_id, "video_id": video_id,
                     "timestamp": timestamp, "frame_path": frame_path,
@@ -337,6 +350,11 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
             video_check = await db.get_video(video_id)
             if frames and not video_check.thumbnail_path:
                 await db.update_video(video_id, {'thumbnail_path': str(random.choice(frames))})
+
+            if resume and has_existing_transcript:
+                print(f"Resume: skipping transcription for {video_id} (already indexed)")
+                await db.update_video(video_id, {'status': 'analyzed'})
+                return
 
             print(f"Transcribing audio for {video_id}...")
             segments = await loop.run_in_executor(
@@ -1223,31 +1241,24 @@ async def download_clip(video_id: str, start: float, end: float, background_task
 
 class AnalyzeRequest(BaseModel):
     context: Optional[str] = None
+    resume: bool = False
 
 ReprocessRequest = AnalyzeRequest  # backward-compat alias
 
 
 async def _run_analyze(video_id: str, req: AnalyzeRequest) -> dict:
-    """Shared logic: clear existing data and start full analysis."""
+    """Shared logic: start full analysis (or resume a partial one)."""
     video = await db.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
-    try:
-        embed_service.qdrant_client.delete(
-            collection_name=embed_service.collection_name,
-            points_selector=Filter(
-                must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
-            ),
-        )
-    except Exception:
-        pass
-    updates = {'frame_count': 0, 'status': 'processing', 'summary': None}
+    updates: dict = {'status': 'processing'}
+    if not req.resume:
+        updates['summary'] = None
     if req.context is not None:
         updates['context'] = req.context
     await db.update_video(video_id, updates)
     context = req.context or getattr(video, 'context', '') or ''
-    _start_analysis(video.path, video_id, context=context)
+    _start_analysis(video.path, video_id, context=context, resume=req.resume)
     return {"status": "processing", "video_id": video_id}
 
 

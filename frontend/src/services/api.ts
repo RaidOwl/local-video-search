@@ -164,8 +164,8 @@ export const api = {
     await client.post(`/videos/${id}/unhide`)
   },
 
-  reprocessVideo: async (id: string, context?: string): Promise<{ status: string; video_id: string }> => {
-    const res = await client.post(`/reprocess/${id}`, { context: context ?? null })
+  reprocessVideo: async (id: string, context?: string, resume?: boolean): Promise<{ status: string; video_id: string }> => {
+    const res = await client.post(`/reprocess/${id}`, { context: context ?? null, resume: resume ?? false })
     return res.data
   },
 
