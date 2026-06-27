@@ -26,6 +26,7 @@ export default function SearchPage() {
   const [enhanced, setEnhanced] = useState(() => sessionStorage.getItem(SS_ENHANCED) === '1')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
+  const [lastSearchedAudio, setLastSearchedAudio] = useState(false)
   const navigate = useNavigate()
 
   const sources = searchVideo && searchAudio ? 'both' : searchVideo ? 'video' : searchAudio ? 'audio' : 'both'
@@ -33,7 +34,7 @@ export default function SearchPage() {
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!query.trim()) return
-    setLoading(true); setSearched(true)
+    setLoading(true); setSearched(true); setLastSearchedAudio(searchAudio)
     try {
       const res = (await api.search(query, undefined, rawThreshold(threshold), sources, enhanced)).results
       setResults(res)
@@ -43,6 +44,9 @@ export default function SearchPage() {
     } catch { /* ignore */ }
     finally { setLoading(false) }
   }
+
+  const hasAudioMatches = results.some(r => r.segments.some(s => s.caption.startsWith('[transcript]')))
+  const showNoTranscriptWarning = searched && !loading && lastSearchedAudio && !hasAudioMatches
 
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
@@ -114,6 +118,9 @@ export default function SearchPage() {
             <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem(SS_SEARCH_AUDIO, e.target.checked ? '1' : '0') }} />
             Audio
           </label>
+          {showNoTranscriptWarning && (
+            <span title="Enable audio transcription from the video detail page" style={{ fontSize: '0.78rem', color: 'var(--warning)', flexShrink: 0 }}>⚠ No transcripts found</span>
+          )}
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
           <label title="Use the AI to generate query variations before searching. Slower but finds more." style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0, color: enhanced ? 'var(--accent)' : 'var(--muted)' }}>
             <input type="checkbox" checked={enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
@@ -125,6 +132,7 @@ export default function SearchPage() {
           <div className="empty" style={{ paddingTop: '2rem' }}>
             <h3>No results</h3>
             <p>Try different search terms or make sure videos have been analyzed.</p>
+            {showNoTranscriptWarning && <p style={{ color: 'var(--warning, #f59e0b)', fontSize: '0.85rem' }}>Audio search is on but no videos appear to have been transcribed yet. Open a video and use "Re-transcribe audio" to add audio search.</p>}
           </div>
         )}
 
