@@ -23,13 +23,14 @@ from ..transcribe.transcriber import TranscriptionService
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global _auto_import_task
     await db.init_db()
     await embed_service.ensure_collection()
     stuck = [v for v in await db.get_all_videos() if v.status == 'processing']
     for v in stuck:
         await db.update_video(v.id, {'frame_count': 0})
         _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
-    asyncio.create_task(_auto_import())
+    _auto_import_task = asyncio.create_task(_auto_import_loop())
     yield
 
 app = FastAPI(title="Local Video Search & Summarization", lifespan=lifespan)
@@ -104,6 +105,9 @@ def _effective_cfg() -> dict:
     base.update(override)
     base.setdefault("max_concurrent_jobs", 8)
     base.setdefault("import_blacklist", [])
+    base.setdefault("auto_import_interval", 0)
+    base.setdefault("auto_analyze", False)
+    base.setdefault("default_context", "")
     return base
 
 
@@ -201,6 +205,7 @@ class SegmentSearchResponse(BaseModel):
 
 # Track in-flight tasks by video_id so we can cancel on re-trigger
 _active_tasks: dict = {}
+_auto_import_task: asyncio.Task | None = None
 
 
 def _start_analysis(video_path: str, video_id: str, context: str = '') -> None:
@@ -315,7 +320,7 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
 VIDEO_SCAN_DIRS = [Path(f"/data/videos/lib{i}") for i in range(1, 6)]
 
 
-async def _auto_import():
+async def _auto_import(auto_analyze: bool = False, default_context: str = ""):
     """Scan all configured video library directories and add new files."""
     import fnmatch as _fnmatch
     blacklist: list = _effective_cfg().get("import_blacklist", [])
@@ -337,6 +342,22 @@ async def _auto_import():
                 "file_hash": compute_file_hash(video_path),
             })
             await db.update_video(video_id, {"status": "ready"})
+            if auto_analyze:
+                _start_analysis(path_str, video_id, context=default_context)
+
+
+async def _auto_import_loop():
+    """Run auto-import on startup, then loop periodically if auto_import_interval > 0."""
+    while True:
+        cfg = _effective_cfg()
+        await _auto_import(
+            auto_analyze=bool(cfg.get("auto_analyze", False)),
+            default_context=str(cfg.get("default_context", "")),
+        )
+        interval = int(cfg.get("auto_import_interval", 0))
+        if interval <= 0:
+            break
+        await asyncio.sleep(interval * 60)
 
 
 @app.get("/health")
@@ -347,7 +368,10 @@ async def health():
 @app.post("/reimport")
 async def reimport():
     """Scan all configured video library directories and add any new videos."""
-    await _auto_import()
+    await _auto_import(
+        auto_analyze=bool(_effective_cfg().get("auto_analyze", False)),
+        default_context=str(_effective_cfg().get("default_context", "")),
+    )
     videos = await db.get_all_videos()
     return {"total": len(videos)}
 
@@ -534,6 +558,9 @@ class SettingsUpdateRequest(BaseModel):
     embed_batch_size: Optional[int] = None
     max_concurrent_jobs: Optional[int] = None
     import_blacklist: Optional[List[str]] = None
+    auto_import_interval: Optional[int] = None
+    auto_analyze: Optional[bool] = None
+    default_context: Optional[str] = None
     # Note: ai_backend, vram_tier, model_family are .env-only — not overridable via UI
 
 
@@ -556,6 +583,7 @@ async def _sync_blacklist():
 @app.put("/settings")
 async def update_settings_endpoint(req: SettingsUpdateRequest):
     """Persist settings overrides and reinitialize services."""
+    global _auto_import_task
     override = _load_override()
     for field, val in req.model_dump(exclude_none=True).items():
         override[field] = val
@@ -563,6 +591,9 @@ async def update_settings_endpoint(req: SettingsUpdateRequest):
     cfg = _effective_cfg()
     _reinit_services(cfg)
     asyncio.create_task(_sync_blacklist())
+    # Restart auto-import loop if just enabled and not already running
+    if cfg.get("auto_import_interval", 0) > 0 and (not _auto_import_task or _auto_import_task.done()):
+        _auto_import_task = asyncio.create_task(_auto_import_loop())
     return cfg
 
 

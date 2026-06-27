@@ -56,6 +56,9 @@ export interface AppSettings {
   embed_batch_size: number
   max_concurrent_jobs: number
   import_blacklist: string[]
+  auto_import_interval: number
+  auto_analyze: boolean
+  default_context: string
 }
 
 export interface Video {

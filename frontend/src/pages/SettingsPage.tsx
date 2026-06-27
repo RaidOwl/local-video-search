@@ -135,48 +135,38 @@ export default function SettingsPage() {
   const statusByUrl: Record<string, ModelStatus> = {}
   if (statuses) statuses.forEach(s => { statusByUrl[s.url] = s })
 
+  const serviceStatus = statuses && statuses.length > 0 ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+      {statuses.map(svc => (
+        <div key={svc.name} title={svc.ok ? svc.models.join(', ') : `Unreachable: ${svc.url}`}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem', color: svc.ok ? 'var(--muted)' : 'var(--error)', cursor: 'default' }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: svc.ok ? 'var(--success)' : 'var(--error)', display: 'inline-block', flexShrink: 0 }} />
+          {svc.name}
+          {!svc.ok && <span style={{ fontSize: '0.7rem' }}>offline</span>}
+        </div>
+      ))}
+      <button className="ghost" onClick={handleProbe} disabled={probing} style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}>
+        {probing ? <span className="spinner" style={{ width: 10, height: 10 }} /> : '↺'}
+      </button>
+    </div>
+  ) : null
+
   return (
     <div className="page">
       <div style={{ maxWidth: 640, margin: '0 auto' }}>
         <h1 style={{ marginBottom: '0.25rem' }}>Settings</h1>
         <p style={{ color: 'var(--muted)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
-          Configure AI model endpoints and names. Changes take effect immediately without restart.
+          Changes take effect immediately without restart.
         </p>
 
         <BackendBanner form={form} />
 
-        {/* Model connectivity — shown for all backends */}
-        {statuses !== null && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem', padding: '0.65rem 0.9rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)' }}>
-            {statuses.length === 0
-              ? <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>No model services configured</span>
-              : statuses.map(svc => (
-                <div key={svc.name} title={svc.ok ? svc.models.join(', ') : `Unreachable: ${svc.url}`}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem', color: svc.ok ? 'var(--text)' : 'var(--error)', cursor: 'default' }}>
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: svc.ok ? 'var(--success)' : 'var(--error)', display: 'inline-block', flexShrink: 0 }} />
-                  <span>{svc.name}</span>
-                  {svc.ok && svc.models.length > 0 && (
-                    <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--muted)' }}>({svc.models[0]})</span>
-                  )}
-                  {!svc.ok && <span style={{ fontSize: '0.72rem', color: 'var(--error)' }}>offline</span>}
-                </div>
-              ))
-            }
-            <span style={{ flex: 1 }} />
-            <button className="ghost" onClick={handleProbe} disabled={probing} style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem' }}>
-              {probing ? <><span className="spinner" style={{ width: 11, height: 11, marginRight: '0.3rem' }} />…</> : '↺ Refresh'}
-            </button>
-          </div>
-        )}
-
-        {/* AI Models — only shown in custom mode (local modes are auto-configured) */}
+        {/* AI Models — custom mode only */}
         {form.ai_backend === 'custom' && (
           <div className="section" style={{ marginTop: 0 }}>
             <div className="section-header">
               <h2>AI Models</h2>
-              <button className="ghost" onClick={handleProbe} disabled={probing} style={{ fontSize: '0.8rem' }}>
-                {probing ? <><span className="spinner" style={{ width: 12, height: 12, marginRight: '0.4rem' }} />Probing…</> : '⚡ Test connections'}
-              </button>
+              {serviceStatus}
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
@@ -187,43 +177,22 @@ export default function SettingsPage() {
                   <div key={urlKey} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
                       <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{label}</span>
-                      {st && (
-                        <span className={`badge ${st.ok ? 'analyzed' : 'error'}`}>
-                          <span className="dot" />{st.ok ? 'Connected' : 'Unreachable'}
-                        </span>
-                      )}
+                      {st && <span className={`badge ${st.ok ? 'analyzed' : 'error'}`}><span className="dot" />{st.ok ? 'Connected' : 'Unreachable'}</span>}
                     </div>
-
                     <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>Endpoint URL</label>
-                    <input
-                      type="url"
-                      value={form[urlKey] as string}
-                      onChange={e => set(urlKey, e.target.value)}
-                      style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.85rem', marginBottom: '0.25rem' }}
-                      placeholder="http://host:port"
-                    />
+                    <input type="url" value={form[urlKey] as string} onChange={e => set(urlKey, e.target.value)}
+                      style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.85rem', marginBottom: '0.25rem' }} placeholder="http://host:port" />
                     <p style={{ margin: '0 0 0.75rem', fontSize: '0.72rem', color: 'var(--muted)' }}>{urlDesc}</p>
-
                     <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>Model name</label>
-                    <input
-                      type="text"
-                      value={form[modelKey] as string}
-                      onChange={e => set(modelKey, e.target.value)}
-                      style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.85rem' }}
-                      placeholder="org/model-name"
-                    />
+                    <input type="text" value={form[modelKey] as string} onChange={e => set(modelKey, e.target.value)}
+                      style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.85rem' }} placeholder="org/model-name" />
                     <p style={{ margin: '0.25rem 0 0', fontSize: '0.72rem', color: 'var(--muted)' }}>{modelDesc}</p>
-
                     {probedModels.length > 0 && (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginTop: '0.6rem', alignItems: 'center' }}>
                         <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>Available:</span>
                         {probedModels.map(m => (
                           <button key={m} className="ghost" onClick={() => set(modelKey, m)}
-                            style={{
-                              fontSize: '0.72rem', padding: '0.15rem 0.5rem', fontFamily: 'monospace',
-                              borderColor: form[modelKey] === m ? 'var(--accent)' : undefined,
-                              color: form[modelKey] === m ? 'var(--accent)' : undefined,
-                            }}>
+                            style={{ fontSize: '0.72rem', padding: '0.15rem 0.5rem', fontFamily: 'monospace', borderColor: form[modelKey] === m ? 'var(--accent)' : undefined, color: form[modelKey] === m ? 'var(--accent)' : undefined }}>
                             {m}
                           </button>
                         ))}
@@ -232,27 +201,28 @@ export default function SettingsPage() {
                   </div>
                 )
               })}
-
-              {/* Qdrant */}
               <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem' }}>
                 <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: '0.75rem' }}>Qdrant</div>
                 <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>Endpoint URL</label>
                 <input type="url" value={form.qdrant_url} onChange={e => set('qdrant_url', e.target.value)}
-                  style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.85rem' }}
-                  placeholder="http://host:6333" />
+                  style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.85rem' }} placeholder="http://host:6333" />
               </div>
             </div>
           </div>
         )}
 
-        {/* Video Libraries */}
+        {/* Non-custom: show compact service status below banner */}
+        {form.ai_backend !== 'custom' && serviceStatus && (
+          <div style={{ marginBottom: '1.5rem' }}>{serviceStatus}</div>
+        )}
+
+        {/* Library */}
         <div className="section">
-          <div className="section-header"><h2>Video Libraries</h2></div>
-          <p style={{ margin: '0 0 1rem', fontSize: '0.82rem', color: 'var(--muted)' }}>
-            Set <code>VIDEO_DIR_1</code> through <code>VIDEO_DIR_5</code> in <code>.env</code> and restart to add library directories. Each path is mounted read-only into the container.
-          </p>
+          <div className="section-header"><h2>Library</h2></div>
+
+          {/* Mounted directories */}
           {form.video_dirs && form.video_dirs.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '1.25rem' }}>
               {form.video_dirs.map((dir, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.5rem 0.75rem' }}>
                   <span style={{ color: 'var(--success)', fontSize: '0.75rem' }}>●</span>
@@ -261,27 +231,110 @@ export default function SettingsPage() {
               ))}
             </div>
           ) : (
-            <p style={{ fontSize: '0.82rem', color: 'var(--muted)', fontStyle: 'italic' }}>No library directories configured.</p>
+            <p style={{ fontSize: '0.82rem', color: 'var(--muted)', fontStyle: 'italic', marginBottom: '1.25rem' }}>
+              No directories configured. Set <code>VIDEO_DIR_1</code>…<code>VIDEO_DIR_5</code> in <code>.env</code>.
+            </p>
           )}
+
+          {/* Automation */}
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {/* Auto-import */}
+            <div>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem' }}>
+                <div>
+                  <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Auto-import</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.2rem' }}>Periodically scan library directories for new videos</div>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', flexShrink: 0 }}>
+                  <input type="checkbox" checked={form.auto_import_interval > 0}
+                    onChange={e => set('auto_import_interval', e.target.checked ? 60 : 0)}
+                    style={{ width: 'auto', boxShadow: 'none' }} />
+                </label>
+              </div>
+              {form.auto_import_interval > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.65rem', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0 }}>Every</span>
+                  {([{label: '15 min', value: 15}, {label: '30 min', value: 30}, {label: '1 hr', value: 60}, {label: '6 hr', value: 360}, {label: '24 hr', value: 1440}]).map(opt => (
+                    <button key={opt.value} className={form.auto_import_interval === opt.value ? '' : 'ghost'}
+                      onClick={() => set('auto_import_interval', opt.value)}
+                      style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem' }}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <hr className="divider" style={{ margin: 0 }} />
+
+            {/* Auto-analyze */}
+            <div>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem' }}>
+                <div>
+                  <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Auto-analyze</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.2rem' }}>Automatically start analysis on newly imported videos</div>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', flexShrink: 0 }}>
+                  <input type="checkbox" checked={form.auto_analyze}
+                    onChange={e => set('auto_analyze', e.target.checked)}
+                    style={{ width: 'auto', boxShadow: 'none' }} />
+                </label>
+              </div>
+              {form.auto_analyze && (
+                <div style={{ marginTop: '0.65rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>Default context <span style={{ fontStyle: 'italic' }}>(optional)</span></label>
+                  <input type="text" value={form.default_context}
+                    onChange={e => set('default_context', e.target.value)}
+                    placeholder="e.g. Home videos, dash cam footage, security cameras…"
+                    style={{ fontSize: '0.85rem' }} />
+                  <p style={{ margin: '0.25rem 0 0', fontSize: '0.72rem', color: 'var(--muted)' }}>
+                    Applied to all auto-analyzed videos. Can be overridden per-video on the detail page.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Import blacklist */}
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.4rem' }}>Import blacklist</label>
+            {(form.import_blacklist ?? []).length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginBottom: '0.5rem' }}>
+                {(form.import_blacklist ?? []).map((pat, i) => (
+                  <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, padding: '0.15rem 0.5rem', fontSize: '0.78rem', fontFamily: 'monospace' }}>
+                    {pat}
+                    <button onClick={() => set('import_blacklist', (form.import_blacklist ?? []).filter((_, j) => j !== i))}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '0.9rem', padding: 0, lineHeight: 1, boxShadow: 'none' }}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '0.4rem' }}>
+              <input type="text" value={blacklistInput} onChange={e => setBlacklistInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && blacklistInput.trim()) { set('import_blacklist', [...(form.import_blacklist ?? []), blacklistInput.trim()]); setBlacklistInput('') } }}
+                placeholder="e.g. */broll/* or */_archive/*"
+                style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.85rem' }} />
+              <button className="ghost" onClick={() => { if (blacklistInput.trim()) { set('import_blacklist', [...(form.import_blacklist ?? []), blacklistInput.trim()]); setBlacklistInput('') } }} style={{ flexShrink: 0 }}>Add</button>
+            </div>
+            <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
+              Glob patterns matched against the full file path. Saving applies patterns immediately — removing a pattern restores those videos automatically.
+            </p>
+          </div>
         </div>
 
         {/* Processing */}
         <div className="section">
           <div className="section-header"><h2>Processing</h2></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-
             <div>
               <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.4rem' }}>Whisper model</label>
               <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                 {WHISPER_SIZES.map(s => (
                   <button key={s} className={form.whisper_model === s ? '' : 'ghost'}
-                    onClick={() => set('whisper_model', s)}
-                    style={{ fontSize: '0.82rem', padding: '0.3rem 0.75rem' }}>{s}</button>
+                    onClick={() => set('whisper_model', s)} style={{ fontSize: '0.82rem', padding: '0.3rem 0.75rem' }}>{s}</button>
                 ))}
               </div>
-              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
-                Larger models are more accurate but slower. Requires re-analysis to affect existing videos.
-              </p>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Larger models are more accurate but slower. Requires re-analysis to affect existing videos.</p>
             </div>
 
             <div>
@@ -318,48 +371,7 @@ export default function SettingsPage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.2rem' }}>
                 <span>1 (sequential)</span><span>32</span>
               </div>
-              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
-                How many videos can be analyzed at the same time. Lower values reduce GPU/CPU pressure.
-              </p>
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.4rem' }}>Import blacklist</label>
-              {(form.import_blacklist ?? []).length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginBottom: '0.5rem' }}>
-                  {(form.import_blacklist ?? []).map((pat, i) => (
-                    <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, padding: '0.15rem 0.5rem', fontSize: '0.78rem', fontFamily: 'monospace' }}>
-                      {pat}
-                      <button onClick={() => set('import_blacklist', (form.import_blacklist ?? []).filter((_, j) => j !== i))}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '0.9rem', padding: 0, lineHeight: 1 }}>×</button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: '0.4rem' }}>
-                <input
-                  type="text"
-                  value={blacklistInput}
-                  onChange={e => setBlacklistInput(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && blacklistInput.trim()) {
-                      set('import_blacklist', [...(form.import_blacklist ?? []), blacklistInput.trim()])
-                      setBlacklistInput('')
-                    }
-                  }}
-                  placeholder="e.g. */broll/* or */_archive/*"
-                  style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.85rem' }}
-                />
-                <button className="ghost" onClick={() => {
-                  if (blacklistInput.trim()) {
-                    set('import_blacklist', [...(form.import_blacklist ?? []), blacklistInput.trim()])
-                    setBlacklistInput('')
-                  }
-                }} style={{ flexShrink: 0 }}>Add</button>
-              </div>
-              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
-                Glob patterns matched against the full file path. Saving applies patterns to the existing library immediately — removing a pattern restores those videos automatically.
-              </p>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Lower values reduce GPU/CPU pressure during analysis.</p>
             </div>
           </div>
         </div>
@@ -384,7 +396,6 @@ export default function SettingsPage() {
             const orphanIssue = h.issues.find(i => i.type === 'orphaned')
             return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                {/* Summary row */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', padding: '0.65rem 0.9rem', background: 'var(--surface)', border: `1px solid ${allOk ? 'var(--border)' : 'var(--error)'}`, borderRadius: 'var(--radius)', fontSize: '0.82rem' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: h.reachable ? 'var(--success)' : 'var(--error)', display: 'inline-block' }} />
@@ -402,28 +413,18 @@ export default function SettingsPage() {
                   )}
                   {h.error && <span style={{ color: 'var(--error)', fontSize: '0.75rem' }}>{h.error}</span>}
                 </div>
-
-                {/* Per-video issues */}
                 {perVideoIssues.length > 0 && (
                   <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
-                    <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border)', fontSize: '0.78rem', fontWeight: 600, color: 'var(--muted)' }}>
-                      Videos with embedding issues — reprocess to fix
-                    </div>
+                    <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border)', fontSize: '0.78rem', fontWeight: 600, color: 'var(--muted)' }}>Videos with embedding issues — reprocess to fix</div>
                     {perVideoIssues.map(issue => (
                       <div key={issue.video_id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--border)', fontSize: '0.82rem' }}>
-                        <span className={`badge ${issue.type === 'missing' ? 'error' : 'processing'}`}>
-                          <span className="dot" />{issue.type}
-                        </span>
+                        <span className={`badge ${issue.type === 'missing' ? 'error' : 'processing'}`}><span className="dot" />{issue.type}</span>
                         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{issue.name}</span>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--muted)', flexShrink: 0 }}>
-                          {issue.qdrant_points}/{issue.db_frames} pts
-                        </span>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--muted)', flexShrink: 0 }}>{issue.qdrant_points}/{issue.db_frames} pts</span>
                       </div>
                     ))}
                   </div>
                 )}
-
-                {/* Orphaned points */}
                 {orphanIssue && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.65rem 0.9rem', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: '0.82rem' }}>
                     <span style={{ flex: 1, color: 'var(--muted)' }}>
@@ -431,12 +432,8 @@ export default function SettingsPage() {
                     </span>
                     <button className="ghost" disabled={purgingQdrant} onClick={async () => {
                       setPurgingQdrant(true)
-                      try {
-                        await api.purgeOrphanedEmbeddings()
-                        setQdrantHealth(await api.qdrantHealth())
-                      } finally {
-                        setPurgingQdrant(false)
-                      }
+                      try { await api.purgeOrphanedEmbeddings(); setQdrantHealth(await api.qdrantHealth()) }
+                      finally { setPurgingQdrant(false) }
                     }} style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem' }}>
                       {purgingQdrant ? <><span className="spinner" style={{ width: 11, height: 11, marginRight: '0.3rem' }} />Purging…</> : 'Purge orphans'}
                     </button>
@@ -445,10 +442,9 @@ export default function SettingsPage() {
               </div>
             )
           })()}
-
           {!qdrantHealth && !checkingQdrant && (
             <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--muted)' }}>
-              Run a health check to verify embedding counts match analyzed videos and detect orphaned data from deleted videos.
+              Verify embedding counts match analyzed videos and detect orphaned data from deleted videos.
             </p>
           )}
         </div>
