@@ -15,6 +15,12 @@ const SS_ENHANCED = 'vss_search_enhanced'
 // which feels low to users. Apply a power curve so strong matches display as 80%+.
 const normalizeScore = (s: number) => 1 - Math.pow(Math.max(0, 1 - s), 1.5)
 const rawThreshold = (t: number) => 1 - Math.pow(Math.max(0, 1 - t), 1 / 1.5)
+const thresholdLabel = (t: number) => {
+  if (t >= 0.80) return 'near exact'
+  if (t >= 0.65) return 'close match'
+  if (t >= 0.50) return 'some match'
+  return 'broad match'
+}
 
 export default function SearchPage() {
   const [query, setQuery] = useState(() => sessionStorage.getItem(SS_QUERY) ?? '')
@@ -103,8 +109,9 @@ export default function SearchPage() {
             onChange={e => setThreshold(Number(e.target.value))}
             style={{ flex: 1, accentColor: 'var(--accent)', cursor: 'pointer' }}
           />
-          <span style={{ flexShrink: 0, minWidth: 32, textAlign: 'right', color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
-            {Math.round(threshold * 100)}%
+          <span style={{ flexShrink: 0, minWidth: 48, textAlign: 'right', lineHeight: 1.2 }}>
+            <div style={{ color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{Math.round(threshold * 100)}%</div>
+            <div style={{ fontSize: '0.68rem', color: 'var(--muted)', marginTop: 1 }}>{thresholdLabel(threshold)}</div>
           </span>
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
