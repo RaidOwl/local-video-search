@@ -279,6 +279,79 @@ async def _expand_query(q: str) -> list[str]:
         return []
 
 
+async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
+    """Re-rank candidate segments using the LLM as a cross-encoder.
+
+    Sends all segment captions in a single batched prompt and asks the model
+    to score 0-10 relevance against the query.  The final score is a blend:
+        0.3 * qdrant_score + 0.7 * (llm_score / 10)
+    Falls back to the original scores on any failure.
+    """
+    if not segments:
+        return segments
+    cfg = _effective_cfg()
+    url = cfg.get("vllm_url", "").rstrip("/")
+    model = cfg.get("vllm_model", "")
+    if not url or not model:
+        return segments
+
+    import re as _re, httpx as _httpx
+
+    MAX_SEGS = 60
+    to_score = segments[:MAX_SEGS]
+    captions = [
+        s.get("caption", "").replace("[transcript] ", "").strip()
+        for s in to_score
+    ]
+    numbered = "\n".join(f"{i+1}. {cap}" for i, cap in enumerate(captions))
+    prompt = (
+        "You are rating how well video captions match a search query.\n\n"
+        f'Query: "{query}"\n\n'
+        "For each caption below, output a relevance score from 0 to 10 "
+        "(10 = perfect match, 0 = completely unrelated). "
+        "Be strict: only give high scores when the caption specifically matches "
+        "the query's key details — appearance, gender, hair, clothing, actions, "
+        "and setting all count. A similar setting alone is not enough for a high score.\n"
+        "Output ONLY the integer scores, one per line, in the same order. No other text.\n\n"
+        f"Captions:\n{numbered}\n\nScores:"
+    )
+
+    try:
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{url}/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": MAX_SEGS * 5 + 20,
+                    "temperature": 0.0,
+                },
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
+
+        scores_raw: list[float] = []
+        for line in text.splitlines():
+            m = _re.search(r'\b(\d+(?:\.\d+)?)\b', line)
+            if m:
+                scores_raw.append(min(10.0, max(0.0, float(m.group(1)))))
+
+        if len(scores_raw) < max(1, len(to_score) // 2):
+            print(f"Re-rank: too few scores ({len(scores_raw)} for {len(to_score)} segments), skipping")
+            return segments
+
+        for i, seg in enumerate(to_score):
+            if i < len(scores_raw):
+                llm = scores_raw[i] / 10.0
+                seg["score"] = 0.3 * seg["score"] + 0.7 * llm
+
+        return segments
+
+    except Exception as e:
+        print(f"Re-rank failed: {e}")
+        return segments
+
+
 def _start_analysis(video_path: str, video_id: str, context: str = '', resume: bool = False) -> None:
     """Cancel any existing task for this video, then start a fresh one."""
     existing = _active_tasks.get(video_id)
@@ -893,8 +966,9 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
             video_hits[vid]["score"] = max(video_hits[vid]["score"], r.get("score", 0))
         video_hits[vid]["hits"].append(r)
 
-    # Fetch video details and build top-N segments per video
-    final_results = []
+    # Fetch video details and build segments per video
+    all_segments: list[dict] = []
+    video_meta: dict = {}
     for vid, data in video_hits.items():
         video = await db.get_video(vid)
         if not video:
@@ -902,24 +976,45 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
         for h in data["hits"]:
             h["video_name"] = video.name
         segments = segment_retriever.group_segments(data["hits"], vid)
-        top_segments = [
-            {
+        video_meta[vid] = {
+            "name": video.name, "path": video.path, "duration": video.duration,
+        }
+        for s in segments[:25]:
+            all_segments.append({
                 "video_id": s.video_id,
                 "start_time": s.start_time,
                 "end_time": s.end_time,
                 "caption": s.caption,
                 "score": s.score,
                 "frame_path": s.frame_path,
-            }
-            for s in segments[:25]
-            if s.score >= threshold  # only show segments that meet the threshold
-        ]
+            })
+
+    # LLM re-ranking when enhanced mode is on: sort best candidates first so the
+    # model sees the strongest contenders, then re-score with blended Qdrant+LLM score.
+    if expand:
+        all_segments.sort(key=lambda s: s["score"], reverse=True)
+        all_segments = await _rerank_segments(q, all_segments)
+
+    # Re-group by video for the response
+    video_segs: dict = {}
+    for seg in all_segments:
+        video_segs.setdefault(seg["video_id"], []).append(seg)
+
+    final_results = []
+    for vid, segs in video_segs.items():
+        meta = video_meta.get(vid)
+        if not meta:
+            continue
+        top_segments = [s for s in segs if s["score"] >= threshold]
+        if not top_segments:
+            continue
+        best_score = max(s["score"] for s in top_segments)
         final_results.append({
             "video_id": vid,
-            "name": video.name,
-            "path": video.path,
-            "duration": video.duration,
-            "score": data["score"],
+            "name": meta["name"],
+            "path": meta["path"],
+            "duration": meta["duration"],
+            "score": best_score,
             "matching_frames": len(top_segments),
             "segments": top_segments,
         })
