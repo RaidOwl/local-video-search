@@ -51,6 +51,8 @@ services:
       FRAME_EXTRACTION_INTERVAL: ${FRAME_EXTRACTION_INTERVAL:-5}
       EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-16}
     volumes:
+      # Source code mount — allows scp + restart to deploy Python changes without rebuild
+      - ./src:/app/src
       # Up to 5 video library directories — set VIDEO_DIR_1..5 in .env
       # Unused slots default to ./data/placeholder (empty dir, auto-created by Docker)
       - ${VIDEO_DIR_1:-./data/videos}:/data/videos/lib1:ro
