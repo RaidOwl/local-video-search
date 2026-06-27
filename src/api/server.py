@@ -39,6 +39,8 @@ async def lifespan(_app: FastAPI):
         task = asyncio.create_task(_retranscribe_audio(v.id, v.path))
         _active_tasks[v.id] = task
     _auto_import_task = asyncio.create_task(_auto_import_loop())
+    # Warm the reranker in the background so the first search isn't slow.
+    asyncio.create_task(_warm_reranker())
     yield
 
 app = FastAPI(
@@ -251,35 +253,32 @@ _active_tasks: dict = {}
 _auto_import_task: asyncio.Task | None = None
 
 
-async def _expand_query(q: str) -> list[str]:
-    """Use the LLM to generate alternative phrasings of a search query.
-    Returns a list of 2-3 reformulations (empty list on failure)."""
-    cfg = _effective_cfg()
-    url = cfg.get("vllm_url", "").rstrip("/")
-    model = cfg.get("vllm_model", "")
-    if not url or not model:
-        return []
-    prompt = (
-        f'Generate 3 alternative search queries for a personal video library search. '
-        f'The user is looking for: "{q}"\n\n'
-        f'Write queries that use different vocabulary — synonyms, technical terms, '
-        f'and different phrasings that might appear in video transcripts or captions. '
-        f'Return ONLY the 3 queries, one per line, no numbering or explanation.'
-    )
+def _load_reranker():
+    """Lazily load the bge-reranker-base cross-encoder (~1.1 GB, CPU).
+
+    Returns the model, or None if loading fails.  Weights are cached in
+    /data/hf_cache so they survive container rebuilds.
+    """
+    global _reranker
+    if _reranker is None:
+        try:
+            from sentence_transformers import CrossEncoder
+            print("Loading reranker model (BAAI/bge-reranker-base, ~1.1 GB)...")
+            _reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
+            print("Reranker ready.")
+        except Exception as e:
+            print(f"Reranker: failed to load: {e}")
+            return None
+    return _reranker
+
+
+async def _warm_reranker() -> None:
+    """Pre-load the reranker at startup so the first search isn't slow."""
     try:
-        import httpx as _httpx
-        async with _httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{url}/v1/chat/completions",
-                json={"model": model, "messages": [{"role": "user", "content": prompt}],
-                      "max_tokens": 120, "temperature": 0.4},
-            )
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
-            lines = [ln.strip().strip('"\'') for ln in text.splitlines() if ln.strip()]
-            return [ln for ln in lines if len(ln) > 4][:3]
-    except Exception:
-        return []
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _load_reranker)
+    except Exception as e:
+        print(f"Reranker warmup failed: {e}")
 
 
 async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
@@ -306,16 +305,8 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
     if not segments:
         return segments
 
-    global _reranker
-    if _reranker is None:
-        try:
-            from sentence_transformers import CrossEncoder
-            print("Loading reranker model (first enhanced search — downloading ~1.1 GB)...")
-            _reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
-            print("Reranker ready.")
-        except Exception as e:
-            print(f"Re-rank: failed to load reranker: {e}")
-            return segments
+    if _load_reranker() is None:
+        return segments
 
     try:
         import asyncio as _asyncio, math as _math
@@ -878,8 +869,13 @@ async def ingest_video(request: IngestRequest):
 
 
 @app.get("/search", response_model=SearchResponse, tags=["Search"])
-async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, sources: str = 'both', expand: bool = False):
-    """Search for videos by natural language query."""
+async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, sources: str = 'both'):
+    """Search for videos by natural language query.
+
+    Every search runs the full retrieve-then-rerank pipeline: BGE-M3 / Qdrant
+    retrieves candidates (recall), then the bge-reranker cross-encoder assigns
+    the final relevance score (precision).
+    """
     processed = query_processor.process_query(q)
 
     # When the UI has both sources selected, always use mixed — don't auto-detect
@@ -898,8 +894,7 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
     qdrant_threshold = max(0.0, threshold / MAX_BOOST)
 
     # Build list of queries to search: cleaned + original.
-    # Note: Enhanced mode (expand=True) uses LLM re-ranking for precision rather than
-    # query expansion — re-ranking is more accurate and avoids a second LLM round-trip.
+    # The cross-encoder reranker below handles precision; we cast a wide net here.
     queries_to_search = list(dict.fromkeys([processed["search_terms"], q]))  # dedup, order-preserved
 
     # Run all queries in parallel; merge by Qdrant point ID keeping the max score.
@@ -979,15 +974,14 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
                 "frame_path": s.frame_path,
             })
 
-    # Cross-encoder re-ranking when enhanced mode is on.
+    # Cross-encoder re-ranking — always applied.
     # Qdrant + keyword boost above served only to pick candidates (recall);
     # the cross-encoder now assigns the final absolute relevance score (precision).
     # Feed the cleaned query (filler words like "find the segment where" stripped)
     # so the reranker judges the actual subject, not conversational scaffolding.
-    if expand:
-        all_segments.sort(key=lambda s: s["score"], reverse=True)
-        rerank_query = processed.get("search_terms") or q
-        all_segments = await _rerank_segments(rerank_query, all_segments)
+    all_segments.sort(key=lambda s: s["score"], reverse=True)
+    rerank_query = processed.get("search_terms") or q
+    all_segments = await _rerank_segments(rerank_query, all_segments)
 
     # Re-group by video for the response
     video_segs: dict = {}

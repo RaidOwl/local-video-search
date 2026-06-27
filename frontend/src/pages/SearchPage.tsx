@@ -9,10 +9,9 @@ const SS_RESULTS = 'vss_search_results'
 const SS_THRESHOLD = 'vss_search_threshold'
 const SS_SEARCH_VIDEO = 'vss_search_video'
 const SS_SEARCH_AUDIO = 'vss_search_audio'
-const SS_ENHANCED = 'vss_search_enhanced'
 
-// BGE-M3 cosine similarities for semantic matches typically fall in 0.5–0.75,
-// which feels low to users. Apply a power curve so strong matches display as 80%+.
+// The reranker emits relevance scores that cluster in a narrow band; apply a
+// power curve so strong matches display as 80%+ and feel intuitive to users.
 const normalizeScore = (s: number) => 1 - Math.pow(Math.max(0, 1 - s), 1.5)
 const rawThreshold = (t: number) => 1 - Math.pow(Math.max(0, 1 - t), 1 / 1.5)
 const thresholdLabel = (t: number) => {
@@ -30,7 +29,6 @@ export default function SearchPage() {
   const [threshold, setThreshold] = useState(() => Number(sessionStorage.getItem(SS_THRESHOLD) ?? '0.50'))
   const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem(SS_SEARCH_VIDEO) !== '0')
   const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
-  const [enhanced, setEnhanced] = useState(() => sessionStorage.getItem(SS_ENHANCED) === '1')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
@@ -42,7 +40,7 @@ export default function SearchPage() {
     if (!query.trim()) return
     setLoading(true); setSearched(true)
     try {
-      const res = (await api.search(query, undefined, rawThreshold(threshold), sources, enhanced)).results
+      const res = (await api.search(query, undefined, rawThreshold(threshold), sources)).results
       setResults(res)
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
@@ -121,11 +119,6 @@ export default function SearchPage() {
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
             <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem(SS_SEARCH_AUDIO, e.target.checked ? '1' : '0') }} />
             Audio
-          </label>
-          <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
-          <label title="Use the AI to generate query variations before searching. Slower but finds more." style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0, color: enhanced ? 'var(--accent)' : 'var(--muted)' }}>
-            <input type="checkbox" checked={enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
-            Enhanced
           </label>
         </div>
 
