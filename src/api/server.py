@@ -1078,7 +1078,7 @@ async def get_video_thumbnail(video_id: str):
     if video.thumbnail_path:
         p = Path(video.thumbnail_path)
         if p.exists():
-            return FileResponse(str(p), media_type="image/jpeg")
+            return FileResponse(str(p), media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
     # 2. Middle frame from a completed analysis
     frames = await db.get_frames_for_video(video_id)
     visual = [f for f in frames if f.frame_path and not (f.caption or '').startswith('[transcript]')]
