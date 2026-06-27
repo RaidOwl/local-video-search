@@ -185,7 +185,7 @@ services:
     profiles: [vllm]
     command:
       - --model
-      - ${VLLM_MAIN_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}
+      - ${VLLM_MAIN_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
       - --port
       - "8002"
       - --host

@@ -1,4 +1,4 @@
-# Local Video Search & Summarization
+d# Local Video Search & Summarization
 
 A self-hosted video search and summarization system powered by local AI models. Index your video library, search in natural language, get AI-generated summaries, and browse every moment with a visual segments timeline.
 
@@ -25,7 +25,8 @@ Requirements depend on the AI backend you choose:
 | `ollama` (mid / 7B) | ≥ 10 GB | Recommended starting point |
 | `ollama` (high / 32B) | ≥ 20 GB | Q4 quantized |
 | `vllm` (mid / 7B FP8) | ≥ 16 GB | NVIDIA Hopper / Ada / Blackwell |
-| `vllm` (ultra / 32B FP8) | ≥ 80 GB | e.g. DGX Spark GB10 |
+| `vllm` (high / 32B FP8) | ≥ 40 GB | NVIDIA Hopper / Ada / Blackwell |
+| `vllm` (ultra / 72B FP8) | ≥ 128 GB | e.g. DGX Spark GB10 |
 | `custom` | varies | Point at any OpenAI-compatible server |
 
 Transcription (Whisper) runs on CPU inside the API container — no extra GPU needed.
@@ -132,8 +133,8 @@ docker compose up -d   # no profile needed
 |------|-------------|------------|--------------|
 | `low` | 3B | 3B | ≥ 8 GB |
 | `mid` | 7B | 7B | ≥ 10–16 GB |
-| `high` | 32B | 7B | ≥ 20 GB |
-| `ultra` | 32B | 32B | ≥ 80 GB |
+| `high` | 32B | 32B | ≥ 20–40 GB |
+| `ultra` | 72B | 72B | ≥ 128 GB |
 
 > vLLM FP8 quantizes only the LLM decoder; the vision encoder stays BF16 (~8 GB extra). On Apple Silicon, VRAM is unified memory shared with the system — leave headroom.
 
