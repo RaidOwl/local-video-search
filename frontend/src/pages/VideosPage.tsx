@@ -509,9 +509,12 @@ export default function VideosPage() {
                 <button className="ghost" style={{ fontSize: '0.85rem' }} onClick={() => setSelected(new Set())}>Clear</button>
               </>
             ) : (
-              <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
-                {filterText.trim() ? `${displayedVideos.length} of ${videos.length} videos` : 'Click videos to select · use ▶ Analyze to process them'}
-              </span>
+              <>
+                <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                  {filterText.trim() ? `${displayedVideos.length} of ${videos.length} videos` : 'Click videos to select · use ▶ Analyze to process them'}
+                </span>
+                <button className="ghost" style={{ fontSize: '0.8rem', padding: '0.2rem 0.6rem' }} onClick={() => setSelected(new Set(displayedVideos.map(v => v.id)))}>Select all</button>
+              </>
             )}
             <span style={{ flex: 1 }} />
             {(['card', 'tree', 'folder'] as ViewMode[]).map(mode => (
