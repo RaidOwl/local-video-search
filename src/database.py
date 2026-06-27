@@ -2,6 +2,7 @@ from sqlalchemy import Column, String, Float, Integer, DateTime, Text, ForeignKe
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
+from typing import Optional
 
 Base = declarative_base()
 

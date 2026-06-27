@@ -26,12 +26,6 @@ services:
       - "${QDRANT_PORT:-6333}:6333"
     volumes:
       - ./data/qdrant:/qdrant/storage
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:6333/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     restart: unless-stopped
 
   local-vss-api:
@@ -69,9 +63,9 @@ services:
       - "${API_PORT:-8000}:8000"
     depends_on:
       qdrant:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 3
