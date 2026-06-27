@@ -339,7 +339,7 @@ export default function SettingsPage() {
                     onClick={() => set('whisper_model', model)} style={{ fontSize: '0.82rem', padding: '0.3rem 0.75rem' }}>{label}</button>
                 ))}
               </div>
-              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Low=base · Medium=small · High=medium. Higher accuracy is slower on CPU. Use "↺ Audio" on a video to re-transcribe without full re-analysis.</p>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Higher accuracy is slower on CPU. Use "↺ Audio" on a video to re-transcribe without full re-analysis.</p>
             </div>
 
             <div>
