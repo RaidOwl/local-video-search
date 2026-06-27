@@ -196,9 +196,10 @@ services:
     environment:
       MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
       VRAM_TIER: ${VRAM_TIER:-mid}
-      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-16384}
-      VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-fp8}
-      VLLM_GPU_MEMORY_UTIL: ${VLLM_GPU_MEMORY_UTIL:-0.75}
+      # Non-VLLM_-prefixed names so vLLM doesn't flag them as unknown env vars
+      MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-16384}
+      QUANTIZATION: ${VLLM_QUANTIZATION:-fp8}
+      GPU_MEMORY_UTIL: ${VLLM_GPU_MEMORY_UTIL:-0.75}
     entrypoint:
       - /bin/sh
       - -c
@@ -225,9 +226,9 @@ services:
           --model "$$MAIN_MODEL" \
           --port 8002 \
           --host 0.0.0.0 \
-          --max-model-len "$$VLLM_MAX_MODEL_LEN" \
-          --quantization "$$VLLM_QUANTIZATION" \
-          --gpu-memory-utilization "$$VLLM_GPU_MEMORY_UTIL" \
+          --max-model-len "$$MAX_MODEL_LEN" \
+          --quantization "$$QUANTIZATION" \
+          --gpu-memory-utilization "$$GPU_MEMORY_UTIL" \
           --enforce-eager
     # No host port binding needed — the API reaches this via Docker's internal
     # network (http://vllm-main:8002). Uncomment to expose for external access:
