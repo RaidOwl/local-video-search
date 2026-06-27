@@ -103,6 +103,7 @@ function StatusBadge({ status, frameCount, eta }: { status: Video['status']; fra
   if (status === 'ready') return <span className="badge queued">Ready</span>
   if (status === 'analyzed') return <span className="badge analyzed"><span className="dot" />Analyzed</span>
   if (status === 'error') return <span className="badge error"><span className="dot" />Error</span>
+  if (status === 'transcribing') return <span className="badge analyzing"><span className="dot" />🎙 Analyzing…</span>
   if (status === 'retranscribing') return <span className="badge analyzing"><span className="dot" />🎙 Audio…</span>
   if (frameCount === 0) return <span className="badge queued">Queued</span>
   return (
@@ -345,7 +346,7 @@ export default function VideosPage() {
       if (!data) return
       setVideos(prev => {
         for (const v of prev) {
-          if (v.status === 'processing' || v.status === 'retranscribing') {
+          if (v.status === 'processing' || v.status === 'transcribing' || v.status === 'retranscribing') {
             const next = data.find(d => d.id === v.id)
             // Set baseline on first observation using the *current* frame count,
             // not 0. This measures rate going forward, so if the page loads
@@ -403,7 +404,7 @@ export default function VideosPage() {
     finally { setReimporting(false) }
   }
 
-  const processingCount = videos.filter(v => v.status === 'processing').length
+  const processingCount = videos.filter(v => v.status === 'processing' || v.status === 'transcribing').length
   const retranscribingCount = videos.filter(v => v.status === 'retranscribing').length
   const navigate = useNavigate()
 
@@ -423,7 +424,7 @@ export default function VideosPage() {
     .filter(v => {
       if (statusFilter !== 'all') {
         const inProgress = statusFilter === 'processing'
-        if (inProgress ? (v.status !== 'processing' && v.status !== 'retranscribing') : v.status !== statusFilter) return false
+        if (inProgress ? (v.status !== 'processing' && v.status !== 'transcribing' && v.status !== 'retranscribing') : v.status !== statusFilter) return false
       }
       if (!filterText.trim()) return true
       const q = filterText.toLowerCase()

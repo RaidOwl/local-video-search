@@ -73,12 +73,12 @@ export default function VideoDetailPage() {
   // Poll while processing
   useEffect(() => {
     if (!video) return
-    if (video.status === 'processing') {
+    if (video.status === 'processing' || video.status === 'transcribing') {
       pollRef.current = window.setInterval(async () => {
         const v = await api.getVideo(id!).catch(() => null)
         if (!v) return
         setVideo(v)
-        if (v.status !== 'processing') clearInterval(pollRef.current!)
+        if (v.status !== 'processing' && v.status !== 'transcribing') clearInterval(pollRef.current!)
       }, 4000)
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
@@ -286,17 +286,18 @@ export default function VideoDetailPage() {
             {video.status === 'ready' && <span className="badge queued">Ready</span>}
             {video.status === 'processing' && video.frame_count === 0 && <span className="badge queued">Queued</span>}
             {video.status === 'processing' && video.frame_count > 0 && <span className="badge analyzing"><span className="dot" />Analyzing…</span>}
+            {video.status === 'transcribing' && <span className="badge analyzing"><span className="dot" />🎙 Analyzing…</span>}
             {video.status === 'error' && <span className="badge error"><span className="dot" />Error</span>}
           </div>
         </div>
         <button
           className="ghost"
-          onClick={(video.status === 'processing' || video.status === 'retranscribing') ? handleCancel : handleReprocess}
+          onClick={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? handleCancel : handleReprocess}
           disabled={reprocessing || cancelling}
-          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', color: (video.status === 'processing' || video.status === 'retranscribing') ? 'var(--error)' : undefined, borderColor: (video.status === 'processing' || video.status === 'retranscribing') ? 'var(--error)' : undefined }}
-          title={(video.status === 'processing' || video.status === 'retranscribing') ? 'Stop' : 'Re-run full analysis'}
+          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', color: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined, borderColor: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined }}
+          title={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'Stop' : 'Re-run full analysis'}
         >
-          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Stopping…</> : reprocessing ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : video.status === 'processing' ? '■ Stop' : video.status === 'retranscribing' ? '■ Stop Audio' : (video.status === 'analyzed' || video.status === 'error') ? '↺ Re-analyze' : '▶ Analyze'}
+          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Stopping…</> : reprocessing ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : (video.status === 'processing' || video.status === 'transcribing') ? '■ Stop' : video.status === 'retranscribing' ? '■ Stop Audio' : (video.status === 'analyzed' || video.status === 'error') ? '↺ Re-analyze' : '▶ Analyze'}
         </button>
       </div>
 
@@ -379,10 +380,10 @@ export default function VideoDetailPage() {
             </button>
           )}
         </div>
-        {video.status === 'processing' && (
+        {(video.status === 'processing' || video.status === 'transcribing') && (
           <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>
             <span className="spinner" style={{ marginRight: '0.5rem' }} />
-            Video is still being analyzed ({video.frame_count} frames so far)…
+            {video.status === 'transcribing' ? `Transcribing audio (${video.frame_count} frames indexed)…` : `Video is still being analyzed (${video.frame_count} frames so far)…`}
           </p>
         )}
         {video.status === 'analyzed' && !video.summary && !summarizing && (
@@ -534,11 +535,11 @@ export default function VideoDetailPage() {
         <div className="section-header"><h2>Search Within Video</h2></div>
         <form onSubmit={handleSearch} className="search-bar">
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. 'when does the AMD Strix Halo appear'" />
-          <button type="submit" disabled={searching || video.status === 'processing'}>
+          <button type="submit" disabled={searching || video.status === 'processing' || video.status === 'transcribing'}>
             {searching ? 'Searching…' : 'Search'}
           </button>
         </form>
-        {video.status === 'processing' && (
+        {(video.status === 'processing' || video.status === 'transcribing') && (
           <p style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>Search available once analysis is complete.</p>
         )}
         {segments.length > 0 && (

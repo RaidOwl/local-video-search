@@ -29,7 +29,7 @@ async def lifespan(_app: FastAPI):
     global _auto_import_task
     await db.init_db()
     await embed_service.ensure_collection()
-    stuck = [v for v in await db.get_all_videos() if v.status == 'processing']
+    stuck = [v for v in await db.get_all_videos() if v.status in ('processing', 'transcribing')]
     for v in stuck:
         await db.update_video(v.id, {'frame_count': 0})
         _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
@@ -356,6 +356,7 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
                 await db.update_video(video_id, {'status': 'analyzed'})
                 return
 
+            await db.update_video(video_id, {'status': 'transcribing'})
             print(f"Transcribing audio for {video_id}...")
             segments = await loop.run_in_executor(
                 None, transcription_service.transcribe_video, video_path
@@ -1366,9 +1367,9 @@ async def retranscribe_video(video_id: str):
 async def cancel_analysis(video_id: str):
     """Cancel an in-progress analysis or retranscription for a video."""
     video = await db.get_video(video_id)
-    if not video or video.status not in ('processing', 'retranscribing'):
+    if not video or video.status not in ('processing', 'transcribing', 'retranscribing'):
         raise HTTPException(status_code=409, detail="No active analysis for this video")
-    reset_status = 'error' if video.status == 'processing' else 'analyzed'
+    reset_status = 'error' if video.status in ('processing', 'transcribing') else 'analyzed'
     task = _active_tasks.pop(video_id, None)
     if task and not task.done():
         task.cancel()

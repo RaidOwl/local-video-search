@@ -69,7 +69,7 @@ export interface Video {
   duration: number
   summary?: string
   tags: string[]
-  status: 'ready' | 'processing' | 'analyzed' | 'error' | 'retranscribing'
+  status: 'ready' | 'processing' | 'transcribing' | 'analyzed' | 'error' | 'retranscribing'
   frame_count: number
   thumbnail_path: string | null
   context: string | null
