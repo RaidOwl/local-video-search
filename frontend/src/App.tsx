@@ -9,7 +9,7 @@ import { api } from './services/api'
 import axios from 'axios'
 
 function App() {
-  const [health, setHealth] = useState<boolean>(false)
+  const [health, setHealth] = useState<boolean | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -28,7 +28,7 @@ function App() {
       <div className="app">
         <NavBar />
         <main>
-          {!health && (
+          {health === false && (
             <div className="warning">
               ⚠️ API is not available. Make sure the backend is running.
             </div>
