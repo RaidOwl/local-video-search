@@ -1,4 +1,5 @@
 import httpx
+import asyncio
 import base64
 from typing import Optional
 
@@ -15,28 +16,46 @@ class CaptionGenerator:
         image_path: str,
         prompt: str = "Describe this image in detail for video indexing."
     ) -> str:
-        """Generate a caption for an image."""
+        """Generate a caption for an image. Retries up to 3 times on transient errors."""
         with open(image_path, 'rb') as f:
             image_data = base64.b64encode(f.read()).decode()
-        
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(
-                f"{self.vllm_url}/v1/chat/completions",
-                json={
-                    "model": self.model,
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
-                            {"type": "text", "text": prompt}
-                        ]
-                    }],
-                    "max_tokens": 300
-                }
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"].strip()
+
+        payload = {
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
+                    {"type": "text", "text": prompt}
+                ]
+            }],
+            "max_tokens": 300
+        }
+
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            if attempt > 0:
+                await asyncio.sleep(5 * attempt)  # 5s, 10s backoff
+            try:
+                async with httpx.AsyncClient(timeout=300.0) as client:
+                    response = await client.post(
+                        f"{self.vllm_url}/v1/chat/completions",
+                        json=payload
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    return data["choices"][0]["message"]["content"].strip()
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                # Don't retry on client errors that indicate bad input (400, 422)
+                if e.response.status_code in (400, 422):
+                    raise
+                print(f"VLM caption attempt {attempt + 1}/3 failed ({e.response.status_code}): {e}")
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as e:
+                last_exc = e
+                print(f"VLM caption attempt {attempt + 1}/3 failed (connection): {e}")
+
+        raise RuntimeError(f"VLM captioning failed after 3 attempts") from last_exc
     
     async def caption_images_batch(
         self,
