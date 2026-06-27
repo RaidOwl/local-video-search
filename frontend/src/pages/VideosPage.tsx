@@ -184,6 +184,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
               <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
               <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0 }}>{fmt(video.duration)}</span>
               <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
+              {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}>■</button>}
               <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.3rem', color: 'var(--muted)', flexShrink: 0 }}>→</button>
               <button className="icon-btn" title="Hide" onClick={e => handleRemove(e, video.id)} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--muted)', flexShrink: 0 }}>✕</button>
             </div>
@@ -217,6 +218,7 @@ function TreeView(props: ViewProps) {
                   <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
                   <StatusBadge status={video.status} frameCount={video.frame_count} eta={etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} />
+                  {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--error)' }}>■</button>}
                   <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.3rem', color: 'var(--muted)' }}>→</button>
                   <button className="icon-btn" title="Hide" onClick={e => props.handleRemove(e, video.id)} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--muted)' }}>✕</button>
                 </div>
@@ -301,6 +303,7 @@ function FolderView(props: ViewProps) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                   <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
                   <span style={{ flex: 1 }} />
+                  {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.75rem', padding: '0.1rem 0.2rem', color: 'var(--error)' }}>■</button>}
                   <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.75rem', padding: '0.1rem 0.2rem', color: 'var(--muted)' }}>→</button>
                 </div>
                 <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
@@ -562,6 +565,9 @@ export default function VideosPage() {
                         <span className="video-title">{video.display_name || video.name}</span>
                       </div>
                       <div style={{ display: 'flex', gap: '0.1rem' }}>
+                        {video.status === 'processing' && (
+                          <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.9rem', padding: '0.2rem 0.3rem', color: 'var(--error)' }}>■</button>
+                        )}
                         <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.9rem', padding: '0.2rem 0.4rem', color: 'var(--muted)' }}>→</button>
                         <button className="icon-btn" title="Remove from library" onClick={e => handleRemove(e, video.id)} style={{ fontSize: '0.9rem', padding: '0.2rem 0.3rem', color: 'var(--muted)' }}>✕</button>
                       </div>

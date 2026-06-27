@@ -954,6 +954,16 @@ async def reprocess_video(video_id: str, req: ReprocessRequest = ReprocessReques
     return {"status": "processing", "video_id": video_id}
 
 
+@app.post("/cancel/{video_id}")
+async def cancel_analysis(video_id: str):
+    """Cancel an in-progress analysis for a video."""
+    task = _active_tasks.get(video_id)
+    if not task or task.done():
+        raise HTTPException(status_code=409, detail="No active analysis for this video")
+    task.cancel()
+    return {"status": "cancelled", "video_id": video_id}
+
+
 @app.post("/summarize/{video_id}")
 async def summarize_video(video_id: str, background_tasks: BackgroundTasks):
     """Generate or regenerate a summary for a video."""

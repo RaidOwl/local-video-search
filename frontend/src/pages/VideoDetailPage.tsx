@@ -15,6 +15,7 @@ export default function VideoDetailPage() {
   const [searching, setSearching] = useState(false)
   const [summarizing, setSummarizing] = useState(false)
   const [reprocessing, setReprocessing] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState('')
   const [tagInput, setTagInput] = useState('')
@@ -110,6 +111,15 @@ export default function VideoDetailPage() {
     } catch { /* ignore */ } finally { setReprocessing(false) }
   }
 
+  const handleCancel = async () => {
+    if (!id || cancelling) return
+    setCancelling(true)
+    try {
+      await api.cancelAnalysis(id)
+      setVideo(v => v ? { ...v, status: 'error' } : v)
+    } catch { /* ignore */ } finally { setCancelling(false) }
+  }
+
   const saveName = async () => {
     if (!id || !video) return
     const updated = await api.updateVideo(id, { display_name: nameInput.trim() || null as unknown as string })
@@ -165,12 +175,12 @@ export default function VideoDetailPage() {
         </div>
         <button
           className="ghost"
-          onClick={handleReprocess}
-          disabled={reprocessing || video.status === 'processing'}
-          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem' }}
-          title={video.status === 'processing' ? 'Already analyzing' : 'Re-run full analysis'}
+          onClick={video.status === 'processing' ? handleCancel : handleReprocess}
+          disabled={reprocessing || cancelling}
+          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', color: video.status === 'processing' ? 'var(--error)' : undefined, borderColor: video.status === 'processing' ? 'var(--error)' : undefined }}
+          title={video.status === 'processing' ? 'Stop analysis' : 'Re-run full analysis'}
         >
-          {reprocessing ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : (video.status === 'analyzed' || video.status === 'error') ? '↺ Re-analyze' : '▶ Analyze'}
+          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Stopping…</> : reprocessing ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : video.status === 'processing' ? '■ Stop' : (video.status === 'analyzed' || video.status === 'error') ? '↺ Re-analyze' : '▶ Analyze'}
         </button>
       </div>
 

@@ -165,6 +165,11 @@ export const api = {
     return res.data
   },
 
+  cancelAnalysis: async (id: string): Promise<{ status: string; video_id: string }> => {
+    const res = await client.post(`/cancel/${id}`)
+    return res.data
+  },
+
   getVideoFrames: async (id: string): Promise<{ frames: VideoFrame[]; video_id: string }> => {
     const res = await client.get(`/videos/${id}/frames`)
     return res.data
