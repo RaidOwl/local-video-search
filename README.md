@@ -25,8 +25,8 @@ Requirements depend on the AI backend you choose:
 | `ollama` (mid / 7B) | ≥ 10 GB | Recommended starting point |
 | `ollama` (high / 32B) | ≥ 20 GB | Q4 quantized |
 | `vllm` (mid / 7B FP8) | ≥ 16 GB | NVIDIA Hopper / Ada / Blackwell |
-| `vllm` (high / 32B FP8) | ≥ 40 GB | NVIDIA Hopper / Ada / Blackwell |
-| `vllm` (ultra / 72B FP8) | ≥ 128 GB | e.g. DGX Spark GB10 |
+| `vllm` (high / 32B FP8) | ≥ 40 GB | e.g. DGX Spark GB10 |
+| `vllm` (ultra / 72B FP8) | ≥ 128 GB | Multi-GPU server |
 | `custom` | varies | Point at any OpenAI-compatible server |
 
 Transcription (Whisper) runs on CPU inside the API container — no extra GPU needed.
