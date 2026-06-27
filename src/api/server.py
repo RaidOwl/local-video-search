@@ -972,12 +972,16 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
     for seg in all_segments:
         video_segs.setdefault(seg["video_id"], []).append(seg)
 
+    # After re-ranking the blended scores are on a different scale than raw Qdrant
+    # cosine similarity, so use a fixed floor instead of the user threshold.
+    seg_threshold = 0.2 if expand else threshold
+
     final_results = []
     for vid, segs in video_segs.items():
         meta = video_meta.get(vid)
         if not meta:
             continue
-        top_segments = [s for s in segs if s["score"] >= threshold]
+        top_segments = [s for s in segs if s["score"] >= seg_threshold]
         if not top_segments:
             continue
         best_score = max(s["score"] for s in top_segments)
@@ -992,7 +996,7 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
         })
 
     # Only return videos where the best-matching segment is above threshold
-    final_results = [r for r in final_results if r["score"] >= threshold]
+    final_results = [r for r in final_results if r["score"] >= seg_threshold]
 
     # Sort by score descending, cap to limit
     final_results.sort(key=lambda x: x["score"], reverse=True)
