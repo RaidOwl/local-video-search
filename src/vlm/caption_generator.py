@@ -84,9 +84,12 @@ class VLMService:
         """Generate caption for a single frame."""
         if context:
             prompt = (
-                f'This video is about: {context}\n\n'
-                'Describe what is happening in this video frame in 1-2 plain sentences. '
-                'Include the main subject, action, and setting. No lists, no headers, no markdown.'
+                f'Background (may help identify subjects — ignore it if it does not '
+                f'match this frame): {context}\n\n'
+                'Describe only what is actually visible in this video frame in 1-2 plain '
+                'sentences. Include the main subject, action, and setting. Do not assume '
+                'the background applies if the frame shows something else. '
+                'No lists, no headers, no markdown.'
             )
         else:
             prompt = (

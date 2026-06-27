@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, Video, AppSettings } from '../services/api'
 import { fmt } from '../utils'
-import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, ChevronDown, ChevronRight } from 'lucide-react'
+import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, ChevronDown, ChevronRight, Mic } from 'lucide-react'
 
 type ViewMode = 'card' | 'tree' | 'folder'
 
@@ -104,8 +104,8 @@ function StatusBadge({ status, frameCount, eta }: { status: Video['status']; fra
   if (status === 'ready') return <span className="badge queued">Ready</span>
   if (status === 'analyzed') return <span className="badge analyzed"><span className="dot" />Analyzed</span>
   if (status === 'error') return <span className="badge error"><span className="dot" />Error</span>
-  if (status === 'transcribing') return <span className="badge analyzing"><span className="dot" />Analyzing…</span>
-  if (status === 'retranscribing') return <span className="badge analyzing"><span className="dot" />Audio…</span>
+  if (status === 'transcribing') return <span className="badge transcribing"><Mic size={11} />Transcribing…</span>
+  if (status === 'retranscribing') return <span className="badge transcribing"><Mic size={11} />Audio…</span>
   if (frameCount === 0) return <span className="badge queued">Queued</span>
   return (
     <span className="badge analyzing">
