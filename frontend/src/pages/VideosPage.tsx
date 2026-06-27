@@ -588,7 +588,6 @@ export default function VideosPage() {
                       </div>
                     )}
                     {video.context && <p style={{ fontSize: '0.72rem', color: 'var(--muted)', fontStyle: 'italic', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={video.context}>"{video.context}"</p>}
-                    {video.summary && <p className="video-summary-preview">{video.summary}</p>}
                     {video.tags.length > 0 && (
                       <div className="video-tags">{video.tags.map(t => <span key={t} className="tag">{t}</span>)}</div>
                     )}
