@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api, AppSettings, QdrantHealth, Video } from '../services/api'
+import { RotateCcw, Check, AlertTriangle } from 'lucide-react'
 
 type ModelStatus = { name: string; url: string; ok: boolean; models: string[] }
 
@@ -56,7 +57,7 @@ function BackendBanner({ form }: { form: AppSettings }) {
     <div style={{ border: `1px solid ${color}`, borderRadius: 'var(--radius)', padding: '0.85rem 1rem', marginBottom: '1.75rem', background: bg }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: isLocal ? '0.4rem' : 0 }}>
         <span style={{ color, fontWeight: 700, fontSize: '0.85rem' }}>
-          {isWarning ? '⚠ ' : isNative ? '✓ ' : ''}{BACKEND_LABELS[backend] ?? backend}
+          {isWarning && <AlertTriangle size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}{isNative && <Check size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}{BACKEND_LABELS[backend] ?? backend}
         </span>
         {isLocal && form._resolved_family && (
           <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
@@ -150,7 +151,7 @@ export default function SettingsPage() {
         </div>
       ))}
       <button className="ghost" onClick={handleProbe} disabled={probing} style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}>
-        {probing ? <span className="spinner" style={{ width: 10, height: 10 }} /> : '↺'}
+        {probing ? <span className="spinner" style={{ width: 10, height: 10 }} /> : <RotateCcw size={12} />}
       </button>
     </div>
   ) : null
@@ -412,7 +413,7 @@ export default function SettingsPage() {
                       {h.summary.missing > 0 && <span style={{ color: 'var(--error)' }}>{h.summary.missing} missing</span>}
                       {h.summary.incomplete > 0 && <span style={{ color: 'var(--warning, #f59e0b)' }}>{h.summary.incomplete} incomplete</span>}
                       {h.summary.orphaned_points > 0 && <span style={{ color: 'var(--muted)' }}>{h.summary.orphaned_points} orphaned pts</span>}
-                      {allOk && <span style={{ color: 'var(--success)' }}>✓ All clean</span>}
+                      {allOk && <span style={{ color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: 3 }}><Check size={12} /> All clean</span>}
                     </>
                   )}
                   {h.error && <span style={{ color: 'var(--error)', fontSize: '0.75rem' }}>{h.error}</span>}
@@ -457,7 +458,7 @@ export default function SettingsPage() {
           <button onClick={handleSave} disabled={saving} style={{ minWidth: 100 }}>
             {saving ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Saving…</> : 'Save'}
           </button>
-          {saved && <span style={{ color: 'var(--success)', fontSize: '0.85rem' }}>✓ Saved</span>}
+          {saved && <span style={{ color: 'var(--success)', fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: 3 }}><Check size={13} /> Saved</span>}
           {error && <span style={{ color: 'var(--error)', fontSize: '0.85rem' }}>{error}</span>}
         </div>
 

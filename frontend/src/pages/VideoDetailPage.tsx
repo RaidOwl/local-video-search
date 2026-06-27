@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { api, Video, Segment, VideoFrame } from '../services/api'
 import { fmt } from '../utils'
+import { Pencil, Play, Square, RotateCcw, X, Download, Check, Mic, Film } from 'lucide-react'
 
 export default function VideoDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -263,7 +264,7 @@ export default function VideoDetailPage() {
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <h1 style={{ fontSize: '1.4rem' }}>{video.display_name || video.name}</h1>
-              <button className="icon-btn" onClick={() => { setNameInput(video.display_name || video.name); setEditingName(true) }} title="Rename">✎</button>
+              <button className="icon-btn" onClick={() => { setNameInput(video.display_name || video.name); setEditingName(true) }} title="Rename"><Pencil size={14} /></button>
             </div>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
@@ -297,7 +298,7 @@ export default function VideoDetailPage() {
           style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', color: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined, borderColor: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined }}
           title={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'Stop' : 'Re-run full analysis'}
         >
-          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Stopping…</> : reprocessing ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : (video.status === 'processing' || video.status === 'transcribing') ? '■ Stop' : video.status === 'retranscribing' ? '■ Stop Audio' : (video.status === 'analyzed' || video.status === 'error') ? '↺ Re-analyze' : '▶ Analyze'}
+          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Stopping…</> : reprocessing ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : (video.status === 'processing' || video.status === 'transcribing') ? <><Square size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Stop</> : video.status === 'retranscribing' ? <><Square size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Stop Audio</> : (video.status === 'analyzed' || video.status === 'error') ? <><RotateCcw size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Re-analyze</> : <><Play size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Analyze</>}
         </button>
       </div>
 
@@ -317,9 +318,9 @@ export default function VideoDetailPage() {
         {video.status === 'analyzed' && (
           <>
             <button className="ghost" style={{ fontSize: '0.82rem' }} onClick={() => setShowFramePicker(v => !v)}>
-              {showFramePicker ? '✕ Hide frames' : video.thumbnail_path ? 'Change thumbnail' : 'Set thumbnail'}
+              {showFramePicker ? <><X size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Hide frames</> : video.thumbnail_path ? 'Change thumbnail' : 'Set thumbnail'}
             </button>
-            {thumbnailSaved && <span style={{ fontSize: '0.78rem', color: 'var(--success)' }}>✓ Saved</span>}
+            {thumbnailSaved && <span style={{ fontSize: '0.78rem', color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: 3 }}><Check size={12} /> Saved</span>}
           </>
         )}
         <span style={{ flex: 1 }} />
@@ -327,9 +328,9 @@ export default function VideoDetailPage() {
           href={`/api/videos/${video.id}/download`}
           download
           className="ghost"
-          style={{ fontSize: '0.82rem', textDecoration: 'none' }}
+          style={{ fontSize: '0.82rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
         >
-          ⬇ Download
+          <Download size={13} /> Download
         </a>
       </div>
 
@@ -435,7 +436,7 @@ export default function VideoDetailPage() {
                       ? ` · ~${Math.ceil((estTotal - elapsed) / 60)}m left`
                       : ''
                     return <><span className="spinner" style={{ width: 10, height: 10 }} /> {elapsedStr}{etaStr}</>
-                  })() : video.status === 'retranscribing' ? '↺ Restart Audio' : '↺ Audio'}
+                  })() : video.status === 'retranscribing' ? <><RotateCcw size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Restart Audio</> : <><RotateCcw size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Audio</>}
                 </button>
               )}
               {(['all', 'visual', 'speech'] as const).map(f => (
@@ -450,7 +451,7 @@ export default function VideoDetailPage() {
                     borderRadius: 'var(--radius)',
                   }}
                 >
-                  {f === 'all' ? 'All' : f === 'visual' ? '🎞 Visual' : '🎙 Speech'}
+                  {f === 'all' ? 'All' : f === 'visual' ? <><Film size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Visual</> : <><Mic size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Speech</>}
                 </button>
               ))}
             </div>
@@ -477,8 +478,8 @@ export default function VideoDetailPage() {
                   ) : (
                     <div style={{
                       width: 60, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      background: 'var(--surface)', borderRadius: 4, flexShrink: 0, fontSize: '1.2rem', marginTop: 2,
-                    }}>🎙</div>
+                      background: 'var(--surface)', borderRadius: 4, flexShrink: 0, marginTop: 2,
+                    }}><Mic size={18} style={{ color: 'var(--muted)' }} /></div>
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ fontSize: '0.72rem', color: 'var(--accent)', fontVariantNumeric: 'tabular-nums', display: 'block', marginBottom: '0.2rem' }}>
@@ -519,10 +520,10 @@ export default function VideoDetailPage() {
                           href={`/api/videos/${video.id}/clip?start=${Math.max(0, seg.timestamp - 2).toFixed(1)}&end=${(seg.timestamp + 30).toFixed(1)}`}
                           download
                           onClick={e => e.stopPropagation()}
-                          style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: '0.8rem', flexShrink: 0, opacity: 0.45, marginTop: '0.15rem', lineHeight: 1 }}
+                          style={{ color: 'var(--muted)', textDecoration: 'none', flexShrink: 0, opacity: 0.45, marginTop: '0.15rem', lineHeight: 0 }}
                           title="Download ~30s clip"
                         >
-                          ⬇️
+                          <Download size={13} />
                         </a>
                       </div>
                     )}

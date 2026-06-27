@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import SearchPage from './pages/SearchPage'
 import VideosPage from './pages/VideosPage'
 import VideoDetailPage from './pages/VideoDetailPage'
@@ -30,7 +31,7 @@ function App() {
         <main>
           {health === false && (
             <div className="warning">
-              ⚠ API is not available. Make sure the backend is running.
+              <AlertTriangle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 6 }} /> API is not available. Make sure the backend is running.
             </div>
           )}
           <Routes>

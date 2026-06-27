@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, SearchResult } from '../services/api'
 import { fmt } from '../utils'
+import { Mic, Film, AlertTriangle } from 'lucide-react'
 
 const SS_QUERY = 'vss_search_query'
 const SS_RESULTS = 'vss_search_results'
@@ -119,7 +120,7 @@ export default function SearchPage() {
             Audio
           </label>
           {showNoTranscriptWarning && (
-            <span title="Enable audio transcription from the video detail page" style={{ fontSize: '0.78rem', color: 'var(--warning)', flexShrink: 0 }}>⚠ No transcripts found</span>
+            <span title="Enable audio transcription from the video detail page" style={{ fontSize: '0.78rem', color: 'var(--warning)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4 }}><AlertTriangle size={12} /> No transcripts found</span>
           )}
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
           <label title="Use the AI to generate query variations before searching. Slower but finds more." style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0, color: enhanced ? 'var(--accent)' : 'var(--muted)' }}>
@@ -189,7 +190,7 @@ export default function SearchPage() {
                           )}
                           <span title={seg.caption.startsWith('[transcript]') ? 'Audio transcript' : 'Visual caption'}
                             style={{ fontSize: '0.7rem', flexShrink: 0, opacity: 0.5 }}>
-                            {seg.caption.startsWith('[transcript]') ? '◉' : '◻'}
+                            {seg.caption.startsWith('[transcript]') ? <Mic size={11} /> : <Film size={11} />}
                           </span>
                           <span style={{
                             fontFamily: 'monospace', fontSize: '0.78rem',
