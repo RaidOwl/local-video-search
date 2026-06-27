@@ -30,7 +30,11 @@ const URL_GROUPS: Array<{
   },
 ]
 
-const WHISPER_SIZES = ['tiny', 'base', 'small', 'medium', 'large']
+const WHISPER_TIERS = [
+  { label: 'Low', model: 'base' },
+  { label: 'Medium', model: 'small' },
+  { label: 'High', model: 'medium' },
+]
 
 const BACKEND_LABELS: Record<string, string> = {
   custom: 'Custom',
@@ -329,12 +333,12 @@ export default function SettingsPage() {
             <div>
               <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.4rem' }}>Whisper model</label>
               <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                {WHISPER_SIZES.map(s => (
-                  <button key={s} className={form.whisper_model === s ? '' : 'ghost'}
-                    onClick={() => set('whisper_model', s)} style={{ fontSize: '0.82rem', padding: '0.3rem 0.75rem' }}>{s}</button>
+                {WHISPER_TIERS.map(({ label, model }) => (
+                  <button key={model} className={form.whisper_model === model ? '' : 'ghost'}
+                    onClick={() => set('whisper_model', model)} style={{ fontSize: '0.82rem', padding: '0.3rem 0.75rem' }}>{label}</button>
                 ))}
               </div>
-              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Larger models are more accurate but slower. Requires re-analysis to affect existing videos.</p>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Low=base · Medium=small · High=medium. Higher accuracy is slower on CPU. Use "↺ Audio" on a video to re-transcribe without full re-analysis.</p>
             </div>
 
             <div>

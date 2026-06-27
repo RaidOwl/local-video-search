@@ -20,6 +20,9 @@ export default function NavBar() {
           <NavLink to="/settings" className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}>
             Settings
           </NavLink>
+          <a href="/docs" target="_blank" rel="noopener noreferrer" className="nav-link">
+            API
+          </a>
         </div>
       </div>
     </nav>

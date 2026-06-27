@@ -90,27 +90,28 @@ class EmbeddingService:
         video_id: str,
         frame_path: str,
         timestamp: float,
-        caption: str = None
+        caption: str = None,
+        _point_id: str = None,
     ):
         """Index a single frame with its embedding."""
         # Embed the caption text; fall back to frame path if no caption
         text_to_embed = caption if caption else frame_path
         embedding = await self.generator.embed_text(_clean_for_embed(text_to_embed))
-        
+
         if not embedding:
             return None
-        
+
         from qdrant_client.models import PointStruct
-        
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_{timestamp}"))
-        
+
+        point_id = _point_id or str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_{timestamp}"))
+
         payload = {
             "video_id": video_id,
             "frame_path": frame_path,
             "timestamp": timestamp,
             "caption": caption or ""
         }
-        
+
         self.qdrant_client.upsert(
             collection_name=self.collection_name,
             points=[PointStruct(
@@ -119,7 +120,7 @@ class EmbeddingService:
                 payload=payload
             )]
         )
-        
+
         return point_id
     
     async def search(

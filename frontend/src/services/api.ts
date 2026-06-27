@@ -69,10 +69,11 @@ export interface Video {
   duration: number
   summary?: string
   tags: string[]
-  status: 'ready' | 'processing' | 'analyzed' | 'error'
+  status: 'ready' | 'processing' | 'analyzed' | 'error' | 'retranscribing'
   frame_count: number
   thumbnail_path: string | null
   context: string | null
+  analyzed_at?: string | null
 }
 
 export interface VideoFrame {
@@ -120,8 +121,8 @@ export const api = {
     return res.data
   },
 
-  search: async (query: string, limit?: number, threshold?: number, sources?: string): Promise<{ results: SearchResult[]; query: string }> => {
-    const res = await client.get('/search', { params: { q: query, limit, threshold, sources } })
+  search: async (query: string, limit?: number, threshold?: number, sources?: string, expand?: boolean): Promise<{ results: SearchResult[]; query: string }> => {
+    const res = await client.get('/search', { params: { q: query, limit, threshold, sources, expand } })
     return res.data
   },
 
@@ -168,6 +169,11 @@ export const api = {
     return res.data
   },
 
+  retranscribeAudio: async (id: string): Promise<{ status: string; video_id: string }> => {
+    const res = await client.post(`/retranscribe/${id}`)
+    return res.data
+  },
+
   cancelAnalysis: async (id: string): Promise<{ status: string; video_id: string }> => {
     const res = await client.post(`/cancel/${id}`)
     return res.data
@@ -178,9 +184,13 @@ export const api = {
     return res.data
   },
 
-  getTranscript: async (id: string): Promise<{ segments: Array<{ timestamp: number; text: string }>; count: number }> => {
+  getTranscript: async (id: string): Promise<{ segments: Array<{ id: string; timestamp: number; text: string }>; count: number }> => {
     const res = await client.get(`/videos/${id}/transcript`)
     return res.data
+  },
+
+  updateFrameCaption: async (videoId: string, frameId: string, caption: string): Promise<void> => {
+    await client.patch(`/videos/${videoId}/frames/${frameId}`, { caption })
   },
 
   modelStatus: async (): Promise<{ services: Array<{ name: string; url: string; ok: boolean; models: string[] }> }> => {

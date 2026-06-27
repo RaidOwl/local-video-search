@@ -6,6 +6,9 @@ from pydantic import BaseModel
 from typing import Optional, List
 from pathlib import Path
 import asyncio
+import os
+import random
+import tempfile
 import uuid
 import json
 
@@ -30,10 +33,41 @@ async def lifespan(_app: FastAPI):
     for v in stuck:
         await db.update_video(v.id, {'frame_count': 0})
         _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
+    # Restart any retranscription that was interrupted
+    stuck_audio = [v for v in await db.get_all_videos() if v.status == 'retranscribing']
+    for v in stuck_audio:
+        task = asyncio.create_task(_retranscribe_audio(v.id, v.path))
+        _active_tasks[v.id] = task
     _auto_import_task = asyncio.create_task(_auto_import_loop())
     yield
 
-app = FastAPI(title="Local Video Search & Summarization", lifespan=lifespan)
+app = FastAPI(
+    title="Local Video Search & Summarization",
+    description="""REST API for ingesting, analyzing, and searching local video libraries.
+
+**Base URL:** `http://<host>:8000` (or `/api/` when accessed via the frontend)
+
+### Quick start
+1. `POST /ingest` — add a video file to the library
+2. `POST /reprocess/{video_id}` — run vision + speech analysis
+3. `GET /search?q=your+query` — semantic search across all analyzed videos
+4. `GET /search/segments?q=your+query&video_id=...` — search within a specific video
+""",
+    version="1.0.0",
+    openapi_tags=[
+        {"name": "Search", "description": "Semantic search across video frames and transcripts."},
+        {"name": "Videos", "description": "Library management — list, update, hide, and delete videos."},
+        {"name": "Analysis", "description": "Ingest, analyze, transcribe, and summarize videos."},
+        {"name": "Media", "description": "Stream, download, and clip video files; fetch frames and thumbnails."},
+        {"name": "System", "description": "Health, settings, model status, and storage diagnostics."},
+    ],
+    servers=[
+        {"url": "/api", "description": "Via frontend proxy (port 3000)"},
+        {"url": "/", "description": "Direct API (port 8000)"},
+    ],
+    swagger_ui_parameters={"defaultModelsExpandDepth": -1, "tryItOutEnabled": True},
+    lifespan=lifespan,
+)
 
 # CORS
 app.add_middleware(
@@ -188,6 +222,7 @@ class VideoResponse(BaseModel):
     frame_count: int
     thumbnail_path: Optional[str] = None
     context: Optional[str] = None
+    analyzed_at: Optional[str] = None
 
 
 class VideoUpdateRequest(BaseModel):
@@ -203,9 +238,44 @@ class SegmentSearchResponse(BaseModel):
     query: str
 
 
+class FrameUpdateRequest(BaseModel):
+    caption: str
+
+
 # Track in-flight tasks by video_id so we can cancel on re-trigger
 _active_tasks: dict = {}
 _auto_import_task: asyncio.Task | None = None
+
+
+async def _expand_query(q: str) -> list[str]:
+    """Use the LLM to generate alternative phrasings of a search query.
+    Returns a list of 2-3 reformulations (empty list on failure)."""
+    cfg = _effective_cfg()
+    url = cfg.get("vllm_url", "").rstrip("/")
+    model = cfg.get("vllm_model", "")
+    if not url or not model:
+        return []
+    prompt = (
+        f'Generate 3 alternative search queries for a personal video library search. '
+        f'The user is looking for: "{q}"\n\n'
+        f'Write queries that use different vocabulary — synonyms, technical terms, '
+        f'and different phrasings that might appear in video transcripts or captions. '
+        f'Return ONLY the 3 queries, one per line, no numbering or explanation.'
+    )
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{url}/v1/chat/completions",
+                json={"model": model, "messages": [{"role": "user", "content": prompt}],
+                      "max_tokens": 120, "temperature": 0.4},
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
+            lines = [ln.strip().strip('"\'') for ln in text.splitlines() if ln.strip()]
+            return [ln for ln in lines if len(ln) > 4][:3]
+    except Exception:
+        return []
 
 
 def _start_analysis(video_path: str, video_id: str, context: str = '') -> None:
@@ -263,10 +333,10 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
                 })
                 await db.update_video(video_id, {'frame_count': i + 1})
 
-            # Set first frame as default thumbnail if none set
+            # Set a random frame as the default thumbnail if none set
             video_check = await db.get_video(video_id)
             if frames and not video_check.thumbnail_path:
-                await db.update_video(video_id, {'thumbnail_path': str(frames[0])})
+                await db.update_video(video_id, {'thumbnail_path': str(random.choice(frames))})
 
             print(f"Transcribing audio for {video_id}...")
             segments = await loop.run_in_executor(
@@ -286,6 +356,27 @@ async def process_video(video_path: str, video_id: str, context: str = ''):
                     "timestamp": seg.start, "frame_path": "",
                     "caption": text, "embedding_id": seg_id
                 })
+
+            # Sliding windows: embed overlapping groups of 3 consecutive transcript
+            # segments so multi-sentence topics get a single strong embedding rather
+            # than being spread across individually-weak points.
+            WINDOW_SIZE = 3
+            WINDOW_STEP = 2  # 1-segment overlap between adjacent windows
+            for i in range(0, len(segments) - 1, WINDOW_STEP):
+                win = segments[i:i + WINDOW_SIZE]
+                if len(win) < 2:
+                    continue
+                combined = " ".join(s.text.strip() for s in win if s.text.strip())
+                if not combined:
+                    continue
+                win_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                    f"{video_id}_win_{win[0].start:.3f}_{win[-1].end:.3f}"))
+                await embed_service.index_frame(
+                    video_id=video_id, frame_path="",
+                    timestamp=win[0].start,
+                    caption=f"[transcript] {combined}",
+                    _point_id=win_id,
+                )
 
             await db.update_video(video_id, {'status': 'analyzed'})
 
@@ -360,12 +451,12 @@ async def _auto_import_loop():
         await asyncio.sleep(interval * 60)
 
 
-@app.get("/health")
+@app.get("/health", tags=["System"])
 async def health():
     return {"status": "healthy"}
 
 
-@app.post("/reimport")
+@app.post("/reimport", tags=["System"])
 async def reimport():
     """Scan all configured video library directories and add any new videos."""
     await _auto_import(
@@ -376,7 +467,7 @@ async def reimport():
     return {"total": len(videos)}
 
 
-@app.get("/status/models")
+@app.get("/status/models", tags=["System"])
 async def model_status():
     """Check reachability of each AI model endpoint."""
     import httpx
@@ -398,7 +489,7 @@ async def model_status():
     return {"services": list(results)}
 
 
-@app.get("/status/qdrant")
+@app.get("/status/qdrant", tags=["System"])
 async def qdrant_health():
     """Check Qdrant health: reachability, collection state, and per-video embedding integrity."""
     from collections import Counter
@@ -488,7 +579,7 @@ async def qdrant_health():
     return out
 
 
-@app.post("/status/qdrant/purge-orphans")
+@app.post("/status/qdrant/purge-orphans", tags=["System"])
 async def qdrant_purge_orphans():
     """Delete Qdrant points for video_ids that no longer exist in the database."""
     from collections import Counter
@@ -536,7 +627,7 @@ async def qdrant_purge_orphans():
     return {"deleted_points": deleted, "orphaned_video_ids": orphaned_ids}
 
 
-@app.get("/settings")
+@app.get("/settings", tags=["System"])
 async def get_settings_endpoint():
     """Return current effective settings."""
     cfg = _effective_cfg()
@@ -580,7 +671,7 @@ async def _sync_blacklist():
             await db.update_video(video.id, {'hidden': '0'})
 
 
-@app.put("/settings")
+@app.put("/settings", tags=["System"])
 async def update_settings_endpoint(req: SettingsUpdateRequest):
     """Persist settings overrides and reinitialize services."""
     global _auto_import_task
@@ -598,7 +689,7 @@ async def update_settings_endpoint(req: SettingsUpdateRequest):
 
 
 
-@app.get("/browse")
+@app.get("/browse", tags=["System"])
 async def browse_directory(path: str = "/data/videos/lib1"):
     """List directories and video files within the configured library dirs."""
     base = Path("/data/videos").resolve()
@@ -633,7 +724,7 @@ async def browse_directory(path: str = "/data/videos/lib1"):
     }
 
 
-@app.post("/ingest", response_model=IngestResponse)
+@app.post("/ingest", response_model=IngestResponse, tags=["Analysis"])
 async def ingest_video(request: IngestRequest):
     """Ingest a video or directory of videos into the library without auto-analyzing."""
     if request.video_path:
@@ -698,23 +789,79 @@ async def ingest_video(request: IngestRequest):
         raise HTTPException(status_code=400, detail="Must specify video_path or directory")
 
 
-@app.get("/search", response_model=SearchResponse)
-async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, sources: str = 'both'):
+@app.get("/search", response_model=SearchResponse, tags=["Search"])
+async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, sources: str = 'both', expand: bool = False):
     """Search for videos by natural language query."""
     processed = query_processor.process_query(q)
-    # UI source filter overrides auto-detected intent
-    if sources == 'video':
-        processed['source_intent'] = 'visual'
-    elif sources == 'audio':
-        processed['source_intent'] = 'speech'
 
-    # Fetch more raw results so we have enough to group and show segments
-    results = await embed_service.search(
-        query=processed["search_terms"],
-        limit=limit * 5,
-        score_threshold=threshold,
-        source_intent=processed["source_intent"]
-    )
+    # When the UI has both sources selected, always use mixed — don't auto-detect
+    # intent from the query phrasing, since the user wants all source types searched.
+    if sources == 'video':
+        source_intent = 'visual'
+    elif sources == 'audio':
+        source_intent = 'speech'
+    else:
+        source_intent = 'mixed'
+
+    # The keyword boost below can raise scores by up to MAX_BOOST.
+    # Pass a relaxed pre-filter to Qdrant so results that qualify *after*
+    # boosting aren't cut before they ever get a chance to be boosted.
+    MAX_BOOST = 1.25
+    qdrant_threshold = max(0.0, threshold / MAX_BOOST)
+
+    # Build list of queries to search: cleaned + original, plus LLM expansions if requested
+    queries_to_search = list(dict.fromkeys([processed["search_terms"], q]))  # dedup, order-preserved
+    if expand:
+        expansions = await _expand_query(q)
+        for eq in expansions:
+            cleaned_eq = query_processor.extract_search_terms(eq)
+            for variant in dict.fromkeys([cleaned_eq, eq]):
+                if variant not in queries_to_search:
+                    queries_to_search.append(variant)
+
+    # Run all queries in parallel; merge by Qdrant point ID keeping the max score.
+    search_params = dict(limit=limit * 8, score_threshold=qdrant_threshold, source_intent=source_intent)
+    all_result_lists = await asyncio.gather(*(
+        embed_service.search(query=qv, **search_params) for qv in queries_to_search
+    ))
+    merged: dict = {}
+    for result_list in all_result_lists:
+        for r in result_list:
+            hit_id = r.get("id")
+            if hit_id not in merged or r["score"] > merged[hit_id]["score"]:
+                merged[hit_id] = r
+    results = list(merged.values())
+
+    # Keyword overlap boost with prefix matching (handles plurals/conjugations):
+    # "speeds" matches "speed", "drives" matches "drive", etc.
+    import re as _re
+    _STOPWORDS = {
+        'a','an','the','and','or','but','in','on','at','to','for','of','with',
+        'i','my','me','we','you','it','is','was','are','were','be','been',
+        'have','had','has','do','did','does','about','that','this','which',
+        'when','where','how','what','who','their','its','by','from','up',
+        'specifically','really','actually','just','so','some','any',
+    }
+    key_terms = [
+        w.lower() for w in _re.findall(r'\b[a-zA-Z]{3,}\b', processed["search_terms"])
+        if w.lower() not in _STOPWORDS
+    ]
+    def _boost(caption: str) -> float:
+        if not key_terms:
+            return 1.0
+        cap_lower = caption.lower()
+        cap_words = set(_re.findall(r'\b[a-z]{3,}\b', cap_lower))
+        hits = sum(
+            1 for t in key_terms
+            if t in cap_lower or any(
+                cw.startswith(t[:5]) or t.startswith(cw[:5])
+                for cw in cap_words if len(cw) >= 4 and len(t) >= 4
+            )
+        )
+        return 1.0 + (MAX_BOOST - 1.0) * hits / len(key_terms)
+
+    for r in results:
+        r["score"] = r["score"] * _boost(r.get("caption", ""))
 
     # Group by video, collecting all raw hits
     video_hits: dict = {}
@@ -744,7 +891,8 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
                 "score": s.score,
                 "frame_path": s.frame_path,
             }
-            for s in segments[:5]
+            for s in segments[:25]
+            if s.score >= threshold  # only show segments that meet the threshold
         ]
         final_results.append({
             "video_id": vid,
@@ -752,7 +900,7 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
             "path": video.path,
             "duration": video.duration,
             "score": data["score"],
-            "matching_frames": len(segments),
+            "matching_frames": len(top_segments),
             "segments": top_segments,
         })
 
@@ -766,7 +914,7 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
     return SearchResponse(results=final_results, query=q)
 
 
-@app.get("/search/segments", response_model=SegmentSearchResponse)
+@app.get("/search/segments", response_model=SegmentSearchResponse, tags=["Search"])
 async def search_segments(video_id: str, q: str, limit: int = 20):
     """Search for specific segments within a video."""
     processed = query_processor.process_query(q)
@@ -811,6 +959,9 @@ def _video_to_response(v) -> VideoResponse:
         tags = _json.loads(v.tags or '[]')
     except Exception:
         pass
+    _status = getattr(v, 'status', 'processing')
+    _updated_at = getattr(v, 'updated_at', None)
+    _analyzed_at = _updated_at.isoformat() if _updated_at and _status in ('analyzed', 'retranscribing') else None
     return VideoResponse(
         id=v.id,
         name=v.name,
@@ -819,21 +970,22 @@ def _video_to_response(v) -> VideoResponse:
         duration=v.duration,
         summary=v.summary,
         tags=tags,
-        status=getattr(v, 'status', 'processing'),
+        status=_status,
         frame_count=getattr(v, 'frame_count', 0) or 0,
         thumbnail_path=getattr(v, 'thumbnail_path', None),
         context=getattr(v, 'context', None),
+        analyzed_at=_analyzed_at,
     )
 
 
-@app.get("/videos", response_model=List[VideoResponse])
+@app.get("/videos", response_model=List[VideoResponse], tags=["Videos"])
 async def list_videos(hidden: bool = False):
     """List videos. Pass ?hidden=true to list hidden videos instead."""
     videos = await db.get_all_videos(hidden=hidden)
     return [_video_to_response(v) for v in videos]
 
 
-@app.get("/videos/{video_id}", response_model=VideoResponse)
+@app.get("/videos/{video_id}", response_model=VideoResponse, tags=["Videos"])
 async def get_video(video_id: str):
     """Get details for a specific video."""
     video = await db.get_video(video_id)
@@ -842,7 +994,7 @@ async def get_video(video_id: str):
     return _video_to_response(video)
 
 
-@app.patch("/videos/{video_id}", response_model=VideoResponse)
+@app.patch("/videos/{video_id}", response_model=VideoResponse, tags=["Videos"])
 async def update_video(video_id: str, req: VideoUpdateRequest):
     """Update display name and/or tags for a video."""
     import json as _json
@@ -864,7 +1016,7 @@ async def update_video(video_id: str, req: VideoUpdateRequest):
     return _video_to_response(video)
 
 
-@app.delete("/videos/{video_id}", status_code=204)
+@app.delete("/videos/{video_id}", status_code=204, tags=["Videos"])
 async def delete_video(video_id: str):
     """Hide a video from the library (soft delete). Use POST /videos/{id}/unhide to restore."""
     video = await db.get_video(video_id)
@@ -873,7 +1025,7 @@ async def delete_video(video_id: str):
     await db.update_video(video_id, {'hidden': '1'})
 
 
-@app.post("/videos/{video_id}/unhide", status_code=204)
+@app.post("/videos/{video_id}/unhide", status_code=204, tags=["Videos"])
 async def unhide_video(video_id: str):
     """Restore a hidden video back into the library."""
     video = await db.get_video(video_id)
@@ -882,7 +1034,7 @@ async def unhide_video(video_id: str):
     await db.update_video(video_id, {'hidden': '0'})
 
 
-@app.get("/videos/{video_id}/frames")
+@app.get("/videos/{video_id}/frames", tags=["Videos"])
 async def list_video_frames(video_id: str):
     """List all visual frames for a video (excludes transcript entries)."""
     video = await db.get_video(video_id)
@@ -897,16 +1049,18 @@ async def list_video_frames(video_id: str):
     return {"frames": visual, "video_id": video_id}
 
 
-@app.get("/videos/{video_id}/thumbnail")
+@app.get("/videos/{video_id}/thumbnail", tags=["Media"])
 async def get_video_thumbnail(video_id: str):
-    """Return thumbnail image for a video, falling back to the middle extracted frame."""
+    """Return thumbnail image for a video, falling back to extracted or on-demand frame."""
     video = await db.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+    # 1. Explicit thumbnail already set
     if video.thumbnail_path:
         p = Path(video.thumbnail_path)
         if p.exists():
             return FileResponse(str(p), media_type="image/jpeg")
+    # 2. Middle frame from a completed analysis
     frames = await db.get_frames_for_video(video_id)
     visual = [f for f in frames if f.frame_path and not (f.caption or '').startswith('[transcript]')]
     if visual:
@@ -914,10 +1068,24 @@ async def get_video_thumbnail(video_id: str):
         p = Path(frame.frame_path)
         if p.exists():
             return FileResponse(str(p), media_type="image/jpeg")
+    # 3. On-demand preview: extract a single frame at 10% into the video via ffmpeg
+    video_path = Path(video.path)
+    if video_path.exists() and getattr(video, 'duration', 0) > 0:
+        frame_dir = FRAMES_DIR / video_id
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        preview_path = str(frame_dir / "preview.jpg")
+        seek = video.duration * 0.1
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, frame_extractor.extract_frame_at, str(video_path), seek, preview_path
+        )
+        if result and Path(result).exists():
+            await db.update_video(video_id, {'thumbnail_path': result})
+            return FileResponse(result, media_type="image/jpeg")
     raise HTTPException(status_code=404, detail="No thumbnail available")
 
 
-@app.get("/videos/{video_id}/transcript")
+@app.get("/videos/{video_id}/transcript", tags=["Analysis"])
 async def get_video_transcript(video_id: str):
     """Return all Whisper transcript segments for a video."""
     video = await db.get_video(video_id)
@@ -925,14 +1093,34 @@ async def get_video_transcript(video_id: str):
         raise HTTPException(status_code=404, detail="Video not found")
     frames = await db.get_frames_for_video(video_id)
     segments = [
-        {"timestamp": f.timestamp, "text": (f.caption or '').replace('[transcript] ', '', 1)}
+        {"id": f.id, "timestamp": f.timestamp, "text": (f.caption or '').replace('[transcript] ', '', 1)}
         for f in sorted(frames, key=lambda x: x.timestamp)
         if (f.caption or '').startswith('[transcript]')
     ]
     return {"segments": segments, "video_id": video_id, "count": len(segments)}
 
 
-@app.get("/frames/{video_id}/{filename}")
+@app.patch("/videos/{video_id}/frames/{frame_id}", tags=["Analysis"])
+async def update_frame_caption(video_id: str, frame_id: str, req: FrameUpdateRequest):
+    """Update a frame's caption and re-embed in the background."""
+    frame = await db.get_frame(frame_id)
+    if not frame or frame.video_id != video_id:
+        raise HTTPException(status_code=404, detail="Frame not found")
+    is_transcript = (frame.caption or '').startswith('[transcript]')
+    new_caption = req.caption.strip()
+    if is_transcript and not new_caption.startswith('[transcript]'):
+        new_caption = '[transcript] ' + new_caption
+    await db.update_frame(frame_id, {'caption': new_caption})
+    # Re-embed in background so the search index reflects the edit
+    if frame.embedding_id:
+        asyncio.create_task(embed_service.index_frame(
+            video_id, frame.frame_path, frame.timestamp, new_caption,
+            _point_id=frame.embedding_id
+        ))
+    return {"id": frame_id, "caption": req.caption.strip(), "ok": True}
+
+
+@app.get("/frames/{video_id}/{filename}", tags=["Media"])
 async def serve_frame(video_id: str, filename: str):
     """Serve a frame image file."""
     # Sanitize to prevent path traversal
@@ -943,7 +1131,7 @@ async def serve_frame(video_id: str, filename: str):
     return FileResponse(str(frame_path), media_type="image/jpeg")
 
 
-@app.get("/videos/{video_id}/stream")
+@app.get("/videos/{video_id}/stream", tags=["Media"])
 async def stream_video(video_id: str):
     """Stream the original video file with range request support for seeking."""
     video = await db.get_video(video_id)
@@ -975,17 +1163,75 @@ async def stream_video(video_id: str):
     )
 
 
-class ReprocessRequest(BaseModel):
-    context: Optional[str] = None
-
-
-@app.post("/reprocess/{video_id}")
-async def reprocess_video(video_id: str, req: ReprocessRequest = ReprocessRequest()):
-    """Reset and re-run full analysis for a video."""
+@app.get("/videos/{video_id}/download", tags=["Media"])
+async def download_video(video_id: str):
+    """Download the original video file."""
     video = await db.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-    # Clear existing Qdrant vectors
+    video_path = Path(video.path)
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+    try:
+        video_path.resolve().relative_to(Path("/data/videos").resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return FileResponse(
+        str(video_path),
+        filename=video_path.name,
+        headers={"Content-Disposition": f'attachment; filename="{video_path.name}"'},
+    )
+
+
+@app.get("/videos/{video_id}/clip", tags=["Media"])
+async def download_clip(video_id: str, start: float, end: float, background_tasks: BackgroundTasks):
+    """Extract and download a clip using ffmpeg stream-copy (no re-encode)."""
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be greater than start")
+    video = await db.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    video_path = Path(video.path)
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+    try:
+        video_path.resolve().relative_to(Path("/data/videos").resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+    suffix = video_path.suffix or '.mp4'
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        clip_path = f.name
+    proc = await asyncio.create_subprocess_exec(
+        'ffmpeg', '-y',
+        '-ss', str(start),
+        '-i', str(video_path),
+        '-t', str(end - start),
+        '-c', 'copy',
+        clip_path,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
+    if proc.returncode != 0:
+        background_tasks.add_task(os.unlink, clip_path)
+        raise HTTPException(status_code=500, detail="Clip extraction failed")
+    clip_name = f"{video_path.stem}_{int(start)}-{int(end)}{suffix}"
+    background_tasks.add_task(os.unlink, clip_path)
+    return FileResponse(clip_path, filename=clip_name,
+                        headers={"Content-Disposition": f'attachment; filename="{clip_name}"'})
+
+
+class AnalyzeRequest(BaseModel):
+    context: Optional[str] = None
+
+ReprocessRequest = AnalyzeRequest  # backward-compat alias
+
+
+async def _run_analyze(video_id: str, req: AnalyzeRequest) -> dict:
+    """Shared logic: clear existing data and start full analysis."""
+    video = await db.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
     from qdrant_client.models import Filter, FieldCondition, MatchValue
     try:
         embed_service.qdrant_client.delete(
@@ -1005,17 +1251,123 @@ async def reprocess_video(video_id: str, req: ReprocessRequest = ReprocessReques
     return {"status": "processing", "video_id": video_id}
 
 
-@app.post("/cancel/{video_id}")
+@app.post("/analyze/{video_id}", tags=["Analysis"])
+async def analyze_video(video_id: str, req: AnalyzeRequest = AnalyzeRequest()):
+    """Start (or restart) full vision + speech analysis for a video.
+
+    Works for any video status: `ready`, `analyzed`, `error`, etc.
+    Clears any existing frames/embeddings and re-runs from scratch.
+    Optionally supply a `context` string to guide caption generation.
+    """
+    return await _run_analyze(video_id, req)
+
+
+@app.post("/reprocess/{video_id}", tags=["Analysis"])
+async def reprocess_video(video_id: str, req: AnalyzeRequest = AnalyzeRequest()):
+    """Alias for `POST /analyze/{video_id}` — kept for backward compatibility."""
+    return await _run_analyze(video_id, req)
+
+
+async def _retranscribe_audio(video_id: str, video_path: str):
+    """Replace only the transcript segments for a video, leaving visual frames intact."""
+    try:
+        # Remove existing transcript frames from Qdrant
+        frames = await db.get_frames_for_video(video_id)
+        transcript_frames = [f for f in frames if f.frame_path == "" and f.embedding_id]
+        if transcript_frames:
+            from qdrant_client.models import HasIdCondition
+            try:
+                embed_service.qdrant_client.delete(
+                    collection_name=embed_service.collection_name,
+                    points_selector=HasIdCondition(has_id=[f.embedding_id for f in transcript_frames]),
+                )
+            except Exception:
+                pass
+        # Remove from DB
+        await db.delete_transcript_frames_for_video(video_id)
+
+        # Re-transcribe
+        loop = asyncio.get_running_loop()
+        segments = await loop.run_in_executor(
+            None, transcription_service.transcribe_video, video_path
+        )
+        print(f"Retranscribe: {len(segments)} segment(s) for {video_id}")
+
+        for seg in segments:
+            text = f"[transcript] {seg.text}"
+            await embed_service.index_frame(
+                video_id=video_id, frame_path="", timestamp=seg.start, caption=text
+            )
+            seg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_transcript_{seg.start}"))
+            await db.create_frame({
+                "id": seg_id, "video_id": video_id,
+                "timestamp": seg.start, "frame_path": "",
+                "caption": text, "embedding_id": seg_id
+            })
+
+        # Sliding windows
+        WINDOW_SIZE = 3
+        WINDOW_STEP = 2
+        for i in range(0, len(segments) - 1, WINDOW_STEP):
+            win = segments[i:i + WINDOW_SIZE]
+            if len(win) < 2:
+                continue
+            combined = " ".join(s.text.strip() for s in win if s.text.strip())
+            if not combined:
+                continue
+            win_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                f"{video_id}_win_{win[0].start:.3f}_{win[-1].end:.3f}"))
+            await embed_service.index_frame(
+                video_id=video_id, frame_path="", timestamp=win[0].start,
+                caption=f"[transcript] {combined}", _point_id=win_id,
+            )
+
+        await db.update_video(video_id, {'status': 'analyzed'})
+    except asyncio.CancelledError:
+        await db.update_video(video_id, {'status': 'analyzed'})
+        raise
+    except Exception as e:
+        print(f"Retranscription error for {video_id}: {e}")
+        await db.update_video(video_id, {'status': 'analyzed'})
+    finally:
+        _active_tasks.pop(video_id, None)
+
+
+@app.post("/retranscribe/{video_id}", tags=["Analysis"])
+async def retranscribe_video(video_id: str):
+    """Re-run Whisper transcription only, leaving visual frames intact."""
+    video = await db.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if video.status == 'processing':
+        raise HTTPException(status_code=409, detail="Full analysis in progress — stop it first")
+    # Cancel any existing (possibly orphaned) retranscription task
+    existing = _active_tasks.pop(video_id, None)
+    if existing and not existing.done():
+        existing.cancel()
+    await db.update_video(video_id, {'status': 'retranscribing'})
+    task = asyncio.create_task(_retranscribe_audio(video_id, video.path))
+    _active_tasks[video_id] = task
+    return {"status": "retranscribing", "video_id": video_id}
+
+
+@app.post("/cancel/{video_id}", tags=["Analysis"])
 async def cancel_analysis(video_id: str):
-    """Cancel an in-progress analysis for a video."""
-    task = _active_tasks.get(video_id)
-    if not task or task.done():
+    """Cancel an in-progress analysis or retranscription for a video."""
+    video = await db.get_video(video_id)
+    if not video or video.status not in ('processing', 'retranscribing'):
         raise HTTPException(status_code=409, detail="No active analysis for this video")
-    task.cancel()
+    reset_status = 'error' if video.status == 'processing' else 'analyzed'
+    task = _active_tasks.pop(video_id, None)
+    if task and not task.done():
+        task.cancel()
+    else:
+        # Orphaned status (container restart killed the task) — reset directly
+        await db.update_video(video_id, {'status': reset_status})
     return {"status": "cancelled", "video_id": video_id}
 
 
-@app.post("/summarize/{video_id}")
+@app.post("/summarize/{video_id}", tags=["Analysis"])
 async def summarize_video(video_id: str, background_tasks: BackgroundTasks):
     """Generate or regenerate a summary for a video."""
     video = await db.get_video(video_id)

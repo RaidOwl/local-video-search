@@ -92,7 +92,10 @@ class SegmentRetriever:
         # Don't forget the last segment
         if current_segment:
             segments.append(self._create_segment(current_segment))
-        
+
+        # Return highest-scoring segments first
+        segments.sort(key=lambda s: s.score, reverse=True)
+
         return segments
     
     def _create_segment(self, data: dict) -> SegmentResult:

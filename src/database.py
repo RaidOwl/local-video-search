@@ -150,6 +150,27 @@ class Database:
             )
             return list(result.scalars().all())
     
+    async def get_frame(self, frame_id: str) -> Frame | None:
+        """Get a single frame by ID."""
+        async with self.session_maker() as session:
+            from sqlalchemy import select
+            result = await session.execute(select(Frame).where(Frame.id == frame_id))
+            return result.scalar_one_or_none()
+
+    async def update_frame(self, frame_id: str, data: dict) -> Frame | None:
+        """Update a frame record."""
+        async with self.session_maker() as session:
+            from sqlalchemy import select
+            result = await session.execute(select(Frame).where(Frame.id == frame_id))
+            frame = result.scalar_one_or_none()
+            if not frame:
+                return None
+            for k, v in data.items():
+                setattr(frame, k, v)
+            await session.commit()
+            await session.refresh(frame)
+            return frame
+
     async def get_captions_for_video(self, video_id: str) -> list[dict]:
         """Get all captions for a video."""
         frames = await self.get_frames_for_video(video_id)
@@ -171,4 +192,15 @@ class Database:
         async with self.session_maker() as session:
             from sqlalchemy import delete as sa_delete
             await session.execute(sa_delete(Frame).where(Frame.video_id == video_id))
+            await session.commit()
+
+    async def delete_transcript_frames_for_video(self, video_id: str):
+        """Delete only transcript frame records (frame_path='') for a video."""
+        async with self.session_maker() as session:
+            from sqlalchemy import delete as sa_delete
+            await session.execute(
+                sa_delete(Frame)
+                .where(Frame.video_id == video_id)
+                .where(Frame.frame_path == "")
+            )
             await session.commit()

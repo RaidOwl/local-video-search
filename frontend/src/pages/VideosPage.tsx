@@ -103,6 +103,7 @@ function StatusBadge({ status, frameCount, eta }: { status: Video['status']; fra
   if (status === 'ready') return <span className="badge queued">Ready</span>
   if (status === 'analyzed') return <span className="badge analyzed"><span className="dot" />Analyzed</span>
   if (status === 'error') return <span className="badge error"><span className="dot" />Error</span>
+  if (status === 'retranscribing') return <span className="badge analyzing"><span className="dot" />🎙 Audio…</span>
   if (frameCount === 0) return <span className="badge queued">Queued</span>
   return (
     <span className="badge analyzing">
@@ -184,8 +185,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
               <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
               <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0 }}>{fmt(video.duration)}</span>
               <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
-              {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}>■</button>}
-              <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.3rem', color: 'var(--muted)', flexShrink: 0 }}>→</button>
+              {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}>■</button>}              {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}>&#9632;</button>}              <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.3rem', color: 'var(--muted)', flexShrink: 0 }}>→</button>
               <button className="icon-btn" title="Hide" onClick={e => handleRemove(e, video.id)} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--muted)', flexShrink: 0 }}>✕</button>
             </div>
           )
@@ -218,8 +218,7 @@ function TreeView(props: ViewProps) {
                   <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
                   <StatusBadge status={video.status} frameCount={video.frame_count} eta={etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} />
-                  {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--error)' }}>■</button>}
-                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.3rem', color: 'var(--muted)' }}>→</button>
+                  {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--error)' }}>■</button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--error)' }}>&#9632;</button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.85rem', padding: '0.1rem 0.3rem', color: 'var(--muted)' }}>→</button>
                   <button className="icon-btn" title="Hide" onClick={e => props.handleRemove(e, video.id)} style={{ fontSize: '0.85rem', padding: '0.1rem 0.2rem', color: 'var(--muted)' }}>✕</button>
                 </div>
               )
@@ -303,8 +302,7 @@ function FolderView(props: ViewProps) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                   <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
                   <span style={{ flex: 1 }} />
-                  {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.75rem', padding: '0.1rem 0.2rem', color: 'var(--error)' }}>■</button>}
-                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.75rem', padding: '0.1rem 0.2rem', color: 'var(--muted)' }}>→</button>
+                  {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.75rem', padding: '0.1rem 0.2rem', color: 'var(--error)' }}>■</button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ fontSize: '0.75rem', padding: '0.1rem 0.2rem', color: 'var(--error)' }}>&#9632;</button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ fontSize: '0.75rem', padding: '0.1rem 0.2rem', color: 'var(--muted)' }}>→</button>
                 </div>
                 <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
               </div>
@@ -407,6 +405,7 @@ export default function VideosPage() {
   }
 
   const processingCount = videos.filter(v => v.status === 'processing').length
+  const retranscribingCount = videos.filter(v => v.status === 'retranscribing').length
   const navigate = useNavigate()
 
   const setView = (v: ViewMode) => { setViewMode(v); localStorage.setItem('vss_view_mode', v) }
@@ -423,7 +422,10 @@ export default function VideosPage() {
 
   const displayedVideos = [...videos]
     .filter(v => {
-      if (statusFilter !== 'all' && v.status !== statusFilter) return false
+      if (statusFilter !== 'all') {
+        const inProgress = statusFilter === 'processing'
+        if (inProgress ? (v.status !== 'processing' && v.status !== 'retranscribing') : v.status !== statusFilter) return false
+      }
       if (!filterText.trim()) return true
       const q = filterText.toLowerCase()
       return (v.display_name || v.name).toLowerCase().includes(q) || v.path.toLowerCase().includes(q) || v.tags.some(t => t.toLowerCase().includes(q))
@@ -445,7 +447,7 @@ export default function VideosPage() {
         <div>
           <h1>Video Library</h1>
           <p style={{ color: 'var(--muted)', marginTop: '0.4rem', fontSize: '0.88rem' }}>
-            {videos.length} video{videos.length !== 1 ? 's' : ''}{processingCount > 0 && ` · ${processingCount} analyzing`}
+            {videos.length} video{videos.length !== 1 ? 's' : ''}{processingCount > 0 && ` · ${processingCount} analyzing`}{retranscribingCount > 0 && ` · ${retranscribingCount} re-transcribing audio`}
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.6rem' }}>

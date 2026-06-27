@@ -8,6 +8,12 @@ const SS_RESULTS = 'vss_search_results'
 const SS_THRESHOLD = 'vss_search_threshold'
 const SS_SEARCH_VIDEO = 'vss_search_video'
 const SS_SEARCH_AUDIO = 'vss_search_audio'
+const SS_ENHANCED = 'vss_search_enhanced'
+
+// BGE-M3 cosine similarities for semantic matches typically fall in 0.5–0.75,
+// which feels low to users. Apply a power curve so strong matches display as 80%+.
+const normalizeScore = (s: number) => 1 - Math.pow(Math.max(0, 1 - s), 1.5)
+const rawThreshold = (t: number) => 1 - Math.pow(Math.max(0, 1 - t), 1 / 1.5)
 
 export default function SearchPage() {
   const [query, setQuery] = useState(() => sessionStorage.getItem(SS_QUERY) ?? '')
@@ -17,6 +23,7 @@ export default function SearchPage() {
   const [threshold, setThreshold] = useState(() => Number(sessionStorage.getItem(SS_THRESHOLD) ?? '0.50'))
   const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem(SS_SEARCH_VIDEO) !== '0')
   const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
+  const [enhanced, setEnhanced] = useState(() => sessionStorage.getItem(SS_ENHANCED) === '1')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
@@ -28,7 +35,7 @@ export default function SearchPage() {
     if (!query.trim()) return
     setLoading(true); setSearched(true)
     try {
-      const res = (await api.search(query, undefined, threshold, sources)).results
+      const res = (await api.search(query, undefined, rawThreshold(threshold), sources, enhanced)).results
       setResults(res)
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
@@ -107,6 +114,11 @@ export default function SearchPage() {
             <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem(SS_SEARCH_AUDIO, e.target.checked ? '1' : '0') }} />
             Audio
           </label>
+          <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
+          <label title="Use the AI to generate query variations before searching. Slower but finds more." style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0, color: enhanced ? 'var(--accent)' : 'var(--muted)' }}>
+            <input type="checkbox" checked={enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
+            Enhanced
+          </label>
         </div>
 
         {searched && !loading && results.length === 0 && (
@@ -137,7 +149,7 @@ export default function SearchPage() {
                     </div>
                     <div style={{ textAlign: 'right', flexShrink: 0 }}>
                       <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent)' }}>
-                        {Math.round(r.score * 100)}%
+                        {Math.round(normalizeScore(r.score) * 100)}%
                       </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>relevance</div>
                     </div>
@@ -145,7 +157,7 @@ export default function SearchPage() {
 
                   {/* Matching segments */}
                   {r.segments && r.segments.length > 0 && (
-                    <div style={{ borderTop: '1px solid var(--border)' }}>
+                    <div style={{ borderTop: '1px solid var(--border)', maxHeight: 320, overflowY: 'auto' }}>
                       {r.segments.map((seg, i) => (
                         <div
                           key={i}
@@ -167,6 +179,10 @@ export default function SearchPage() {
                               style={{ width: 80, height: 52, objectFit: 'cover', borderRadius: 5, flexShrink: 0, background: 'var(--surface2)' }}
                             />
                           )}
+                          <span title={seg.caption.startsWith('[transcript]') ? 'Audio transcript' : 'Visual caption'}
+                            style={{ fontSize: '0.7rem', flexShrink: 0, opacity: 0.5 }}>
+                            {seg.caption.startsWith('[transcript]') ? '🎙' : '🎞'}
+                          </span>
                           <span style={{
                             fontFamily: 'monospace', fontSize: '0.78rem',
                             color: 'var(--accent)', flexShrink: 0,
@@ -175,8 +191,11 @@ export default function SearchPage() {
                           }}>
                             {fmt(seg.start_time)}
                           </span>
-                          <span style={{ fontSize: '0.82rem', color: 'var(--text)', lineHeight: 1.4 }}>
+                          <span style={{ fontSize: '0.82rem', color: 'var(--text)', lineHeight: 1.4, flex: 1 }}>
                             {seg.caption.replace(/^\[transcript\]\s*/i, '')}
+                          </span>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                            {Math.round(normalizeScore(seg.score) * 100)}%
                           </span>
                         </div>
                       ))}
