@@ -866,6 +866,26 @@ async def list_video_frames(video_id: str):
     return {"frames": visual, "video_id": video_id}
 
 
+@app.get("/videos/{video_id}/thumbnail")
+async def get_video_thumbnail(video_id: str):
+    """Return thumbnail image for a video, falling back to the middle extracted frame."""
+    video = await db.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if video.thumbnail_path:
+        p = Path(video.thumbnail_path)
+        if p.exists():
+            return FileResponse(str(p), media_type="image/jpeg")
+    frames = await db.get_frames_for_video(video_id)
+    visual = [f for f in frames if f.frame_path and not (f.caption or '').startswith('[transcript]')]
+    if visual:
+        frame = visual[len(visual) // 2]
+        p = Path(frame.frame_path)
+        if p.exists():
+            return FileResponse(str(p), media_type="image/jpeg")
+    raise HTTPException(status_code=404, detail="No thumbnail available")
+
+
 @app.get("/videos/{video_id}/transcript")
 async def get_video_transcript(video_id: str):
     """Return all Whisper transcript segments for a video."""

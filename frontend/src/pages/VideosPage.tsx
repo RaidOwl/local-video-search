@@ -543,11 +543,14 @@ export default function VideosPage() {
                     onClick={() => { if (removing !== video.id) toggleSelect(video.id) }}
                     style={{ opacity: removing === video.id ? 0.4 : 1, pointerEvents: removing === video.id ? 'none' : undefined, outline: isSelected ? '2px solid var(--accent)' : undefined, cursor: 'pointer' }}
                   >
-                    <div style={{ margin: '-0.75rem -0.75rem 0.5rem', borderRadius: 'var(--radius) var(--radius) 0 0', overflow: 'hidden', height: 120, background: 'var(--surface2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      {video.thumbnail_path
-                        ? <img src={`/api/frames/${video.id}/${encodeURIComponent(video.thumbnail_path.split('/').pop()!)}`} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                        : <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.18 }}><path d="M15 10l4.553-2.277A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      }
+                    <div style={{ margin: '-0.75rem -0.75rem 0.5rem', borderRadius: 'var(--radius) var(--radius) 0 0', overflow: 'hidden', height: 120, background: 'var(--surface2)', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', flexShrink: 0 }}>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.18, position: 'absolute' }}><path d="M15 10l4.553-2.277A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <img
+                        src={`/api/videos/${video.id}/thumbnail`}
+                        alt="" loading="lazy"
+                        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                        onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                      />
                     </div>
                     <div className="video-card-header">
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', flex: 1, minWidth: 0 }}>
