@@ -1,14 +1,15 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, SearchResult } from '../services/api'
 import { fmt } from '../utils'
-import { Mic, Film } from 'lucide-react'
+import { Mic, Film, SlidersHorizontal } from 'lucide-react'
 
 const SS_QUERY = 'vss_search_query'
 const SS_RESULTS = 'vss_search_results'
 const SS_THRESHOLD = 'vss_search_threshold'
 const SS_SEARCH_VIDEO = 'vss_search_video'
 const SS_SEARCH_AUDIO = 'vss_search_audio'
+const SS_FILTERS = 'vss_search_filters'
 
 // The reranker emits relevance scores that cluster in a narrow band; apply a
 // power curve so strong matches display as 80%+ and feel intuitive to users.
@@ -33,14 +34,60 @@ export default function SearchPage() {
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
 
+  // --- optional metadata filters (explicit, opt-in via the popup) ---
+  type Filters = { mediaTypes: string[]; resolution: string; dateFrom: string; dateTo: string }
+  const emptyFilters: Filters = { mediaTypes: [], resolution: '', dateFrom: '', dateTo: '' }
+  const [filters, setFilters] = useState<Filters>(() => {
+    try { return { ...emptyFilters, ...JSON.parse(sessionStorage.getItem(SS_FILTERS) ?? '{}') } } catch { return emptyFilters }
+  })
+  const [facets, setFacets] = useState<{ media_types: string[]; resolutions: string[] }>({ media_types: [], resolutions: [] })
+  const [showFilters, setShowFilters] = useState(false)
+  const filterRef = useRef<HTMLDivElement>(null)
+
+  const activeFilterCount =
+    filters.mediaTypes.length + (filters.resolution ? 1 : 0) + (filters.dateFrom ? 1 : 0) + (filters.dateTo ? 1 : 0)
+
+  // Filters-only browse (no text query) returns synthetic 100% scores, so the
+  // relevance badges are meaningless and hidden in that mode.
+  const isBrowse = searched && results.length > 0 && !query.trim()
+
+  useEffect(() => {
+    api.metadataFacets().then(setFacets).catch(() => {})
+  }, [])
+
+  // Close the popover when clicking outside it.
+  useEffect(() => {
+    if (!showFilters) return
+    const onDown = (e: MouseEvent) => {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setShowFilters(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [showFilters])
+
+  const updateFilters = (next: Filters) => {
+    setFilters(next)
+    sessionStorage.setItem(SS_FILTERS, JSON.stringify(next))
+  }
+  const toggleMediaType = (t: string) => {
+    const has = filters.mediaTypes.includes(t)
+    updateFilters({ ...filters, mediaTypes: has ? filters.mediaTypes.filter(x => x !== t) : [...filters.mediaTypes, t] })
+  }
+  const clearFilters = () => updateFilters(emptyFilters)
+
   const sources = searchVideo && searchAudio ? 'both' : searchVideo ? 'video' : searchAudio ? 'audio' : 'both'
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!query.trim()) return
+  const handleSearch = async (e?: React.FormEvent) => {
+    e?.preventDefault()
+    if (!query.trim() && activeFilterCount === 0) return
     setLoading(true); setSearched(true)
     try {
-      const res = (await api.search(query, undefined, rawThreshold(threshold), sources)).results
+      const res = (await api.search(query, undefined, rawThreshold(threshold), sources, {
+        media_types: filters.mediaTypes.join(','),
+        resolution: filters.resolution,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo,
+      })).results
       setResults(res)
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
@@ -120,14 +167,93 @@ export default function SearchPage() {
             <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem(SS_SEARCH_AUDIO, e.target.checked ? '1' : '0') }} />
             Audio
           </label>
-        </div>
 
-        {searched && !loading && results.length === 0 && (
-          <div className="empty" style={{ paddingTop: '2rem' }}>
-            <h3>No results</h3>
-            <p>Try different search terms or make sure videos have been analyzed.</p>
+          <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
+          <div ref={filterRef} style={{ position: 'relative', flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => setShowFilters(s => !s)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '0.3rem',
+                background: activeFilterCount ? 'var(--accent)' : 'none',
+                color: activeFilterCount ? '#fff' : 'var(--muted)',
+                border: '1px solid var(--border)', borderRadius: 6,
+                padding: '0.2rem 0.5rem', cursor: 'pointer', fontSize: '0.78rem', boxShadow: 'none',
+              }}
+              title="Filter by media type, resolution, or date"
+            >
+              <SlidersHorizontal size={13} />
+              Filters{activeFilterCount ? ` (${activeFilterCount})` : ''}
+            </button>
+
+            {showFilters && (
+              <div style={{
+                position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 20,
+                width: 260, maxWidth: 'calc(100vw - 2rem)', boxSizing: 'border-box',
+                background: 'var(--surface)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)', boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
+                padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.85rem',
+                textAlign: 'left',
+              }}>
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Media type</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                    {facets.media_types.length === 0 && <span style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>None available</span>}
+                    {facets.media_types.map(t => {
+                      const on = filters.mediaTypes.includes(t)
+                      return (
+                        <button key={t} type="button" onClick={() => toggleMediaType(t)}
+                          style={{
+                            fontSize: '0.74rem', padding: '0.18rem 0.5rem', borderRadius: 5, cursor: 'pointer',
+                            border: '1px solid var(--border)', boxShadow: 'none',
+                            background: on ? 'var(--accent)' : 'transparent', color: on ? '#fff' : 'var(--text)',
+                          }}>
+                          {t.toUpperCase()}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Minimum resolution</div>
+                  <select value={filters.resolution} onChange={e => updateFilters({ ...filters, resolution: e.target.value })}
+                    style={{ width: '100%', padding: '0.35rem 0.5rem', fontSize: '0.8rem', background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6 }}>
+                    <option value="">Any</option>
+                    {facets.resolutions.map(r => <option key={r} value={r}>{r === '4k' ? '4K' : r}+</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Date created</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.76rem', color: 'var(--muted)' }}>
+                      <span style={{ width: 32, flexShrink: 0 }}>From</span>
+                      <input type="date" value={filters.dateFrom} onChange={e => updateFilters({ ...filters, dateFrom: e.target.value })}
+                        style={{ flex: 1, minWidth: 0, padding: '0.3rem 0.4rem', fontSize: '0.76rem', background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6 }} />
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.76rem', color: 'var(--muted)' }}>
+                      <span style={{ width: 32, flexShrink: 0 }}>To</span>
+                      <input type="date" value={filters.dateTo} onChange={e => updateFilters({ ...filters, dateTo: e.target.value })}
+                        style={{ flex: 1, minWidth: 0, padding: '0.3rem 0.4rem', fontSize: '0.76rem', background: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6 }} />
+                    </label>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', paddingTop: '0.6rem' }}>
+                  <button type="button" onClick={clearFilters} disabled={activeFilterCount === 0}
+                    style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: activeFilterCount ? 'pointer' : 'default', fontSize: '0.76rem', padding: 0, boxShadow: 'none', opacity: activeFilterCount ? 1 : 0.5 }}>
+                    Clear
+                  </button>
+                  <button type="button" onClick={() => { setShowFilters(false); handleSearch() }}
+                    style={{ padding: '0.3rem 0.8rem', fontSize: '0.78rem' }}>
+                    Apply
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
         {results.length > 0 && (
           <div style={{ marginTop: '1.5rem' }}>
@@ -149,10 +275,14 @@ export default function SearchPage() {
                       </div>
                     </div>
                     <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent)' }}>
-                        {Math.round(normalizeScore(r.score) * 100)}%
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>relevance</div>
+                      {!isBrowse && (
+                        <>
+                          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent)' }}>
+                            {Math.round(normalizeScore(r.score) * 100)}%
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>relevance</div>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -195,9 +325,11 @@ export default function SearchPage() {
                           <span style={{ fontSize: '0.82rem', color: 'var(--text)', lineHeight: 1.4, flex: 1 }}>
                             {seg.caption.replace(/^\[transcript\]\s*/i, '')}
                           </span>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-                            {Math.round(normalizeScore(seg.score) * 100)}%
-                          </span>
+                          {!isBrowse && (
+                            <span style={{ fontSize: '0.72rem', color: 'var(--muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                              {Math.round(normalizeScore(seg.score) * 100)}%
+                            </span>
+                          )}
                         </div>
                       ))}
                     </div>

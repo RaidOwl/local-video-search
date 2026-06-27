@@ -7,6 +7,7 @@ A self-hosted video search and summarization system powered by local AI models. 
 - **Natural Language Search** — Ask questions like "Find the moment where the car crashes" or "Show me cooking scenes"
 - **Segment-Level Results** — Results point to the exact timestamp within a video, not just which file
 - **Precision Reranking** — A local cross-encoder reranks every search so results respect fine details (e.g. "blonde woman" vs "blonde man"), with a relevance slider to tune strictness
+- **Metadata Filters** — Optionally narrow any search by media type, minimum resolution, or creation date — or apply the filters alone to browse your library by those criteria
 - **Visual Frame Analysis** — Vision-language model (VLM) captions every frame during analysis
 - **Speech Transcription** — Whisper transcribes spoken audio; transcript segments are fully searchable
 - **AI Summarization** — On-demand video summaries powered by a local LLM
@@ -138,6 +139,8 @@ docker compose up -d   # no profile needed
 | `ultra` | 72B | 72B | ≥ 128 GB |
 
 > vLLM FP8 quantizes only the LLM decoder; the vision encoder stays BF16 (~8 GB extra). On Apple Silicon, VRAM is unified memory shared with the system — leave headroom.
+>
+> By default vLLM's memory reservation auto-scales to `VRAM_TIER`, so a smaller model won't reserve your entire GPU (handy on large unified-memory boxes). Override it with `VLLM_GPU_MEMORY_UTIL` in `.env`.
 
 ---
 
@@ -194,6 +197,8 @@ person writing on a whiteboard
 
 Results link directly to the timestamp in the video. Use the **Min relevance** slider to control how strict matches must be — higher values return only near-exact matches, lower values cast a wider net. Every search is reranked by a local cross-encoder for precision, so results respect fine details rather than just keyword overlap.
 
+> Need to narrow results by file type, resolution, or creation date? Open the **Filters** popup beside the search bar. Filters apply as an exact match on top of your query — or apply them with an empty search box to browse your whole library by those criteria.
+
 > On first launch the reranker model (`BAAI/bge-reranker-base`, ~1.1 GB) downloads automatically and is cached under `./data` so it persists across restarts. It runs on CPU inside the API container — no extra GPU required.
 
 ## AI Backends
@@ -225,7 +230,7 @@ GET    /search/segments?q=...&video_id= # Search within a specific video
 
 | Group | Endpoints |
 |-------|-----------|
-| **Search** | `GET /search`, `GET /search/segments` |
+| **Search** | `GET /search`, `GET /search/segments`, `GET /metadata/facets` |
 | **Videos** | `GET /videos`, `GET /videos/{id}`, `PATCH /videos/{id}`, `DELETE /videos/{id}` |
 | **Analysis** | `POST /ingest`, `POST /analyze/{id}`, `POST /retranscribe/{id}`, `POST /cancel/{id}`, `POST /summarize/{id}` |
 | **Media** | `GET /videos/{id}/stream`, `GET /videos/{id}/download`, `GET /videos/{id}/clip?start=&end=`, `GET /videos/{id}/thumbnail` |

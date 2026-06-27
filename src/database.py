@@ -18,6 +18,15 @@ class Video(Base):
     width = Column(Integer, default=0)
     height = Column(Integer, default=0)
     size = Column(Integer, default=0)
+    fps = Column(Float, nullable=True)  # frames per second
+    video_codec = Column(String, nullable=True)  # e.g. h264, hevc, av1
+    audio_codec = Column(String, nullable=True)  # e.g. aac, opus
+    container = Column(String, nullable=True)  # ffprobe format_name
+    extension = Column(String, nullable=True)  # file extension w/o dot, e.g. mp4
+    bitrate = Column(Integer, nullable=True)  # bits per second
+    resolution_label = Column(String, nullable=True)  # 4K, 1080p, 720p, ...
+    recorded_at = Column(DateTime, nullable=True)  # creation time from file metadata
+    file_modified_at = Column(DateTime, nullable=True)  # filesystem mtime
     file_hash = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
     tags = Column(Text, nullable=True, default='[]')  # JSON array
@@ -58,7 +67,10 @@ class Database:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Migrate: add columns introduced after initial schema
-            for col in ['context TEXT', 'thumbnail_path TEXT', 'hidden TEXT DEFAULT 0', 'has_transcript INTEGER DEFAULT 0']:
+            for col in ['context TEXT', 'thumbnail_path TEXT', 'hidden TEXT DEFAULT 0', 'has_transcript INTEGER DEFAULT 0',
+                        'fps REAL', 'video_codec TEXT', 'audio_codec TEXT', 'container TEXT',
+                        'extension TEXT', 'bitrate INTEGER', 'resolution_label TEXT',
+                        'recorded_at DATETIME', 'file_modified_at DATETIME']:
                 col_name = col.split()[0]
                 try:
                     await conn.execute(text(f'ALTER TABLE videos ADD COLUMN {col}'))

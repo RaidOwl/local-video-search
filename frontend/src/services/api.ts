@@ -122,8 +122,19 @@ export const api = {
     return res.data
   },
 
-  search: async (query: string, limit?: number, threshold?: number, sources?: string): Promise<{ results: SearchResult[]; query: string }> => {
-    const res = await client.get('/search', { params: { q: query, limit, threshold, sources } })
+  search: async (
+    query: string,
+    limit?: number,
+    threshold?: number,
+    sources?: string,
+    filters?: { media_types?: string; resolution?: string; date_from?: string; date_to?: string },
+  ): Promise<{ results: SearchResult[]; query: string }> => {
+    const res = await client.get('/search', { params: { q: query, limit, threshold, sources, ...filters } })
+    return res.data
+  },
+
+  metadataFacets: async (): Promise<{ media_types: string[]; resolutions: string[] }> => {
+    const res = await client.get('/metadata/facets')
     return res.data
   },
 

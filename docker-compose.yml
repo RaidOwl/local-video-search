@@ -199,7 +199,9 @@ services:
       # Non-VLLM_-prefixed names so vLLM doesn't flag them as unknown env vars
       MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-16384}
       QUANTIZATION: ${VLLM_QUANTIZATION:-fp8}
-      GPU_MEMORY_UTIL: ${VLLM_GPU_MEMORY_UTIL:-0.75}
+      # "auto" lets the entrypoint scale the memory cap to VRAM_TIER so a small
+      # model on a large (unified-memory) box doesn't reserve the whole pool.
+      GPU_MEMORY_UTIL: ${VLLM_GPU_MEMORY_UTIL:-auto}
     entrypoint:
       - /bin/sh
       - -c
@@ -221,7 +223,18 @@ services:
             *)     MAIN_MODEL="Qwen/Qwen2.5-VL-7B-Instruct"  ;;
           esac
         fi
-        echo "==> Starting vLLM (family=$$MODEL_FAMILY tier=$$VRAM_TIER) model=$$MAIN_MODEL"
+        # Auto-scale the GPU memory cap to the tier when not pinned explicitly,
+        # so a small model on a large (e.g. unified-memory) box doesn't reserve
+        # the whole pool just for KV cache. Override with VLLM_GPU_MEMORY_UTIL.
+        if [ "$$GPU_MEMORY_UTIL" = "auto" ]; then
+          case "$$VRAM_TIER" in
+            low)   GPU_MEMORY_UTIL="0.25" ;;
+            high)  GPU_MEMORY_UTIL="0.60" ;;
+            ultra) GPU_MEMORY_UTIL="0.92" ;;
+            *)     GPU_MEMORY_UTIL="0.35" ;;
+          esac
+        fi
+        echo "==> Starting vLLM (family=$$MODEL_FAMILY tier=$$VRAM_TIER) model=$$MAIN_MODEL gpu_mem_util=$$GPU_MEMORY_UTIL"
         exec python3 -m vllm.entrypoints.openai.api_server \
           --model "$$MAIN_MODEL" \
           --port 8002 \

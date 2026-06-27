@@ -5,9 +5,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from pathlib import Path
+from datetime import datetime
 import asyncio
 import os
 import random
+import re
 import tempfile
 import uuid
 import json
@@ -21,8 +23,19 @@ from ..embed.embedding_generator import EmbeddingService
 from ..vlm.caption_generator import VLMService
 from ..search.query_processor import QueryProcessor
 from ..search.segment_retriever import SegmentRetriever
+from ..search.metadata_filter import build_filters, video_matches, describe_metadata
 from ..summarize.video_summarizer import SummarizationService
 from ..transcribe.transcriber import TranscriptionService
+
+# Stopwords stripped before computing the keyword-overlap boost in /search.
+_SEARCH_STOPWORDS = {
+    'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+    'i', 'my', 'me', 'we', 'you', 'it', 'is', 'was', 'are', 'were', 'be', 'been',
+    'have', 'had', 'has', 'do', 'did', 'does', 'about', 'that', 'this', 'which',
+    'when', 'where', 'how', 'what', 'who', 'their', 'its', 'by', 'from', 'up',
+    'specifically', 'really', 'actually', 'just', 'so', 'some', 'any',
+}
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -41,6 +54,8 @@ async def lifespan(_app: FastAPI):
     _auto_import_task = asyncio.create_task(_auto_import_loop())
     # Warm the reranker in the background so the first search isn't slow.
     asyncio.create_task(_warm_reranker())
+    # Backfill file metadata for videos imported before those columns existed.
+    asyncio.create_task(_backfill_metadata())
     yield
 
 app = FastAPI(
@@ -490,6 +505,29 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
 VIDEO_SCAN_DIRS = [Path(f"/data/videos/lib{i}") for i in range(1, 6)]
 
 
+def _build_video_record(video_id: str, video_path: Path, metadata: dict) -> dict:
+    """Assemble a videos-table row from probed ffprobe/filesystem metadata."""
+    return {
+        "id": video_id,
+        "name": video_path.stem,
+        "path": str(video_path),
+        "duration": metadata.get("duration", 0),
+        "width": metadata.get("width", 0),
+        "height": metadata.get("height", 0),
+        "size": metadata.get("size", 0),
+        "fps": metadata.get("fps"),
+        "video_codec": metadata.get("video_codec"),
+        "audio_codec": metadata.get("audio_codec"),
+        "container": metadata.get("container"),
+        "extension": metadata.get("extension"),
+        "bitrate": metadata.get("bitrate"),
+        "resolution_label": metadata.get("resolution_label"),
+        "recorded_at": metadata.get("recorded_at"),
+        "file_modified_at": metadata.get("file_modified_at"),
+        "file_hash": compute_file_hash(video_path),
+    }
+
+
 async def _auto_import(auto_analyze: bool = False, default_context: str = ""):
     """Scan all configured video library directories and add new files."""
     import fnmatch as _fnmatch
@@ -505,12 +543,7 @@ async def _auto_import(auto_analyze: bool = False, default_context: str = ""):
                 continue
             video_id = str(uuid.uuid4())
             metadata = get_video_metadata(video_path)
-            await db.create_video({
-                "id": video_id, "name": video_path.stem, "path": str(video_path),
-                "duration": metadata.get("duration", 0), "width": metadata.get("width", 0),
-                "height": metadata.get("height", 0), "size": metadata.get("size", 0),
-                "file_hash": compute_file_hash(video_path),
-            })
+            await db.create_video(_build_video_record(video_id, video_path, metadata))
             await db.update_video(video_id, {"status": "ready"})
             if auto_analyze:
                 _start_analysis(path_str, video_id, context=default_context)
@@ -528,6 +561,42 @@ async def _auto_import_loop():
         if interval <= 0:
             break
         await asyncio.sleep(interval * 60)
+
+
+async def _backfill_metadata():
+    """Populate the richer metadata fields (fps, codec, dates, ...) for videos
+    imported before those columns existed. Re-probes only rows missing them."""
+    try:
+        videos = await db.get_all_videos(include_all=True)
+    except Exception:
+        return
+    updated = 0
+    for v in videos:
+        # fps is the marker for "this row predates the metadata fields".
+        if getattr(v, "fps", None) is not None:
+            continue
+        vpath = Path(v.path)
+        updates: dict = {"extension": vpath.suffix.lower().lstrip('.')}
+        if vpath.exists():
+            try:
+                meta = await asyncio.to_thread(get_video_metadata, vpath)
+            except Exception:
+                meta = {}
+            for key in ("duration", "width", "height", "size", "fps", "video_codec",
+                        "audio_codec", "container", "extension", "bitrate",
+                        "resolution_label", "recorded_at", "file_modified_at"):
+                val = meta.get(key)
+                if val is not None and val != "":
+                    updates[key] = val
+        # Ensure fps is set (even to 0.0) so the row isn't re-probed every boot.
+        updates.setdefault("fps", 0.0)
+        try:
+            await db.update_video(v.id, updates)
+            updated += 1
+        except Exception:
+            pass
+    if updated:
+        print(f"[metadata] backfilled {updated} video(s) with file metadata", flush=True)
 
 
 @app.get("/health", tags=["System"])
@@ -818,16 +887,7 @@ async def ingest_video(request: IngestRequest):
 
         video_id = str(uuid.uuid4())
         metadata = get_video_metadata(video_path)
-        await db.create_video({
-            "id": video_id,
-            "name": video_path.stem,
-            "path": str(video_path),
-            "duration": metadata.get("duration", 0),
-            "width": metadata.get("width", 0),
-            "height": metadata.get("height", 0),
-            "size": metadata.get("size", 0),
-            "file_hash": compute_file_hash(video_path)
-        })
+        await db.create_video(_build_video_record(video_id, video_path, metadata))
         await db.update_video(video_id, {"status": "ready"})
         if request.context:
             await db.update_video(video_id, {"context": request.context})
@@ -847,16 +907,7 @@ async def ingest_video(request: IngestRequest):
 
             video_id = str(uuid.uuid4())
             metadata = get_video_metadata(video_path)
-            await db.create_video({
-                "id": video_id,
-                "name": video_path.stem,
-                "path": str(video_path),
-                "duration": metadata.get("duration", 0),
-                "width": metadata.get("width", 0),
-                "height": metadata.get("height", 0),
-                "size": metadata.get("size", 0),
-                "file_hash": compute_file_hash(video_path)
-            })
+            await db.create_video(_build_video_record(video_id, video_path, metadata))
             await db.update_video(video_id, {"status": "ready"})
             if request.context:
                 await db.update_video(video_id, {"context": request.context})
@@ -869,13 +920,34 @@ async def ingest_video(request: IngestRequest):
 
 
 @app.get("/search", response_model=SearchResponse, tags=["Search"])
-async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, sources: str = 'both'):
-    """Search for videos by natural language query.
+async def search_videos(
+    q: str = "",
+    limit: int = 10,
+    threshold: float = 0.50,
+    sources: str = 'both',
+    media_types: str = "",
+    resolution: str = "",
+    date_from: str = "",
+    date_to: str = "",
+):
+    """Search for videos by natural language query, with optional metadata filters.
 
     Every search runs the full retrieve-then-rerank pipeline: BGE-M3 / Qdrant
     retrieves candidates (recall), then the bge-reranker cross-encoder assigns
     the final relevance score (precision).
+
+    The optional ``media_types`` / ``resolution`` / ``date_from`` / ``date_to``
+    parameters are explicit, user-supplied filters (from the search filter popup)
+    applied as a hard AND over the results. They are never inferred from ``q``.
     """
+    filters = build_filters(media_types, resolution, date_from, date_to)
+
+    # Filters-only (no text query): browse the library by metadata, newest first.
+    if not q.strip():
+        if filters:
+            return await _filter_browse(filters, limit)
+        return SearchResponse(results=[], query=q)
+
     processed = query_processor.process_query(q)
 
     # When the UI has both sources selected, always use mixed — don't auto-detect
@@ -912,23 +984,15 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
 
     # Keyword overlap boost with prefix matching (handles plurals/conjugations):
     # "speeds" matches "speed", "drives" matches "drive", etc.
-    import re as _re
-    _STOPWORDS = {
-        'a','an','the','and','or','but','in','on','at','to','for','of','with',
-        'i','my','me','we','you','it','is','was','are','were','be','been',
-        'have','had','has','do','did','does','about','that','this','which',
-        'when','where','how','what','who','their','its','by','from','up',
-        'specifically','really','actually','just','so','some','any',
-    }
     key_terms = [
-        w.lower() for w in _re.findall(r'\b[a-zA-Z]{3,}\b', processed["search_terms"])
-        if w.lower() not in _STOPWORDS
+        w.lower() for w in re.findall(r'\b[a-zA-Z]{3,}\b', processed["search_terms"])
+        if w.lower() not in _SEARCH_STOPWORDS
     ]
     def _boost(caption: str) -> float:
         if not key_terms:
             return 1.0
         cap_lower = caption.lower()
-        cap_words = set(_re.findall(r'\b[a-z]{3,}\b', cap_lower))
+        cap_words = set(re.findall(r'\b[a-z]{3,}\b', cap_lower))
         hits = sum(
             1 for t in key_terms
             if t in cap_lower or any(
@@ -954,10 +1018,12 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
     # Fetch video details and build segments per video
     all_segments: list[dict] = []
     video_meta: dict = {}
+    video_objs: dict = {}
     for vid, data in video_hits.items():
         video = await db.get_video(vid)
         if not video:
             continue
+        video_objs[vid] = video
         for h in data["hits"]:
             h["video_name"] = video.name
         segments = segment_retriever.group_segments(data["hits"], vid)
@@ -1012,11 +1078,77 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
     # Only return videos where the best-matching segment is above threshold
     final_results = [r for r in final_results if r["score"] >= seg_threshold]
 
+    # Apply explicit, user-supplied metadata filters as a hard AND over results,
+    # reusing the Video rows already fetched above (no full-library scan). Hidden
+    # and blacklisted videos are excluded, matching the library browse behavior.
+    if filters:
+        final_results = [
+            r for r in final_results
+            if (v := video_objs.get(r["video_id"])) is not None
+            and (v.hidden or '0') not in ('1', 'blacklist')
+            and video_matches(v, filters)
+        ]
+
     # Sort by score descending, cap to limit
     final_results.sort(key=lambda x: x["score"], reverse=True)
     final_results = final_results[:limit]
 
     return SearchResponse(results=final_results, query=q)
+
+
+async def _metadata_segment(video) -> Optional[dict]:
+    """Synthesize a representative segment for a filter-browse match: the video's
+    first indexed frame plus a caption describing its technical metadata."""
+    caption = describe_metadata(video) or video.name
+    frame_path = ""
+    try:
+        frames = await db.get_frames_for_video(video.id)
+        first = next((f for f in frames if f.frame_path), None)
+        if first:
+            frame_path = first.frame_path
+    except Exception:
+        pass
+    return {
+        "video_id": video.id,
+        "start_time": 0.0,
+        "end_time": 0.0,
+        "caption": caption,
+        "score": 1.0,
+        "frame_path": frame_path,
+    }
+
+
+async def _filter_browse(filters: dict, limit: int) -> "SearchResponse":
+    """Return library videos matching the explicit metadata filters (no text
+    query), newest first."""
+    matches = [v for v in await db.get_all_videos() if video_matches(v, filters)]
+    matches.sort(
+        key=lambda v: (v.recorded_at or v.file_modified_at or v.created_at or datetime.min),
+        reverse=True,
+    )
+    results = []
+    for v in matches[:limit]:
+        seg = await _metadata_segment(v)
+        results.append({
+            "video_id": v.id,
+            "name": v.name,
+            "path": v.path,
+            "duration": v.duration or 0,
+            "score": 1.0,
+            "matching_frames": 1 if seg and seg["frame_path"] else 0,
+            "segments": [seg] if seg else [],
+        })
+    return SearchResponse(results=results, query="")
+
+
+@app.get("/metadata/facets", tags=["Search"])
+async def metadata_facets():
+    """Available metadata filter options for the search filter popup."""
+    videos = await db.get_all_videos()
+    exts = sorted({(v.extension or "").lower() for v in videos if v.extension})
+    # Fixed minimum-resolution ladder (matches the popup dropdown).
+    resolutions = ["720p", "1080p", "1440p", "4k"]
+    return {"media_types": exts, "resolutions": resolutions}
 
 
 @app.get("/search/segments", response_model=SegmentSearchResponse, tags=["Search"])
