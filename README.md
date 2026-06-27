@@ -1,14 +1,195 @@
 # Local Video Search & Summarization
 
-A self-hosted video search and summarization system powered by local AI models. Index your video library, search in natural language, and get AI-generated summaries.
+A self-hosted video search and summarization system powered by local AI models. Index your video library, search in natural language, get AI-generated summaries, and browse every moment with a visual segments timeline.
 
 ## Features
 
-- **Natural Language Search** - Ask questions like "Find the moment where the car crashes" or "Show me cooking scenes"
-- **Segment-Level Search** - Not just which video, but exactly when in the video something happens
-- **AI Summarization** - Automatic video summaries powered by local LLM
-- **Local AI** - All processing happens on your hardware via Ollama and vLLM
-- **Self-Hosted** - No cloud dependencies, no API keys needed
+- **Natural Language Search** — Ask questions like "Find the moment where the car crashes" or "Show me cooking scenes"
+- **Segment-Level Results** — Results point to the exact timestamp within a video, not just which file
+- **Visual Frame Analysis** — Vision-language model (VLM) captions every frame during analysis
+- **Speech Transcription** — Whisper transcribes spoken audio; transcript segments are fully searchable
+- **AI Summarization** — On-demand video summaries powered by a local LLM
+- **Segments Timeline** — Browse all visual and speech segments side-by-side with inline caption editing
+- **Download & Clip** — Download the full video or extract a time-range clip directly from the UI
+- **Multiple AI Backends** — Bring your own vLLM / Ollama servers, or let Docker spin them up
+- **Self-Hosted** — No cloud, no API keys, no data leaves your machine
+- **REST API + Swagger UI** — Full documented API at `/docs` for building your own integrations
+
+## Hardware Requirements
+
+Requirements depend on the AI backend you choose:
+
+| Backend | GPU VRAM | Notes |
+|---------|----------|-------|
+| `ollama` (low / 3B) | ≥ 8 GB | CPU also works (slow) |
+| `ollama` (mid / 7B) | ≥ 10 GB | Recommended starting point |
+| `ollama` (high / 32B) | ≥ 20 GB | Q4 quantized |
+| `vllm` (mid / 7B FP8) | ≥ 16 GB | NVIDIA Hopper / Ada / Blackwell |
+| `vllm` (ultra / 32B FP8) | ≥ 80 GB | e.g. DGX Spark GB10 |
+| `custom` | varies | Point at any OpenAI-compatible server |
+
+Transcription (Whisper) runs on CPU inside the API container — no extra GPU needed.
+
+## Quick Start
+
+### 1. Clone & configure
+
+```bash
+git clone https://github.com/RaidOwl/local-video-search.git
+cd local-video-search
+cp .env.example .env
+```
+
+Edit `.env` — the key settings:
+
+```env
+# Choose your AI backend: custom | ollama | ollama-native | vllm
+AI_BACKEND=ollama
+
+# Model size for local backends (low / mid / high / ultra)
+VRAM_TIER=mid
+
+# One or more video library directories (read-only mounts)
+VIDEO_DIR_1=/path/to/your/videos
+```
+
+See `.env.example` for all options including custom model endpoints and port overrides.
+
+### 2. Start services
+
+```bash
+# Default (custom backend or ollama-native)
+docker compose up -d
+
+# Ollama in Docker (CPU or NVIDIA Linux)
+docker compose --profile ollama up -d
+
+# vLLM in Docker (NVIDIA GPU required)
+docker compose --profile vllm up -d
+```
+
+### 3. Open the UI
+
+Navigate to **http://localhost:3000**
+
+On first launch, go to **Settings** to verify your AI backend, configure Whisper quality (Low / Medium / High), set the frame extraction interval, and toggle auto-analyze.
+
+### 4. Add & analyze videos
+
+1. Go to **Videos** → click **Import** to scan your configured video directories
+2. Select videos and click **Analyze** — the system extracts frames, captions them via VLM, and transcribes audio via Whisper
+3. Once status shows **Analyzed**, search or browse segments immediately
+
+### 5. Search
+
+```
+cooking scenes with garlic
+when did they mention the deadline
+car driving through a tunnel at night
+person writing on a whiteboard
+```
+
+Results link directly to the timestamp in the video.
+
+## AI Backends
+
+| Value | Description |
+|-------|-------------|
+| `custom` | Bring your own servers. Set `VLLM_EMBED_URL`, `VLLM_VLM_URL`, `VLLM_URL` in `.env` |
+| `ollama` | Ollama runs in Docker. Good for NVIDIA Linux or CPU. |
+| `ollama-native` | Ollama runs on your host machine. **Best for Apple Silicon** — full Metal acceleration. Run `ollama serve` first. |
+| `vllm` | vLLM runs in Docker. Requires NVIDIA GPU + nvidia-container-toolkit. |
+
+## API
+
+The full interactive API is available at **http://localhost:3000/docs** (Swagger UI) or `/redoc` (ReDoc).
+
+A server dropdown lets you switch between the proxied frontend URL (`/api`) and direct API access (`:8000`).
+
+### Core workflow
+
+```http
+POST   /ingest                          # Add a video file to the library
+POST   /analyze/{video_id}              # Start full vision + speech analysis
+GET    /videos/{video_id}               # Poll status: ready → processing → analyzed
+GET    /search?q=your+query             # Semantic search across all analyzed videos
+GET    /search/segments?q=...&video_id= # Search within a specific video
+```
+
+### Key endpoints by group
+
+| Group | Endpoints |
+|-------|-----------|
+| **Search** | `GET /search`, `GET /search/segments` |
+| **Videos** | `GET /videos`, `GET /videos/{id}`, `PATCH /videos/{id}`, `DELETE /videos/{id}` |
+| **Analysis** | `POST /ingest`, `POST /analyze/{id}`, `POST /retranscribe/{id}`, `POST /cancel/{id}`, `POST /summarize/{id}` |
+| **Media** | `GET /videos/{id}/stream`, `GET /videos/{id}/download`, `GET /videos/{id}/clip?start=&end=`, `GET /videos/{id}/thumbnail` |
+| **System** | `GET /health`, `GET /settings`, `PUT /settings`, `GET /status/models`, `GET /browse` |
+
+Video status lifecycle: `ready` → `processing` → `analyzed` (or `error`). Audio-only re-transcription uses `retranscribing` status.
+
+## Configuration
+
+All runtime settings can be managed in the **Settings** page of the UI, or via `.env` / API:
+
+| Setting | Description |
+|---------|-------------|
+| `FRAME_EXTRACTION_INTERVAL` | Seconds between extracted frames (default: 5) |
+| `EMBED_BATCH_SIZE` | Captions embedded per batch (default: 16) |
+| `AI_BACKEND` | AI provider selection (see above) |
+| `VRAM_TIER` | Model size for local backends (low/mid/high/ultra) |
+| `VIDEO_DIR_1..5` | Up to 5 video library directories |
+
+## Architecture
+
+```
+Browser (port 3000)
+    │
+    ▼
+ nginx (frontend)
+    ├── / ──────────────────▶ React SPA
+    └── /api/ ──────────────▶ FastAPI (port 8000)
+                                  │
+                    ┌─────────────┼─────────────┐
+                    ▼             ▼             ▼
+                 SQLite        Qdrant        AI Models
+              (metadata)     (vectors)   (VLM / Embed / LLM)
+                                              │
+                                        faster-whisper
+                                        (transcription, CPU)
+```
+
+## Project Structure
+
+```
+local-video-search/
+├── src/
+│   ├── api/           # FastAPI server — all endpoints
+│   ├── embed/         # Embedding generation + Qdrant indexing
+│   ├── ingest/        # Video scanning and frame extraction (ffmpeg)
+│   ├── search/        # Query processing and segment retrieval
+│   ├── summarize/     # LLM summarization
+│   ├── transcription/ # faster-whisper speech-to-text
+│   ├── config.py      # Environment + settings management
+│   └── database.py    # SQLAlchemy models (Video, Frame)
+├── frontend/
+│   ├── src/
+│   │   ├── components/ # NavBar, shared UI
+│   │   ├── pages/      # SearchPage, VideosPage, VideoDetailPage, SettingsPage
+│   │   └── services/   # Typed API client (api.ts)
+│   ├── nginx.conf      # Reverse proxy config
+│   └── Dockerfile
+├── docker/
+│   └── app/Dockerfile  # Python API container
+├── docker-compose.yml  # Full stack orchestration
+├── .env.example        # All configuration options with documentation
+└── requirements.txt    # Python dependencies
+```
+
+## License
+
+MIT
+
 
 ## Hardware Requirements
 
