@@ -962,12 +962,9 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
                 "frame_path": s.frame_path,
             })
 
-    # LLM re-ranking when enhanced mode is on:
-    # Step 1 — fast lexical attribute filter (gender, hair) — always applied, no LLM needed.
-    # Step 2 — optional LLM re-ranking on top (skipped if output looks bogus).
+    # Cross-encoder re-ranking when enhanced mode is on
     if expand:
         all_segments.sort(key=lambda s: s["score"], reverse=True)
-        all_segments = _attribute_filter(q, all_segments)
         all_segments = await _rerank_segments(q, all_segments)
 
     # Re-group by video for the response
