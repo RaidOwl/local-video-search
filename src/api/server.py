@@ -293,11 +293,12 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
     url = cfg.get("vllm_url", "").rstrip("/")
     model = cfg.get("vllm_model", "")
     if not url or not model:
+        print("Re-rank: no LLM configured, skipping")
         return segments
 
     import re as _re, httpx as _httpx
 
-    MAX_SEGS = 60
+    MAX_SEGS = 25
     to_score = segments[:MAX_SEGS]
     captions = [
         s.get("caption", "").replace("[transcript] ", "").strip()
@@ -305,25 +306,28 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
     ]
     numbered = "\n".join(f"{i+1}. {cap}" for i, cap in enumerate(captions))
     prompt = (
-        "You are rating how well video captions match a search query.\n\n"
+        "You are a strict relevance judge for video search.\n\n"
         f'Query: "{query}"\n\n'
-        "For each caption below, output a relevance score from 0 to 10 "
-        "(10 = perfect match, 0 = completely unrelated). "
-        "Be strict: only give high scores when the caption specifically matches "
-        "the query's key details — appearance, gender, hair, clothing, actions, "
-        "and setting all count. A similar setting alone is not enough for a high score.\n"
-        "Output ONLY the integer scores, one per line, in the same order. No other text.\n\n"
+        "Score each caption 0-10 based on how specifically it matches "
+        "ALL key requirements in the query. Use these rules:\n"
+        "- 0-2: Missing a critical attribute (wrong person, wrong gender, wrong hair, wrong setting)\n"
+        "- 3-4: Same setting but the wrong person or subject\n"
+        "- 5-6: Partially matches — some key attributes present, others absent\n"
+        "- 7-8: Most attributes match with minor differences\n"
+        "- 9-10: All key attributes clearly match\n\n"
+        "Be STRICT. A similar setting alone is not enough. Wrong gender or wrong appearance = 0-2.\n"
+        "Output ONLY the integer scores, one per line, in order. No other text.\n\n"
         f"Captions:\n{numbered}\n\nScores:"
     )
 
     try:
-        async with _httpx.AsyncClient(timeout=30.0) as client:
+        async with _httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
                 f"{url}/v1/chat/completions",
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": MAX_SEGS * 5 + 20,
+                    "max_tokens": MAX_SEGS * 4 + 20,
                     "temperature": 0.0,
                 },
             )
@@ -335,6 +339,8 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
             m = _re.search(r'\b(\d+(?:\.\d+)?)\b', line)
             if m:
                 scores_raw.append(min(10.0, max(0.0, float(m.group(1)))))
+
+        print(f"Re-rank '{query}': scores={scores_raw[:len(to_score)]}")
 
         if len(scores_raw) < max(1, len(to_score) // 2):
             print(f"Re-rank: too few scores ({len(scores_raw)} for {len(to_score)} segments), skipping")
@@ -902,15 +908,10 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
     MAX_BOOST = 1.25
     qdrant_threshold = max(0.0, threshold / MAX_BOOST)
 
-    # Build list of queries to search: cleaned + original, plus LLM expansions if requested
+    # Build list of queries to search: cleaned + original.
+    # Note: Enhanced mode (expand=True) uses LLM re-ranking for precision rather than
+    # query expansion — re-ranking is more accurate and avoids a second LLM round-trip.
     queries_to_search = list(dict.fromkeys([processed["search_terms"], q]))  # dedup, order-preserved
-    if expand:
-        expansions = await _expand_query(q)
-        for eq in expansions:
-            cleaned_eq = query_processor.extract_search_terms(eq)
-            for variant in dict.fromkeys([cleaned_eq, eq]):
-                if variant not in queries_to_search:
-                    queries_to_search.append(variant)
 
     # Run all queries in parallel; merge by Qdrant point ID keeping the max score.
     search_params = dict(limit=limit * 8, score_threshold=qdrant_threshold, source_intent=source_intent)
