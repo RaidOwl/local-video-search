@@ -263,7 +263,7 @@ export default function VideoDetailPage() {
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <h1 style={{ fontSize: '1.4rem' }}>{video.display_name || video.name}</h1>
-              <button className="icon-btn" onClick={() => { setNameInput(video.display_name || video.name); setEditingName(true) }} title="Rename">✏️</button>
+              <button className="icon-btn" onClick={() => { setNameInput(video.display_name || video.name); setEditingName(true) }} title="Rename">✎</button>
             </div>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
@@ -286,7 +286,7 @@ export default function VideoDetailPage() {
             {video.status === 'ready' && <span className="badge queued">Ready</span>}
             {video.status === 'processing' && video.frame_count === 0 && <span className="badge queued">Queued</span>}
             {video.status === 'processing' && video.frame_count > 0 && <span className="badge analyzing"><span className="dot" />Analyzing…</span>}
-            {video.status === 'transcribing' && <span className="badge analyzing"><span className="dot" />🎙 Analyzing…</span>}
+            {video.status === 'transcribing' && <span className="badge analyzing"><span className="dot" />Analyzing…</span>}
             {video.status === 'error' && <span className="badge error"><span className="dot" />Error</span>}
           </div>
         </div>
@@ -317,7 +317,7 @@ export default function VideoDetailPage() {
         {video.status === 'analyzed' && (
           <>
             <button className="ghost" style={{ fontSize: '0.82rem' }} onClick={() => setShowFramePicker(v => !v)}>
-              {showFramePicker ? '✕ Hide frames' : video.thumbnail_path ? '🖼 Change thumbnail' : '🖼 Set thumbnail'}
+              {showFramePicker ? '✕ Hide frames' : video.thumbnail_path ? 'Change thumbnail' : 'Set thumbnail'}
             </button>
             {thumbnailSaved && <span style={{ fontSize: '0.78rem', color: 'var(--success)' }}>✓ Saved</span>}
           </>

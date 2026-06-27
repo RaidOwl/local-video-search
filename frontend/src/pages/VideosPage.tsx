@@ -103,8 +103,8 @@ function StatusBadge({ status, frameCount, eta }: { status: Video['status']; fra
   if (status === 'ready') return <span className="badge queued">Ready</span>
   if (status === 'analyzed') return <span className="badge analyzed"><span className="dot" />Analyzed</span>
   if (status === 'error') return <span className="badge error"><span className="dot" />Error</span>
-  if (status === 'transcribing') return <span className="badge analyzing"><span className="dot" />🎙 Analyzing…</span>
-  if (status === 'retranscribing') return <span className="badge analyzing"><span className="dot" />🎙 Audio…</span>
+  if (status === 'transcribing') return <span className="badge analyzing"><span className="dot" />Analyzing…</span>
+  if (status === 'retranscribing') return <span className="badge analyzing"><span className="dot" />Audio…</span>
   if (frameCount === 0) return <span className="badge queued">Queued</span>
   return (
     <span className="badge analyzing">
@@ -158,7 +158,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
         style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.3rem 0.5rem', cursor: hasChildren ? 'pointer' : 'default', userSelect: 'none', color: 'var(--muted)', fontSize: '0.82rem', paddingLeft: indent + 8 }}
       >
         <span style={{ fontSize: '0.65rem', opacity: 0.6, width: 10 }}>{hasChildren ? (open ? '▼' : '▶') : ''}</span>
-        <span>📁</span>
+        <span>▷</span>
         <span style={{ fontWeight: 500, color: 'var(--text)' }}>{node.name}</span>
         <span style={{ opacity: 0.5 }}>({node.videos.length + Object.values(node.subfolders).reduce(function count(s, n): number { return s + n.videos.length + Object.values(n.subfolders).reduce(count, 0) }, 0)})</span>
         <span style={{ flex: 1 }} />
@@ -182,7 +182,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
               <div style={{ flexShrink: 0, width: 14, height: 14, borderRadius: 3, background: isSelected ? 'var(--accent)' : 'transparent', border: `2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 {isSelected && <span style={{ color: '#fff', fontSize: 9, lineHeight: 1 }}>✓</span>}
               </div>
-              <span style={{ fontSize: '0.75rem' }}>🎬</span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>▷</span>
               <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
               <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0 }}>{fmt(video.duration)}</span>
               <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
@@ -215,7 +215,7 @@ function TreeView(props: ViewProps) {
                   <div style={{ flexShrink: 0, width: 14, height: 14, borderRadius: 3, background: isSelected ? 'var(--accent)' : 'transparent', border: `2px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     {isSelected && <span style={{ color: '#fff', fontSize: 9, lineHeight: 1 }}>✓</span>}
                   </div>
-                  <span style={{ fontSize: '0.75rem' }}>🎬</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>▷</span>
                   <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
                   <StatusBadge status={video.status} frameCount={video.frame_count} eta={etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} />
@@ -272,7 +272,7 @@ function FolderView(props: ViewProps) {
             onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--accent)')}
             onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}
           >
-            <span style={{ fontSize: '2rem', lineHeight: 1 }}>📁</span>
+            <span style={{ fontSize: '2rem', lineHeight: 1, color: 'var(--muted)' }}>⊟</span>
             <span style={{ fontSize: '0.75rem', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', color: 'var(--text)' }}>{folder.name}</span>
             <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>{folder.videos.length + Object.values(folder.subfolders).reduce(function c(s, n): number { return s + n.videos.length + Object.values(n.subfolders).reduce(c, 0) }, 0)} videos</span>
           </div>
@@ -526,7 +526,7 @@ export default function VideosPage() {
                 style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', minWidth: 0 }}
                 title={mode.charAt(0).toUpperCase() + mode.slice(1) + ' view'}
               >
-                {mode === 'card' ? '⊞' : mode === 'tree' ? '≡' : '📁'}
+                {mode === 'card' ? '⊞' : mode === 'tree' ? '≡' : '⊟'}
               </button>
             ))}
             {viewMode === 'tree' && (
@@ -588,7 +588,7 @@ export default function VideosPage() {
                       {video.frame_count > 0 && <span>{video.frame_count} frames</span>}
                       <span style={{ flex: 1 }} />
                       {video.status === 'analyzed' && !video.has_transcript && (
-                        <span title="No audio transcription — spoken words won't appear in search results" style={{ fontSize: '0.7rem', color: 'var(--warning)', marginRight: '0.4rem', lineHeight: 1 }}>🔇</span>
+                        <span title="No audio transcription — spoken words won't appear in search results" style={{ fontSize: '0.7rem', color: 'var(--warning)', marginRight: '0.4rem', lineHeight: 1 }}>⊘</span>
                       )}
                       <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
                     </div>

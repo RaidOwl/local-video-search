@@ -189,7 +189,7 @@ export default function SearchPage() {
                           )}
                           <span title={seg.caption.startsWith('[transcript]') ? 'Audio transcript' : 'Visual caption'}
                             style={{ fontSize: '0.7rem', flexShrink: 0, opacity: 0.5 }}>
-                            {seg.caption.startsWith('[transcript]') ? '🎙' : '🎞'}
+                            {seg.caption.startsWith('[transcript]') ? '◉' : '◻'}
                           </span>
                           <span style={{
                             fontFamily: 'monospace', fontSize: '0.78rem',

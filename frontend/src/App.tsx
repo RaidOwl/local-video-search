@@ -30,7 +30,7 @@ function App() {
         <main>
           {health === false && (
             <div className="warning">
-              ⚠️ API is not available. Make sure the backend is running.
+              ⚠ API is not available. Make sure the backend is running.
             </div>
           )}
           <Routes>
