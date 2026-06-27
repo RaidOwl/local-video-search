@@ -50,6 +50,8 @@ services:
       DATABASE_URL: sqlite+aiosqlite:////data/metadata.db
       FRAME_EXTRACTION_INTERVAL: ${FRAME_EXTRACTION_INTERVAL:-5}
       EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-16}
+      # Cache HuggingFace models (cross-encoder etc.) on the persistent data volume
+      HF_HOME: /data/hf_cache
     volumes:
       # Source code mount — allows scp + restart to deploy Python changes without rebuild
       - ./src:/app/src

@@ -175,6 +175,9 @@ transcription_service = TranscriptionService(model_size=_cfg["whisper_model"])
 query_processor = QueryProcessor()
 segment_retriever = SegmentRetriever()
 
+# Cross-encoder re-ranker — lazy-loaded on first enhanced search
+_reranker = None
+
 # Frame extractor
 frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"])
 
@@ -280,83 +283,52 @@ async def _expand_query(q: str) -> list[str]:
 
 
 async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
-    """Re-rank candidate segments using the LLM as a cross-encoder.
+    """Re-rank candidate segments using a local cross-encoder model.
 
-    Sends all segment captions in a single batched prompt and asks the model
-    to score 0-10 relevance against the query.  The final score is a blend:
-        0.3 * qdrant_score + 0.7 * (llm_score / 10)
-    Falls back to the original scores on any failure.
+    Uses cross-encoder/ms-marco-MiniLM-L-6-v2 (~23 MB, runs on CPU).
+    Lazy-loaded on first call; weights cached in /data/hf_cache so they
+    survive container rebuilds.  Final score blends Qdrant + cross-encoder:
+        0.4 * qdrant_score + 0.6 * sigmoid(cross_encoder_raw)
+    Falls back to original scores on any failure.
     """
     if not segments:
         return segments
-    cfg = _effective_cfg()
-    url = cfg.get("vllm_url", "").rstrip("/")
-    model = cfg.get("vllm_model", "")
-    if not url or not model:
-        print("Re-rank: no LLM configured, skipping")
-        return segments
 
-    import re as _re, httpx as _httpx
-
-    MAX_SEGS = 25
-    to_score = segments[:MAX_SEGS]
-    captions = [
-        s.get("caption", "").replace("[transcript] ", "").strip()
-        for s in to_score
-    ]
-    numbered = "\n".join(f"{i+1}. {cap}" for i, cap in enumerate(captions))
-    prompt = (
-        "You are a strict relevance judge for video search.\n\n"
-        f'Query: "{query}"\n\n'
-        "Score each caption 0-10 based on how specifically it matches "
-        "ALL key requirements in the query. Use these rules:\n"
-        "- 0-2: Missing a critical attribute (wrong person, wrong gender, wrong hair, wrong setting)\n"
-        "- 3-4: Same setting but the wrong person or subject\n"
-        "- 5-6: Partially matches — some key attributes present, others absent\n"
-        "- 7-8: Most attributes match with minor differences\n"
-        "- 9-10: All key attributes clearly match\n\n"
-        "Be STRICT. A similar setting alone is not enough. Wrong gender or wrong appearance = 0-2.\n"
-        "Output ONLY the integer scores, one per line, in order. No other text.\n\n"
-        f"Captions:\n{numbered}\n\nScores:"
-    )
-
-    try:
-        async with _httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{url}/v1/chat/completions",
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": MAX_SEGS * 4 + 20,
-                    "temperature": 0.0,
-                },
-            )
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
-
-        scores_raw: list[float] = []
-        for line in text.splitlines():
-            m = _re.search(r'\b(\d+(?:\.\d+)?)\b', line)
-            if m:
-                scores_raw.append(min(10.0, max(0.0, float(m.group(1)))))
-
-        print(f"Re-rank '{query}': scores={scores_raw[:len(to_score)]}")
-
-        if len(scores_raw) < max(1, len(to_score) // 2):
-            print(f"Re-rank: too few scores ({len(scores_raw)} for {len(to_score)} segments), skipping")
+    global _reranker
+    if _reranker is None:
+        try:
+            from sentence_transformers import CrossEncoder
+            print("Loading cross-encoder model (first enhanced search — downloading ~23 MB)...")
+            _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
+            print("Cross-encoder ready.")
+        except Exception as e:
+            print(f"Re-rank: failed to load cross-encoder: {e}")
             return segments
 
-        for i, seg in enumerate(to_score):
-            if i < len(scores_raw):
-                llm = scores_raw[i] / 10.0
-                seg["score"] = 0.3 * seg["score"] + 0.7 * llm
+    try:
+        import asyncio as _asyncio, math as _math
+        pairs = [
+            (query, s.get("caption", "").replace("[transcript] ", "").strip())
+            for s in segments
+        ]
+        # Run synchronous predict in a thread so we don't block the event loop
+        loop = _asyncio.get_running_loop()
+        raw_scores = await loop.run_in_executor(None, _reranker.predict, pairs)
+
+        def _sigmoid(x: float) -> float:
+            return 1.0 / (1.0 + _math.exp(-x / 3.0))  # /3 softens the curve
+
+        norm = [_sigmoid(float(s)) for s in raw_scores]
+        print(f"Re-rank '{query}': top={sorted(norm, reverse=True)[:8]}")
+
+        for seg, ns in zip(segments, norm):
+            seg["score"] = 0.4 * seg["score"] + 0.6 * ns
 
         return segments
 
     except Exception as e:
-        print(f"Re-rank failed: {e}")
+        print(f"Re-rank predict failed: {e}")
         return segments
-
 
 def _start_analysis(video_path: str, video_id: str, context: str = '', resume: bool = False) -> None:
     """Cancel any existing task for this video, then start a fresh one."""
@@ -990,10 +962,12 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
                 "frame_path": s.frame_path,
             })
 
-    # LLM re-ranking when enhanced mode is on: sort best candidates first so the
-    # model sees the strongest contenders, then re-score with blended Qdrant+LLM score.
+    # LLM re-ranking when enhanced mode is on:
+    # Step 1 — fast lexical attribute filter (gender, hair) — always applied, no LLM needed.
+    # Step 2 — optional LLM re-ranking on top (skipped if output looks bogus).
     if expand:
         all_segments.sort(key=lambda s: s["score"], reverse=True)
+        all_segments = _attribute_filter(q, all_segments)
         all_segments = await _rerank_segments(q, all_segments)
 
     # Re-group by video for the response
