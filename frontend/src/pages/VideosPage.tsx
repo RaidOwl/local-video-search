@@ -573,7 +573,7 @@ export default function VideosPage() {
                         >
                           {isSelected && <span style={{ color: '#fff', fontSize: 11, lineHeight: 1 }}>✓</span>}
                         </div>
-                        <span className="video-title">{video.display_name || video.name}</span>
+                        <span className="video-title" title={video.display_name || video.name}>{video.display_name || video.name}</span>
                       </div>
                       <div style={{ display: 'flex', gap: '0.1rem' }}>
                         {video.status === 'processing' && (
