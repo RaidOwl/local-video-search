@@ -287,10 +287,13 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
     absolute relevance score.
 
     Architecture: bi-encoder (BGE-M3 / Qdrant) retrieves candidates for recall;
-    this cross-encoder (ms-marco-MiniLM-L-6-v2, ~23 MB, CPU) judges true
-    query↔caption relevance for precision.  The cross-encoder is the *sole*
-    authority on the final score — we deliberately do NOT blend in the Qdrant
-    cosine, because blending re-injects the bi-encoder's mistakes.
+    this cross-encoder (BAAI/bge-reranker-base, ~1.1 GB, CPU) judges true
+    query↔caption relevance for precision.  bge-reranker is the same family as
+    the BGE-M3 embeddings and is trained for natural-language semantic relevance,
+    so it handles descriptive VLM captions and nuances like gender far better
+    than passage-ranking models such as ms-marco-MiniLM.  The cross-encoder is
+    the *sole* authority on the final score — we deliberately do NOT blend in the
+    Qdrant cosine, because blending re-injects the bi-encoder's mistakes.
 
     The model's raw logit is calibrated: positive ⇒ relevant, negative ⇒ not.
     A plain sigmoid maps it to a stable 0–1 relevance probability that is
@@ -307,11 +310,11 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
     if _reranker is None:
         try:
             from sentence_transformers import CrossEncoder
-            print("Loading cross-encoder model (first enhanced search — downloading ~23 MB)...")
-            _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=512)
-            print("Cross-encoder ready.")
+            print("Loading reranker model (first enhanced search — downloading ~1.1 GB)...")
+            _reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
+            print("Reranker ready.")
         except Exception as e:
-            print(f"Re-rank: failed to load cross-encoder: {e}")
+            print(f"Re-rank: failed to load reranker: {e}")
             return segments
 
     try:
@@ -325,9 +328,12 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
         raw_scores = await loop.run_in_executor(None, _reranker.predict, pairs)
 
         def _sigmoid(x: float) -> float:
-            # Standard sigmoid of the raw logit — gives an absolute, calibrated
-            # relevance probability that stays comparable across queries.
-            x = max(-30.0, min(30.0, x))
+            # bge-reranker logits are calibrated (>0 relevant, <0 not) but small
+            # in magnitude on descriptive captions, so a plain sigmoid bunches
+            # everything near 0.5.  A temperature spreads the useful range so a
+            # strong match lands ~0.65-0.8 (reads "near exact") while weak matches
+            # stay below ~0.55, keeping the relevance threshold meaningful.
+            x = max(-30.0, min(30.0, x * 1.5))
             return 1.0 / (1.0 + _math.exp(-x))
 
         for seg, raw in zip(segments, raw_scores):
@@ -976,9 +982,12 @@ async def search_videos(q: str, limit: int = 10, threshold: float = 0.50, source
     # Cross-encoder re-ranking when enhanced mode is on.
     # Qdrant + keyword boost above served only to pick candidates (recall);
     # the cross-encoder now assigns the final absolute relevance score (precision).
+    # Feed the cleaned query (filler words like "find the segment where" stripped)
+    # so the reranker judges the actual subject, not conversational scaffolding.
     if expand:
         all_segments.sort(key=lambda s: s["score"], reverse=True)
-        all_segments = await _rerank_segments(q, all_segments)
+        rerank_query = processed.get("search_terms") or q
+        all_segments = await _rerank_segments(rerank_query, all_segments)
 
     # Re-group by video for the response
     video_segs: dict = {}
