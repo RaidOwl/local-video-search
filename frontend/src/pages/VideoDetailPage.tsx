@@ -312,25 +312,30 @@ export default function VideoDetailPage() {
           style={{ width: '100%', maxHeight: 480, borderRadius: 'var(--radius)', background: '#000', display: 'block', outline: 'none' }}
         />
       </div>
-      <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'flex-end' }}>
+      {/* Action row: thumbnail picker + download */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem' }}>
+        {video.status === 'analyzed' && (
+          <>
+            <button className="ghost" style={{ fontSize: '0.82rem' }} onClick={() => setShowFramePicker(v => !v)}>
+              {showFramePicker ? '✕ Hide frames' : video.thumbnail_path ? '🖼 Change thumbnail' : '🖼 Set thumbnail'}
+            </button>
+            {thumbnailSaved && <span style={{ fontSize: '0.78rem', color: 'var(--success)' }}>✓ Saved</span>}
+          </>
+        )}
+        <span style={{ flex: 1 }} />
         <a
           href={`/api/videos/${video.id}/download`}
           download
-          style={{ fontSize: '0.78rem', color: 'var(--muted)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.2rem 0.5rem', border: '1px solid var(--border)', borderRadius: 'var(--radius)' }}
+          className="ghost"
+          style={{ fontSize: '0.82rem', textDecoration: 'none' }}
         >
-          ⬇️ Full video
+          ⬇ Download
         </a>
       </div>
 
       {/* Frame picker (thumbnail selection) */}
       {video.status === 'analyzed' && (
         <div style={{ marginBottom: '1.5rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <button className="ghost" style={{ fontSize: '0.8rem' }} onClick={() => setShowFramePicker(v => !v)}>
-              {showFramePicker ? 'Hide frames' : video.thumbnail_path ? '🖼 Change thumbnail' : '🖼 Pick thumbnail'}
-            </button>
-            {thumbnailSaved && <span style={{ fontSize: '0.78rem', color: 'var(--success)' }}>✓ Thumbnail saved</span>}
-          </div>
           {showFramePicker && frames.length > 0 && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.5rem', marginTop: '0.75rem' }}>
               {frames.map(f => (
