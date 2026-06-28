@@ -45,8 +45,13 @@ class Transcriber:
         )
         return result.returncode == 0
 
-    def transcribe(self, video_path: str) -> List[TranscriptSegment]:
-        """Transcribe a video file and return timestamped segments."""
+    def transcribe(self, video_path: str, progress_callback=None) -> List[TranscriptSegment]:
+        """Transcribe a video file and return timestamped segments.
+
+        If ``progress_callback`` is provided it is called as transcription
+        advances with ``(seconds_done, total_seconds)`` so callers can report
+        progress to the user.
+        """
         model = self._load_model()
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -57,18 +62,31 @@ class Transcriber:
                 print(f"Failed to extract audio from {video_path}")
                 return []
 
-            segments, _ = model.transcribe(
+            segments, info = model.transcribe(
                 audio_path,
                 beam_size=5,
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 500}
             )
 
-            return [
-                TranscriptSegment(seg.start, seg.end, seg.text)
-                for seg in segments
-                if seg.text.strip()
-            ]
+            total = getattr(info, "duration", 0.0) or 0.0
+            out: List[TranscriptSegment] = []
+            # faster-whisper yields segments lazily, so iterating drives the work
+            # and lets us report progress from each segment's end timestamp.
+            for seg in segments:
+                if seg.text.strip():
+                    out.append(TranscriptSegment(seg.start, seg.end, seg.text))
+                if progress_callback and total > 0:
+                    try:
+                        progress_callback(min(seg.end, total), total)
+                    except Exception:
+                        pass
+            if progress_callback and total > 0:
+                try:
+                    progress_callback(total, total)
+                except Exception:
+                    pass
+            return out
         finally:
             os.unlink(audio_path)
 
@@ -79,5 +97,5 @@ class TranscriptionService:
     def __init__(self, model_size: str = "base"):
         self.transcriber = Transcriber(model_size=model_size)
 
-    def transcribe_video(self, video_path: str) -> List[TranscriptSegment]:
-        return self.transcriber.transcribe(video_path)
+    def transcribe_video(self, video_path: str, progress_callback=None) -> List[TranscriptSegment]:
+        return self.transcriber.transcribe(video_path, progress_callback=progress_callback)

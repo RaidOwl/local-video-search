@@ -109,7 +109,10 @@ class EmbeddingService:
             "video_id": video_id,
             "frame_path": frame_path,
             "timestamp": timestamp,
-            "caption": caption or ""
+            "caption": caption or "",
+            # Transcript segments are indexed with a "[transcript] " caption
+            # prefix; tag them so search can filter by source server-side.
+            "is_transcript": bool(caption and caption.startswith('[transcript]')),
         }
 
         self.qdrant_client.upsert(
@@ -123,6 +126,50 @@ class EmbeddingService:
 
         return point_id
     
+    def export_points(self, video_id: str) -> List[dict]:
+        """Scroll every Qdrant point for a video (with vectors) for library export."""
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        out: List[dict] = []
+        offset = None
+        flt = Filter(must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))])
+        while True:
+            points, offset = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=flt,
+                with_payload=True, with_vectors=True,
+                limit=256, offset=offset,
+            )
+            for p in points:
+                out.append({"id": p.id, "vector": p.vector, "payload": p.payload})
+            if offset is None:
+                break
+        return out
+
+    def import_points(self, points: List[dict]):
+        """Batch-upsert raw points (id + vector + payload) from a library export."""
+        if not points:
+            return
+        from qdrant_client.models import PointStruct
+        structs = [
+            PointStruct(id=p["id"], vector=p["vector"], payload=p.get("payload") or {})
+            for p in points if p.get("vector")
+        ]
+        BATCH = 256
+        for i in range(0, len(structs), BATCH):
+            self.qdrant_client.upsert(
+                collection_name=self.collection_name, points=structs[i:i + BATCH]
+            )
+
+    def delete_video_points(self, video_id: str):
+        """Remove all Qdrant points for a video (used before an overwrite-import)."""
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        self.qdrant_client.delete(
+            collection_name=self.collection_name,
+            points_selector=Filter(
+                must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
+            ),
+        )
+
     async def search(
         self,
         query: str,
@@ -139,23 +186,24 @@ class EmbeddingService:
 
         from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-        filter_condition = None
+        # Filter by source intent *inside* the query so the candidate pool isn't
+        # dominated by the unwanted source. Short queries (e.g. "dog") align more
+        # strongly with short transcript text than verbose visual captions, so
+        # post-filtering after a small over-fetch used to starve visual recall.
+        must = []
         if video_id:
-            filter_condition = Filter(
-                must=[FieldCondition(
-                    key="video_id",
-                    match=MatchValue(value=video_id)
-                )]
-            )
-
-        # Fetch extra results so post-filtering by source type doesn't starve us
-        fetch_limit = limit if source_intent == 'mixed' else limit * 3
+            must.append(FieldCondition(key="video_id", match=MatchValue(value=video_id)))
+        if source_intent == 'visual':
+            must.append(FieldCondition(key="is_transcript", match=MatchValue(value=False)))
+        elif source_intent == 'speech':
+            must.append(FieldCondition(key="is_transcript", match=MatchValue(value=True)))
+        filter_condition = Filter(must=must) if must else None
 
         results = self.qdrant_client.search(
             collection_name=self.collection_name,
             query_vector=embedding,
             query_filter=filter_condition,
-            limit=fetch_limit,
+            limit=limit,
             score_threshold=score_threshold
         )
 
@@ -171,7 +219,8 @@ class EmbeddingService:
             for hit in results
         ]
 
-        # Post-filter by source intent
+        # Belt-and-suspenders: also post-filter by caption prefix in case any
+        # legacy points predate the is_transcript flag (before backfill runs).
         if source_intent == 'speech':
             hits = [h for h in hits if h["caption"].startswith('[transcript]')]
         elif source_intent == 'visual':

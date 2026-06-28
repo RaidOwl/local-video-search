@@ -29,6 +29,7 @@ services:
     restart: unless-stopped
 
   local-vss-api:
+    image: raidowl/local-vss-api:latest
     build:
       context: .
       dockerfile: docker/app/Dockerfile
@@ -53,8 +54,6 @@ services:
       # Cache HuggingFace models (reranker, etc.) under the shared models volume
       HF_HOME: /models/huggingface
     volumes:
-      # Source code mount — allows scp + restart to deploy Python changes without rebuild
-      - ./src:/app/src
       # Model weights — relocate to a larger drive by setting MODELS_DIR in .env
       - ${MODELS_DIR:-./data/models}:/models
       # Up to 5 video library directories — set VIDEO_DIR_1..5 in .env
@@ -79,6 +78,7 @@ services:
     restart: unless-stopped
 
   local-vss-frontend:
+    image: raidowl/local-vss-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile

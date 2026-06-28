@@ -81,7 +81,8 @@ nav { border-bottom: 1px solid var(--border); background: rgba(12,14,20,0.92); b
 .video-grid > div:nth-child(7) { animation-delay: 0.24s; }
 .video-grid > div:nth-child(8) { animation-delay: 0.28s; }
 .video-grid > div:nth-child(n+9) { animation-delay: 0.32s; }
-.video-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; cursor: pointer; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s; text-decoration: none; color: inherit; height: auto; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 2px 8px rgba(0,0,0,0.15); }
+.video-grid > div { height: 100%; }
+.video-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; cursor: pointer; transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s; text-decoration: none; color: inherit; height: 100%; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 2px 8px rgba(0,0,0,0.15); }
 .video-card:hover { border-color: rgba(99,102,241,0.5); transform: translateY(-2px); box-shadow: 0 0 0 1px rgba(99,102,241,0.35), 0 8px 24px rgba(99,102,241,0.1), 0 4px 12px rgba(0,0,0,0.3); }
 .video-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
 .video-title { font-weight: 600; font-size: 0.95rem; line-height: 1.3; min-height: calc(1.3em * 2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -103,6 +104,7 @@ nav { border-bottom: 1px solid var(--border); background: rgba(12,14,20,0.92); b
 .summary-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.2rem; line-height: 1.7; font-size: 0.9rem; color: var(--text); white-space: pre-wrap; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
 .progress-wrap { background: var(--surface2); border-radius: 99px; height: 4px; overflow: hidden; }
 .progress-bar { background: var(--accent); height: 100%; border-radius: 99px; transition: width 0.4s; }
+.progress-bar.audio { background: #2dd4bf; }
 .empty { text-align: center; padding: 4rem 1rem; color: var(--muted); }
 .empty h3 { font-size: 1.1rem; margin-bottom: 0.5rem; color: var(--text); }
 .divider { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }

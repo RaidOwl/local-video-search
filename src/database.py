@@ -34,6 +34,7 @@ class Video(Base):
     frame_count = Column(Integer, default=0)
     thumbnail_path = Column(String, nullable=True)
     context = Column(Text, nullable=True)  # user-supplied context used during analysis
+    transcribe_progress = Column(Float, nullable=True, default=0.0)  # 0..1 during transcription
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
@@ -70,7 +71,7 @@ class Database:
             for col in ['context TEXT', 'thumbnail_path TEXT', 'hidden TEXT DEFAULT 0', 'has_transcript INTEGER DEFAULT 0',
                         'fps REAL', 'video_codec TEXT', 'audio_codec TEXT', 'container TEXT',
                         'extension TEXT', 'bitrate INTEGER', 'resolution_label TEXT',
-                        'recorded_at DATETIME', 'file_modified_at DATETIME']:
+                        'recorded_at DATETIME', 'file_modified_at DATETIME', 'transcribe_progress REAL DEFAULT 0']:
                 col_name = col.split()[0]
                 try:
                     await conn.execute(text(f'ALTER TABLE videos ADD COLUMN {col}'))
@@ -105,6 +106,15 @@ class Database:
         async with self.session_maker() as session:
             from sqlalchemy import select
             result = await session.execute(select(Video).where(Video.path == path))
+            return result.scalars().first()
+
+    async def get_video_by_hash(self, file_hash: str) -> Optional[Video]:
+        """Get a video by its content hash (used to match files across machines)."""
+        if not file_hash:
+            return None
+        async with self.session_maker() as session:
+            from sqlalchemy import select
+            result = await session.execute(select(Video).where(Video.file_hash == file_hash))
             return result.scalars().first()
 
     async def get_all_videos(self, hidden: bool = False, include_all: bool = False) -> list[Video]:
@@ -151,6 +161,14 @@ class Database:
             await session.commit()
             await session.refresh(frame)
             return frame
+
+    async def create_frames(self, frames: list[dict]):
+        """Bulk-insert frame records (used by library import)."""
+        if not frames:
+            return
+        async with self.session_maker() as session:
+            session.add_all([Frame(**f) for f in frames])
+            await session.commit()
     
     async def get_frames_for_video(self, video_id: str) -> list[Frame]:
         """Get all frames for a video."""

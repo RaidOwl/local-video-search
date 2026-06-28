@@ -1,0 +1,25 @@
+# ── Development overlay ───────────────────────────────────────────────────────
+# Restores LOCAL builds + a live source mount so code changes don't require a
+# Docker Hub push/pull round-trip during development.
+#
+#   Dev (build locally, hot-reload Python via scp/edit + restart):
+#     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+#   After editing Python under ./src, just restart — the bind mount picks it up:
+#     docker compose -f docker-compose.yml -f docker-compose.dev.yml restart local-vss-api
+#
+# The base docker-compose.yml on its own runs the published Hub images, so anyone
+# pulling the image (no overlay) is completely unaffected by this file.
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  local-vss-api:
+    # Build from the local Dockerfile instead of pulling the Hub image.
+    pull_policy: build
+    volumes:
+      # Live source mount — edit/scp into ./src and `restart` to apply, no rebuild.
+      - ./src:/app/src
+
+  local-vss-frontend:
+    # Build the UI from local source instead of pulling the Hub image.
+    pull_policy: build

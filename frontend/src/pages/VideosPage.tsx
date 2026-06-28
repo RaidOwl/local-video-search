@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, Video, AppSettings } from '../services/api'
 import { fmt } from '../utils'
-import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, ChevronDown, ChevronRight, Mic } from 'lucide-react'
+import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, ChevronDown, ChevronRight, Mic, RotateCcw } from 'lucide-react'
 
 type ViewMode = 'card' | 'tree' | 'folder'
 
@@ -84,10 +84,10 @@ function ModelStatusBar() {
   )
 }
 
-interface ProgressSnapshot { frameCount: number; ts: number }
+interface ProgressSnapshot { frameCount: number; ts: number; tProgress: number; tTs: number }
 
 function etaLabel(snap: ProgressSnapshot | undefined, current: number, totalFrames: number): string | null {
-  if (!snap || current === 0 || totalFrames <= 0) return null
+  if (!snap || snap.ts === 0 || current === 0 || totalFrames <= 0) return null
   const elapsed = (Date.now() - snap.ts) / 1000
   const delta = current - snap.frameCount
   if (delta <= 0 || elapsed < 1) return null
@@ -100,12 +100,30 @@ function etaLabel(snap: ProgressSnapshot | undefined, current: number, totalFram
   return `~${Math.round(secs / 60)}m`
 }
 
-function StatusBadge({ status, frameCount, eta }: { status: Video['status']; frameCount: number; eta: string | null }) {
+// ETA for audio transcription, derived from the fraction-complete (0..1) rate.
+function transcribeEtaLabel(snap: ProgressSnapshot | undefined, progress: number): string | null {
+  if (!snap || snap.tTs === 0 || progress <= 0 || progress >= 1) return null
+  const elapsed = (Date.now() - snap.tTs) / 1000
+  const delta = progress - snap.tProgress
+  if (delta <= 0 || elapsed < 1) return null
+  const rate = delta / elapsed // fraction per second
+  const remaining = 1 - progress
+  const secs = Math.round(remaining / rate)
+  if (secs < 5) return null
+  if (secs < 60) return `~${secs}s`
+  return `~${Math.round(secs / 60)}m`
+}
+
+function StatusBadge({ status, frameCount, eta, transcribeProgress = 0 }: { status: Video['status']; frameCount: number; eta: string | null; transcribeProgress?: number }) {
   if (status === 'ready') return <span className="badge queued">Ready</span>
   if (status === 'analyzed') return <span className="badge analyzed"><span className="dot" />Analyzed</span>
   if (status === 'error') return <span className="badge error"><span className="dot" />Error</span>
-  if (status === 'transcribing') return <span className="badge transcribing"><Mic size={11} />Transcribing…</span>
-  if (status === 'retranscribing') return <span className="badge transcribing"><Mic size={11} />Audio…</span>
+  if (status === 'transcribing' || status === 'retranscribing') {
+    const base = status === 'retranscribing' ? 'Audio' : 'Transcribing'
+    const pct = Math.round((transcribeProgress || 0) * 100)
+    const label = pct > 0 ? `${base} ${pct}%` : `${base}…`
+    return <span className="badge transcribing"><Mic size={11} />{label}{eta ? ` · ${eta}` : ''}</span>
+  }
   if (frameCount === 0) return <span className="badge queued">Queued</span>
   return (
     <span className="badge analyzing">
@@ -173,7 +191,9 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
         {node.videos.map(video => {
           const isSelected = selected.has(video.id)
           const totalFrames = Math.max(1, Math.floor(video.duration / frameInterval))
-          const eta = etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
+          const eta = (video.status === 'transcribing' || video.status === 'retranscribing')
+            ? transcribeEtaLabel(snapshots.current[video.id], video.transcribe_progress ?? 0)
+            : etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
           return (
             <div
               key={video.id}
@@ -186,7 +206,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
               <VideoIcon size={12} style={{ color: 'var(--muted)', flexShrink: 0 }} />
               <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
               <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0 }}>{fmt(video.duration)}</span>
-              <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
+              <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
               {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}><Square size={12} /></button>}              {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}><Square size={12} /></button>}              <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.3rem', color: 'var(--muted)', flexShrink: 0 }}><ArrowRight size={14} /></button>
               <button className="icon-btn" title="Hide" onClick={e => handleRemove(e, video.id)} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)', flexShrink: 0 }}><X size={14} /></button>
             </div>
@@ -219,7 +239,7 @@ function TreeView(props: ViewProps) {
                   <VideoIcon size={12} style={{ color: 'var(--muted)', flexShrink: 0 }} />
                   <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
-                  <StatusBadge status={video.status} frameCount={video.frame_count} eta={etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} />
+                  <StatusBadge status={video.status} frameCount={video.frame_count} eta={(video.status === 'transcribing' || video.status === 'retranscribing') ? transcribeEtaLabel(props.snapshots.current[video.id], video.transcribe_progress ?? 0) : etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} transcribeProgress={video.transcribe_progress} />
                   {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.3rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
                   <button className="icon-btn" title="Hide" onClick={e => props.handleRemove(e, video.id)} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)' }}><X size={14} /></button>
                 </div>
@@ -283,7 +303,9 @@ function FolderView(props: ViewProps) {
         {videos.map(video => {
           const isSelected = props.selected.has(video.id)
           const totalFrames = Math.max(1, Math.floor(video.duration / props.frameInterval))
-          const eta = etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)
+          const eta = (video.status === 'transcribing' || video.status === 'retranscribing')
+            ? transcribeEtaLabel(props.snapshots.current[video.id], video.transcribe_progress ?? 0)
+            : etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)
           return (
             <div key={video.id}
               onClick={() => { if (props.removing !== video.id) props.toggleSelect(video.id) }}
@@ -306,7 +328,7 @@ function FolderView(props: ViewProps) {
                   <span style={{ flex: 1 }} />
                   {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
                 </div>
-                <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
+                <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
               </div>
             </div>
           )
@@ -347,14 +369,21 @@ export default function VideosPage() {
       if (!data) return
       setVideos(prev => {
         for (const v of prev) {
-          if (v.status === 'processing' || v.status === 'transcribing' || v.status === 'retranscribing') {
-            const next = data.find(d => d.id === v.id)
-            // Set baseline on first observation using the *current* frame count,
-            // not 0. This measures rate going forward, so if the page loads
-            // mid-analysis the already-completed frames don't inflate the rate.
-            if (next && next.frame_count > 0 && !snapshots.current[v.id]) {
-              snapshots.current[v.id] = { frameCount: next.frame_count, ts: Date.now() }
-            }
+          const next = data.find(d => d.id === v.id)
+          if (!next) continue
+          const active = v.status === 'processing' || v.status === 'transcribing' || v.status === 'retranscribing'
+          if (!active) continue
+          let snap = snapshots.current[v.id]
+          if (!snap) { snap = { frameCount: 0, ts: 0, tProgress: 0, tTs: 0 }; snapshots.current[v.id] = snap }
+          // Frame-phase baseline: set on first observation using the *current*
+          // frame count (not 0) so already-completed frames don't inflate rate.
+          if (v.status === 'processing' && next.frame_count > 0 && snap.ts === 0) {
+            snap.frameCount = next.frame_count; snap.ts = Date.now()
+          }
+          // Transcription baseline — tracked separately since it begins only
+          // after frame analysis finishes.
+          if ((v.status === 'transcribing' || v.status === 'retranscribing') && (next.transcribe_progress ?? 0) > 0 && snap.tTs === 0) {
+            snap.tProgress = next.transcribe_progress ?? 0; snap.tTs = Date.now()
           }
         }
         return data
@@ -542,7 +571,9 @@ export default function VideosPage() {
           <div className="video-grid">
             {displayedVideos.map(video => {
               const totalFrames = Math.max(1, Math.floor(video.duration / frameInterval))
-              const eta = etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
+              const eta = (video.status === 'transcribing' || video.status === 'retranscribing')
+                ? transcribeEtaLabel(snapshots.current[video.id], video.transcribe_progress ?? 0)
+                : etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
               const isSelected = selected.has(video.id)
               return (
                 <div key={video.id} style={{ position: 'relative' }}>
@@ -584,20 +615,24 @@ export default function VideosPage() {
                         <button className="icon-btn" title="Remove from library" onClick={e => handleRemove(e, video.id)} style={{ padding: '0.2rem 0.3rem', color: 'var(--muted)' }}><X size={14} /></button>
                       </div>
                     </div>
-                    <div className="video-meta" style={{ display: 'flex', alignItems: 'center' }}>
+                    <div className="video-meta" style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap' }}>
                       <span>{fmt(video.duration)}</span>
-                      {video.frame_count > 0 && <span>{video.frame_count} frames</span>}
                       <span style={{ flex: 1 }} />
                       {video.status === 'analyzed' && !video.has_transcript && (
                         <span title="No audio transcription — spoken words won't appear in search results" style={{ display: 'inline-flex', flexShrink: 0, color: 'var(--warning)', marginRight: '0.4rem' }}>
                           <VolumeX size={12} />
                         </span>
                       )}
-                      <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} />
+                      <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
                     </div>
                     {video.status === 'processing' && video.frame_count > 0 && (
                       <div className="progress-wrap" style={{ marginTop: 4 }}>
                         <div className="progress-bar" style={{ width: `${Math.min(100, (video.frame_count / totalFrames) * 85)}%` }} />
+                      </div>
+                    )}
+                    {(video.status === 'transcribing' || video.status === 'retranscribing') && (
+                      <div className="progress-wrap" style={{ marginTop: 4 }}>
+                        <div className="progress-bar audio" style={{ width: `${Math.max(3, Math.min(100, (video.transcribe_progress || 0) * 100))}%` }} />
                       </div>
                     )}
                     {video.context && <p style={{ fontSize: '0.72rem', color: 'var(--muted)', fontStyle: 'italic', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={video.context}>"{video.context}"</p>}
@@ -649,14 +684,28 @@ function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
   const [recents] = useState<string[]>(getRecentContexts)
   const [submitting, setSubmitting] = useState(false)
 
+  const selectedVideos = videos.filter(v => videoIds.includes(v.id))
+  // Videos that already have analysis results (complete or partially-failed) can
+  // either be resumed (keep existing captions/transcript, only fill the gaps) or
+  // started over (wipe and re-analyze). Offer the choice only when at least one
+  // selected video has prior work; a never-analyzed 'ready' video has nothing to
+  // resume, so resume vs start-over is identical for it.
+  const resumableCount = selectedVideos.filter(v => v.status === 'analyzed' || v.status === 'error').length
+  const showResumeChoice = resumableCount > 0
+  const [resume, setResume] = useState(true)
+  // Only ask for context when there's something to caption fresh: a brand-new
+  // analysis, or an explicit "start over". A resume reuses each video's original
+  // stored context on the backend, so we don't prompt for it again.
+  const askContext = !showResumeChoice || !resume
+
   const handleSubmit = async () => {
     setSubmitting(true)
-    if (context.trim()) saveContext(context.trim())
-    await Promise.all(videoIds.map(id => api.reprocessVideo(id, context.trim() || undefined).catch(() => {})))
+    const useResume = showResumeChoice && resume
+    const ctx = askContext ? (context.trim() || undefined) : undefined
+    if (askContext && context.trim()) saveContext(context.trim())
+    await Promise.all(videoIds.map(id => api.reprocessVideo(id, ctx, useResume).catch(() => {})))
     onDone()
   }
-
-  const selectedVideos = videos.filter(v => videoIds.includes(v.id))
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}
@@ -673,38 +722,76 @@ function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
           ))}
         </div>
 
-        <div>
-          <label style={{ fontSize: '0.82rem', color: 'var(--muted)', display: 'block', marginBottom: '0.4rem' }}>
-            Context <span style={{ fontWeight: 400 }}>(optional — helps the AI better understand the video)</span>
-          </label>
-          <textarea
-            value={context}
-            onChange={e => setContext(e.target.value)}
-            placeholder='e.g. "Screen recording of Home Assistant dashboard setup"'
-            rows={3}
-            style={{ resize: 'vertical', fontFamily: 'inherit' }}
-            autoFocus
-          />
-        </div>
-
-        {recents.length > 0 && (
+        {showResumeChoice && (
           <div>
-            <p style={{ fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.4rem' }}>Recent contexts:</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-              {recents.map((r, i) => (
-                <button key={i} className="ghost" onClick={() => setContext(r)}
-                  style={{ fontSize: '0.78rem', textAlign: 'left', padding: '0.3rem 0.6rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {r}
-                </button>
-              ))}
+            <label style={{ fontSize: '0.82rem', color: 'var(--muted)', display: 'block', marginBottom: '0.4rem' }}>
+              {resumableCount} of {selectedVideos.length} already analyzed{selectedVideos.some(v => v.status === 'error') ? ' or errored' : ''}
+            </label>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button
+                onClick={() => setResume(true)}
+                className={resume ? '' : 'ghost'}
+                style={{ flex: 1, minWidth: 0, fontSize: '0.82rem', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.15rem', padding: '0.5rem 0.7rem', textAlign: 'left', whiteSpace: 'normal' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600 }}><Play size={13} /> Resume</span>
+                <span style={{ fontSize: '0.72rem', opacity: 0.8, fontWeight: 400, lineHeight: 1.3 }}>Keep existing results, fill in only what's missing</span>
+              </button>
+              <button
+                onClick={() => setResume(false)}
+                className={resume ? 'ghost' : ''}
+                style={{ flex: 1, minWidth: 0, fontSize: '0.82rem', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.15rem', padding: '0.5rem 0.7rem', textAlign: 'left', whiteSpace: 'normal' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600 }}><RotateCcw size={13} /> Start over</span>
+                <span style={{ fontSize: '0.72rem', opacity: 0.8, fontWeight: 400, lineHeight: 1.3 }}>Delete all results and re-analyze from scratch</span>
+              </button>
             </div>
           </div>
+        )}
+
+        {askContext && (
+          <>
+            <div>
+              <label style={{ fontSize: '0.82rem', color: 'var(--muted)', display: 'block', marginBottom: '0.4rem' }}>
+                Context <span style={{ fontWeight: 400 }}>(optional — helps the AI better understand the video)</span>
+              </label>
+              <textarea
+                value={context}
+                onChange={e => setContext(e.target.value)}
+                placeholder='e.g. "Screen recording of Home Assistant dashboard setup"'
+                rows={3}
+                style={{ resize: 'vertical', fontFamily: 'inherit' }}
+                autoFocus
+              />
+            </div>
+
+            {recents.length > 0 && (
+              <div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.4rem' }}>Recent contexts:</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                  {recents.map((r, i) => (
+                    <button key={i} className="ghost" onClick={() => setContext(r)}
+                      style={{ fontSize: '0.78rem', textAlign: 'left', padding: '0.3rem 0.6rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {showResumeChoice && resume && (
+          <p style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>
+            Resuming reuses each video's original context.
+          </p>
         )}
 
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
           <button className="ghost" onClick={onClose} disabled={submitting}>Cancel</button>
           <button onClick={handleSubmit} disabled={submitting}>
-            {submitting ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : <><Play size={13} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Start Analysis</>}
+            {submitting ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : (
+              showResumeChoice && !resume
+                ? <><RotateCcw size={13} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Start Over</>
+                : <><Play size={13} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> {showResumeChoice ? 'Resume Analysis' : 'Start Analysis'}</>
+            )}
           </button>
         </div>
       </div>

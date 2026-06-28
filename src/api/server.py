@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 from typing import Optional, List
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import os
 import random
@@ -56,6 +57,8 @@ async def lifespan(_app: FastAPI):
     asyncio.create_task(_warm_reranker())
     # Backfill file metadata for videos imported before those columns existed.
     asyncio.create_task(_backfill_metadata())
+    # Tag Qdrant points with is_transcript so the Video/Audio source filter works.
+    asyncio.create_task(_backfill_source_flags())
     yield
 
 app = FastAPI(
@@ -155,6 +158,7 @@ def _effective_cfg() -> dict:
         override = {k: v for k, v in override.items() if k not in _URL_MODEL_KEYS}
     base.update(override)
     base.setdefault("max_concurrent_jobs", 8)
+    base.setdefault("transcription_concurrency", 2)
     base.setdefault("import_blacklist", [])
     base.setdefault("auto_import_interval", 0)
     base.setdefault("auto_analyze", False)
@@ -183,6 +187,10 @@ def _backend_warning(cfg: dict) -> str | None:
 
 _cfg = _effective_cfg()
 _analysis_semaphore = asyncio.Semaphore(int(_cfg.get("max_concurrent_jobs", 8)))
+# Whisper runs on CPU and already uses all cores per job, so concurrent
+# transcriptions oversubscribe the CPU and slow each other down. Cap it
+# separately from vision so frame analysis can stay wide while audio stays narrow.
+_transcribe_semaphore = asyncio.Semaphore(max(1, int(_cfg.get("transcription_concurrency", 2))))
 
 # Services
 embed_service = EmbeddingService(_cfg["vllm_embed_url"], _cfg["qdrant_url"], model=_cfg["vllm_embed_model"])
@@ -199,13 +207,14 @@ _reranker = None
 frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"])
 
 def _reinit_services(cfg: dict):
-    global embed_service, vlm_service, summarizer_service, frame_extractor, transcription_service, _analysis_semaphore
+    global embed_service, vlm_service, summarizer_service, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
     embed_service = EmbeddingService(cfg["vllm_embed_url"], cfg["qdrant_url"], model=cfg["vllm_embed_model"])
     vlm_service = VLMService(cfg["vllm_vlm_url"], model=cfg["vllm_vlm_model"])
     summarizer_service = SummarizationService(cfg["vllm_url"], model=cfg["vllm_model"])
     transcription_service = TranscriptionService(model_size=cfg["whisper_model"])
     frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]))
     _analysis_semaphore = asyncio.Semaphore(int(cfg.get("max_concurrent_jobs", 8)))
+    _transcribe_semaphore = asyncio.Semaphore(max(1, int(cfg.get("transcription_concurrency", 2))))
 
 # Persistent frame storage directory
 FRAMES_DIR = Path("/data/frames")
@@ -244,6 +253,7 @@ class VideoResponse(BaseModel):
     context: Optional[str] = None
     analyzed_at: Optional[str] = None
     has_transcript: bool = False
+    transcribe_progress: float = 0.0
 
 
 class VideoUpdateRequest(BaseModel):
@@ -296,9 +306,15 @@ async def _warm_reranker() -> None:
         print(f"Reranker warmup failed: {e}")
 
 
-async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
+async def _rerank_segments(query, segments: list[dict]) -> list[dict]:
     """Re-rank candidate segments with a local cross-encoder and assign each an
     absolute relevance score.
+
+    ``query`` may be a single string or a list of query formulations. When given
+    several formulations, each segment keeps the *maximum* relevance across them
+    (max-pooling) — this lets a terse query like "dog" be judged both literally
+    and as "a video of a dog" without the templated form ever lowering a score
+    that the natural form judged higher.
 
     Architecture: bi-encoder (BGE-M3 / Qdrant) retrieves candidates for recall;
     this cross-encoder (BAAI/bge-reranker-base, ~1.1 GB, CPU) judges true
@@ -325,13 +341,22 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
 
     try:
         import asyncio as _asyncio, math as _math
-        pairs = [
-            (query, s.get("caption", "").replace("[transcript] ", "").strip())
+        queries = [query] if isinstance(query, str) else [q for q in query if q]
+        captions = [
+            s.get("caption", "").replace("[transcript] ", "").strip()
             for s in segments
         ]
-        # Run synchronous predict in a thread so we don't block the event loop
+        # Run synchronous predict in a thread so we don't block the event loop.
+        # With multiple query formulations, keep the max raw logit per segment.
         loop = _asyncio.get_running_loop()
-        raw_scores = await loop.run_in_executor(None, _reranker.predict, pairs)
+        best_raw = [float("-inf")] * len(segments)
+        for qv in queries:
+            pairs = [(qv, cap) for cap in captions]
+            raw = await loop.run_in_executor(None, _reranker.predict, pairs)
+            for i, r in enumerate(raw):
+                rf = float(r)
+                if rf > best_raw[i]:
+                    best_raw[i] = rf
 
         def _sigmoid(x: float) -> float:
             # bge-reranker logits are calibrated (>0 relevant, <0 not) but small
@@ -342,11 +367,11 @@ async def _rerank_segments(query: str, segments: list[dict]) -> list[dict]:
             x = max(-30.0, min(30.0, x * 1.5))
             return 1.0 / (1.0 + _math.exp(-x))
 
-        for seg, raw in zip(segments, raw_scores):
-            seg["score"] = _sigmoid(float(raw))
+        for seg, raw in zip(segments, best_raw):
+            seg["score"] = _sigmoid(raw)
 
         segments.sort(key=lambda s: s["score"], reverse=True)
-        print(f"Re-rank '{query}': top={[round(s['score'], 3) for s in segments[:8]]}")
+        print(f"Re-rank {queries}: top={[round(s['score'], 3) for s in segments[:8]]}")
         return segments
 
     except Exception as e:
@@ -360,6 +385,23 @@ def _start_analysis(video_path: str, video_id: str, context: str = '', resume: b
         existing.cancel()
     task = asyncio.create_task(process_video(video_path, video_id, context=context, resume=resume))
     _active_tasks[video_id] = task
+
+
+def _make_transcribe_progress_cb(video_id: str, loop):
+    """Build a thread-safe callback that records transcription progress (0..1) on
+    the video row. Runs from the Whisper worker thread, so DB writes are
+    scheduled back onto the event loop, throttled to ~1% steps."""
+    state = {'last': 0.0}
+
+    def _cb(done: float, total: float):
+        frac = max(0.0, min(1.0, done / total)) if total else 0.0
+        if frac - state['last'] >= 0.01 or frac >= 1.0:
+            state['last'] = frac
+            asyncio.run_coroutine_threadsafe(
+                db.update_video(video_id, {'transcribe_progress': frac}), loop
+            )
+
+    return _cb
 
 # Background tasks
 async def process_video(video_path: str, video_id: str, context: str = '', resume: bool = False):
@@ -431,11 +473,14 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
                 await db.update_video(video_id, {'status': 'analyzed'})
                 return
 
-            await db.update_video(video_id, {'status': 'transcribing'})
+            await db.update_video(video_id, {'status': 'transcribing', 'transcribe_progress': 0.0})
             print(f"Transcribing audio for {video_id}...")
-            segments = await loop.run_in_executor(
-                None, transcription_service.transcribe_video, video_path
-            )
+            _progress_cb = _make_transcribe_progress_cb(video_id, loop)
+            async with _transcribe_semaphore:
+                segments = await loop.run_in_executor(
+                    None,
+                    lambda: transcription_service.transcribe_video(video_path, progress_callback=_progress_cb),
+                )
             print(f"Whisper: {len(segments)} transcript segment(s) for {video_id}")
 
             for seg in segments:
@@ -599,6 +644,48 @@ async def _backfill_metadata():
         print(f"[metadata] backfilled {updated} video(s) with file metadata", flush=True)
 
 
+def _do_source_backfill():
+    """Tag every Qdrant point with an is_transcript flag and index it so search
+    can filter by source (Video/Audio toggles) server-side. Idempotent: returns
+    immediately once the payload index exists."""
+    client = embed_service.qdrant_client
+    coll = embed_service.collection_name
+    info = client.get_collection(coll)
+    schema = getattr(info, "payload_schema", {}) or {}
+    if "is_transcript" in schema:
+        return
+    from qdrant_client.models import PayloadSchemaType
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=coll, with_payload=True, with_vectors=False,
+            limit=512, offset=offset,
+        )
+        if not points:
+            break
+        t_ids = [p.id for p in points if ((p.payload or {}).get("caption", "") or "").startswith("[transcript]")]
+        v_ids = [p.id for p in points if not ((p.payload or {}).get("caption", "") or "").startswith("[transcript]")]
+        if t_ids:
+            client.set_payload(collection_name=coll, payload={"is_transcript": True}, points=t_ids)
+        if v_ids:
+            client.set_payload(collection_name=coll, payload={"is_transcript": False}, points=v_ids)
+        if offset is None:
+            break
+    client.create_payload_index(
+        collection_name=coll, field_name="is_transcript", field_schema=PayloadSchemaType.BOOL,
+    )
+
+
+async def _backfill_source_flags():
+    """Run the one-time is_transcript backfill off the event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _do_source_backfill)
+        print("[source] is_transcript backfill complete", flush=True)
+    except Exception as e:
+        print(f"[source] is_transcript backfill failed: {e}", flush=True)
+
+
 @app.get("/health", tags=["System"])
 async def health():
     return {"status": "healthy"}
@@ -613,6 +700,227 @@ async def reimport():
     )
     videos = await db.get_all_videos()
     return {"total": len(videos)}
+
+
+# ── Library export / import ──────────────────────────────────────────────────
+# A single .zip carries all *analysis* work (DB rows + Qdrant vectors + frame
+# thumbnails) so an analyzed library can be backed up or moved to another setup
+# mapped to the same video files WITHOUT re-running vision/transcription/embedding.
+# Source video files are NOT included. Import overwrites any matching video
+# (by id or file_hash) and inserts the rest.
+
+EXPORT_SCHEMA_VERSION = 1
+_VIDEO_COLS = [
+    'id', 'name', 'display_name', 'path', 'duration', 'width', 'height', 'size',
+    'fps', 'video_codec', 'audio_codec', 'container', 'extension', 'bitrate',
+    'resolution_label', 'recorded_at', 'file_modified_at', 'file_hash', 'summary',
+    'tags', 'status', 'frame_count', 'thumbnail_path', 'context',
+    'transcribe_progress', 'created_at', 'updated_at', 'hidden', 'has_transcript',
+]
+_FRAME_COLS = ['id', 'video_id', 'timestamp', 'frame_path', 'caption', 'embedding_id', 'created_at']
+_DATETIME_VIDEO_COLS = {'recorded_at', 'file_modified_at', 'created_at', 'updated_at'}
+_DATETIME_FRAME_COLS = {'created_at'}
+
+
+def _row_to_dict(row, cols: list[str]) -> dict:
+    out = {}
+    for c in cols:
+        val = getattr(row, c, None)
+        if hasattr(val, 'isoformat'):
+            val = val.isoformat()
+        out[c] = val
+    return out
+
+
+def _parse_dt(val):
+    if not val:
+        return None
+    try:
+        return datetime.fromisoformat(val)
+    except Exception:
+        return None
+
+
+def _dict_to_row(d: dict, cols: list[str], dt_cols: set) -> dict:
+    row = {c: d.get(c) for c in cols if c in d}
+    for k in dt_cols:
+        if k in row:
+            row[k] = _parse_dt(row[k])
+    return row
+
+
+@app.get("/export", tags=["System"])
+async def export_library(include_images: bool = True):
+    """Export the entire analyzed library as a single .zip (DB rows + Qdrant
+    vectors + optional frame thumbnails). Does not include source video files."""
+    videos = await db.get_all_videos(include_all=True)
+    loop = asyncio.get_running_loop()
+
+    manifest = {
+        "schema_version": EXPORT_SCHEMA_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "embed_model": _effective_cfg().get("vllm_embed_model"),
+        "vector_size": 1024,
+        "distance": "Cosine",
+        "include_images": include_images,
+        "videos": [_row_to_dict(v, _VIDEO_COLS) for v in videos],
+        "frames": [],
+    }
+
+    point_lines: list[str] = []
+    for v in videos:
+        frames = await db.get_frames_for_video(v.id)
+        manifest["frames"].extend(_row_to_dict(f, _FRAME_COLS) for f in frames)
+        pts = await loop.run_in_executor(None, embed_service.export_points, v.id)
+        point_lines.extend(json.dumps(p) for p in pts)
+
+    tmp = tempfile.NamedTemporaryFile(prefix="vss_export_", suffix=".zip", dir="/data", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    def _write_zip():
+        import zipfile
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("manifest.json", json.dumps(manifest))
+            zf.writestr("points.jsonl", "\n".join(point_lines))
+            if include_images:
+                for v in videos:
+                    vdir = FRAMES_DIR / v.id
+                    if vdir.exists():
+                        for img in vdir.iterdir():
+                            if img.is_file():
+                                zf.write(img, arcname=f"frames/{v.id}/{img.name}")
+
+    await loop.run_in_executor(None, _write_zip)
+    fname = f"vss-library-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    return FileResponse(
+        tmp_path, filename=fname, media_type="application/zip",
+        background=BackgroundTask(lambda: os.path.exists(tmp_path) and os.remove(tmp_path)),
+    )
+
+
+@app.post("/import", tags=["System"])
+async def import_library(file: UploadFile = File(...)):
+    """Import a library .zip produced by /export. Overwrites any video that
+    matches by id or file_hash; inserts the rest. Idempotent (re-overwrites)."""
+    import zipfile
+    import io
+    import shutil
+
+    data = await file.read()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Not a valid .zip archive.")
+    try:
+        manifest = json.loads(zf.read("manifest.json"))
+    except KeyError:
+        raise HTTPException(status_code=400, detail="Archive is missing manifest.json.")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read manifest.json.")
+
+    # Vectors are only meaningful if produced by the same embedding model + size.
+    if manifest.get("vector_size") != 1024:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Vector size mismatch: archive has {manifest.get('vector_size')}, expected 1024.",
+        )
+    local_model = _effective_cfg().get("vllm_embed_model")
+    arch_model = manifest.get("embed_model")
+    if local_model and arch_model and arch_model != local_model:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Embedding model mismatch: archive '{arch_model}' vs local '{local_model}'. "
+                   "The vectors would be invalid — re-export from a matching setup.",
+        )
+
+    # Group points and frames by video id.
+    points_by_video: dict[str, list] = {}
+    try:
+        for line in zf.read("points.jsonl").decode().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            p = json.loads(line)
+            vid = (p.get("payload") or {}).get("video_id")
+            if vid:
+                points_by_video.setdefault(vid, []).append(p)
+    except KeyError:
+        pass
+
+    frames_by_video: dict[str, list] = {}
+    for f in manifest.get("frames", []):
+        frames_by_video.setdefault(f.get("video_id"), []).append(f)
+
+    include_images = bool(manifest.get("include_images"))
+    loop = asyncio.get_running_loop()
+    imported = 0
+
+    # Ids carried in this archive. A hash-match whose id is also in the archive is
+    # a distinct incoming video that will be overwritten by its own iteration, so
+    # we must NOT collapse it here (that would lose duplicate-content videos).
+    incoming_ids = {vd.get("id") for vd in manifest.get("videos", []) if vd.get("id")}
+
+    for vd in manifest.get("videos", []):
+        vid = vd.get("id")
+        if not vid:
+            continue
+
+        # Find local records this import should overwrite: same id OR same file_hash.
+        to_delete: set[str] = set()
+        existing = await db.get_video(vid)
+        if existing:
+            to_delete.add(existing.id)
+        match = await db.get_video_by_hash(vd.get("file_hash"))
+        if match and match.id not in incoming_ids:
+            to_delete.add(match.id)
+
+        # Path safeguard: if the exported path doesn't exist locally but a matched
+        # local row points at a real file, keep that valid local path.
+        new_path = vd.get("path")
+        if not new_path or not Path(new_path).exists():
+            for mid in to_delete:
+                mv = await db.get_video(mid)
+                if mv and mv.path and Path(mv.path).exists():
+                    new_path = mv.path
+                    break
+
+        # Remove matched rows + their vectors, plus any stale points under the
+        # incoming id, so the overwrite is clean and idempotent.
+        for mid in to_delete:
+            await db.delete_video(mid)
+            await loop.run_in_executor(None, embed_service.delete_video_points, mid)
+        await loop.run_in_executor(None, embed_service.delete_video_points, vid)
+
+        # Insert the imported records verbatim (ids preserved).
+        row = _dict_to_row(vd, _VIDEO_COLS, _DATETIME_VIDEO_COLS)
+        if new_path:
+            row["path"] = new_path
+        await db.create_video(row)
+
+        frame_rows = [_dict_to_row(f, _FRAME_COLS, _DATETIME_FRAME_COLS)
+                      for f in frames_by_video.get(vid, [])]
+        await db.create_frames(frame_rows)
+
+        await loop.run_in_executor(None, embed_service.import_points, points_by_video.get(vid, []))
+
+        if include_images:
+            for name in zf.namelist():
+                if name.startswith(f"frames/{vid}/") and not name.endswith("/"):
+                    target = FRAMES_DIR / vid / Path(name).name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(name) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+
+        imported += 1
+
+    # Ensure the is_transcript payload index exists (no-op if already present);
+    # required for the Video/Audio source filter on a fresh target machine.
+    await loop.run_in_executor(None, _do_source_backfill)
+
+    total = len(await db.get_all_videos(include_all=True))
+    return {"imported": imported, "total": total}
+
 
 
 @app.get("/status/models", tags=["System"])
@@ -960,10 +1268,18 @@ async def search_videos(
         source_intent = 'mixed'
 
     # The keyword boost below can raise scores by up to MAX_BOOST.
-    # Pass a relaxed pre-filter to Qdrant so results that qualify *after*
-    # boosting aren't cut before they ever get a chance to be boosted.
     MAX_BOOST = 1.25
-    qdrant_threshold = max(0.0, threshold / MAX_BOOST)
+
+    # Retrieval is the *recall* stage: the cross-encoder reranker below is the
+    # sole authority on the final relevance score, and the user's relevance
+    # threshold is applied *after* reranking. So we must NOT pre-filter Qdrant
+    # with the user's threshold — a short query like "dog" has low bi-encoder
+    # cosine against a verbose, scene-heavy caption ("a person on a couch ... a
+    # dog lies beside them ...") and would be cut before the reranker, which
+    # rates it ~0.78, ever sees it. Use NO absolute floor and rely purely on
+    # top-k (limit * 8) to return the best candidates; let the reranker filter.
+    RECALL_FLOOR = 0.0
+    qdrant_threshold = RECALL_FLOOR
 
     # Build list of queries to search: cleaned + original.
     # The cross-encoder reranker below handles precision; we cast a wide net here.
@@ -1047,14 +1363,41 @@ async def search_videos(
     # so the reranker judges the actual subject, not conversational scaffolding.
     all_segments.sort(key=lambda s: s["score"], reverse=True)
     rerank_query = processed.get("search_terms") or q
-    all_segments = await _rerank_segments(rerank_query, all_segments)
+
+    # bge-reranker returns a neutral ~0.5 score for bare-noun queries — it expects
+    # a descriptive phrase. A terse visual search like "dog" scores ~0.51 against a
+    # caption it should match, while "a video of a dog" scores ~0.78. So for SHORT
+    # VISUAL queries (1-2 content words) we ALSO rerank with the query framed as
+    # "a video of X" and keep the max per segment (see _rerank_segments). Max-
+    # pooling means the templated form can only rescue a terse query, never lower
+    # a score the natural form judged higher (e.g. "black dog" natural 0.65 vs
+    # templated 0.51). We skip this for longer/already-descriptive queries (they
+    # rerank well naturally) and for speech/mixed (it hurts transcript matches).
+    rerank_queries = [rerank_query]
+    if source_intent == 'visual':
+        _content = [
+            w for w in re.findall(r'\b[a-zA-Z]+\b', rerank_query.lower())
+            if w not in _SEARCH_STOPWORDS
+        ]
+        if 1 <= len(_content) <= 2:
+            rerank_queries.append(f"a video of {rerank_query.strip()}")
+
+    all_segments = await _rerank_segments(rerank_queries, all_segments)
 
     # Re-group by video for the response
     video_segs: dict = {}
     for seg in all_segments:
         video_segs.setdefault(seg["video_id"], []).append(seg)
 
-    seg_threshold = threshold
+    # The reranker's sigmoid maps a logit of 0 ("not relevant") to raw 0.50, so
+    # scores in the ~0.50-0.51 band are noise the model is actively rejecting —
+    # NOT weak matches. Never show those, even if the user drags the slider to
+    # the bottom (raw ~0.37 at the default 50% position). Clamp the effective
+    # threshold to this floor so broad searches surface genuine-but-weak matches
+    # (>=~0.52) without leaking the neutral-band filler that otherwise displays
+    # as a misleading ~65% via the UI score curve.
+    RELEVANCE_FLOOR = 0.52
+    seg_threshold = max(threshold, RELEVANCE_FLOOR)
 
     final_results = []
     for vid, segs in video_segs.items():
@@ -1213,6 +1556,7 @@ def _video_to_response(v) -> VideoResponse:
         context=getattr(v, 'context', None),
         analyzed_at=_analyzed_at,
         has_transcript=bool(getattr(v, 'has_transcript', 0)),
+        transcribe_progress=float(getattr(v, 'transcribe_progress', 0.0) or 0.0),
     )
 
 
@@ -1524,9 +1868,13 @@ async def _retranscribe_audio(video_id: str, video_path: str):
 
         # Re-transcribe
         loop = asyncio.get_running_loop()
-        segments = await loop.run_in_executor(
-            None, transcription_service.transcribe_video, video_path
-        )
+        await db.update_video(video_id, {'transcribe_progress': 0.0})
+        _progress_cb = _make_transcribe_progress_cb(video_id, loop)
+        async with _transcribe_semaphore:
+            segments = await loop.run_in_executor(
+                None,
+                lambda: transcription_service.transcribe_video(video_path, progress_callback=_progress_cb),
+            )
         print(f"Retranscribe: {len(segments)} segment(s) for {video_id}")
 
         for seg in segments:

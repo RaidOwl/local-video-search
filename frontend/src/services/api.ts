@@ -75,6 +75,7 @@ export interface Video {
   context: string | null
   analyzed_at?: string | null
   has_transcript: boolean
+  transcribe_progress?: number
 }
 
 export interface VideoFrame {
@@ -119,6 +120,33 @@ export const api = {
 
   reimport: async (): Promise<{ total: number }> => {
     const res = await client.post('/reimport')
+    return res.data
+  },
+
+  exportLibrary: (includeImages: boolean = true) => {
+    // Trigger a browser download of the library archive (streamed from the API).
+    const url = `/api/export?include_images=${includeImages ? 'true' : 'false'}`
+    const a = document.createElement('a')
+    a.href = url
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  },
+
+  importLibrary: async (
+    file: File,
+    onProgress?: (pct: number) => void,
+  ): Promise<{ imported: number; total: number }> => {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await client.post('/import', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0,
+      onUploadProgress: e => {
+        if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100))
+      },
+    })
     return res.data
   },
 

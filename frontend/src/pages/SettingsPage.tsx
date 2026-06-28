@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api, AppSettings, QdrantHealth, Video } from '../services/api'
-import { RotateCcw, Check, AlertTriangle } from 'lucide-react'
+import { RotateCcw, Check, AlertTriangle, Download, Upload } from 'lucide-react'
 
 type ModelStatus = { name: string; url: string; ok: boolean; models: string[] }
 
@@ -102,6 +102,24 @@ export default function SettingsPage() {
   const [checkingQdrant, setCheckingQdrant] = useState(false)
   const [purgingQdrant, setPurgingQdrant] = useState(false)
   const [blacklistInput, setBlacklistInput] = useState('')
+  const [exportImages, setExportImages] = useState(true)
+  const [importing, setImporting] = useState(false)
+  const [importMsg, setImportMsg] = useState<string | null>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+
+  const handleImportFile = async (file: File) => {
+    setImporting(true)
+    setImportMsg(null)
+    try {
+      const res = await api.importLibrary(file)
+      setImportMsg(`Imported ${res.imported} video${res.imported !== 1 ? 's' : ''} (library now has ${res.total}).`)
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setImportMsg(`Import failed: ${detail || 'see server logs.'}`)
+    } finally {
+      setImporting(false)
+    }
+  }
 
   useEffect(() => {
     api.getSettings().then(setForm).catch(() => {})
@@ -324,6 +342,35 @@ export default function SettingsPage() {
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
               Glob patterns matched against the full file path. Saving applies patterns immediately — removing a pattern restores those videos automatically.
             </p>
+          </div>
+
+          {/* Backup & transfer */}
+          <div style={{ marginTop: '1.25rem' }}>
+            <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.4rem' }}>Backup &amp; transfer</label>
+            <p style={{ margin: '0 0 0.6rem', fontSize: '0.75rem', color: 'var(--muted)' }}>
+              Export all analysis (captions, transcripts, embeddings{exportImages ? ', thumbnails' : ''}) as a single <code>.zip</code> to back up or move to another setup mapped to the same video files. Source videos are not included. Importing <strong>overwrites</strong> any video that matches by content hash or id.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button onClick={() => api.exportLibrary(exportImages)} style={{ fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                <Download size={14} /> Export library
+              </button>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem', color: 'var(--muted)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={exportImages} onChange={e => setExportImages(e.target.checked)} style={{ width: 'auto', boxShadow: 'none' }} />
+                Include thumbnails
+              </label>
+              <span style={{ flex: 1 }} />
+              <button className="ghost" disabled={importing} onClick={() => importInputRef.current?.click()}
+                style={{ fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                {importing ? <><span className="spinner" style={{ width: 13, height: 13 }} /> Importing…</> : <><Upload size={14} /> Import library</>}
+              </button>
+              <input ref={importInputRef} type="file" accept=".zip" style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleImportFile(f); e.target.value = '' }} />
+            </div>
+            {importMsg && (
+              <p style={{ margin: '0.5rem 0 0', fontSize: '0.78rem', color: importMsg.startsWith('Import failed') ? 'var(--danger, #f87171)' : 'var(--success)' }}>
+                {importMsg}
+              </p>
+            )}
           </div>
         </div>
 
