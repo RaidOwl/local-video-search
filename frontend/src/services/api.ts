@@ -75,6 +75,7 @@ export interface Video {
   context: string | null
   analyzed_at?: string | null
   has_transcript: boolean
+  has_frames: boolean
   transcribe_progress?: number
 }
 
@@ -204,8 +205,8 @@ export const api = {
     await client.post(`/videos/${id}/unhide`)
   },
 
-  reprocessVideo: async (id: string, context?: string, resume?: boolean): Promise<{ status: string; video_id: string }> => {
-    const res = await client.post(`/reprocess/${id}`, { context: context ?? null, resume: resume ?? false })
+  reprocessVideo: async (id: string, context?: string, resume?: boolean, visual: boolean = true, audio: boolean = true): Promise<{ status: string; video_id: string }> => {
+    const res = await client.post(`/reprocess/${id}`, { context: context ?? null, resume: resume ?? false, visual, audio })
     return res.data
   },
 

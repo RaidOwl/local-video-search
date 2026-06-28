@@ -40,6 +40,7 @@ class Video(Base):
     
     hidden = Column(String, nullable=True, default='0')  # '1' = hidden from library
     has_transcript = Column(Integer, nullable=True, default=0)  # 1 = audio transcription indexed
+    has_frames = Column(Integer, nullable=True, default=1)  # 1 = visual frames captioned & indexed
     frames = relationship("Frame", back_populates="video", cascade="all, delete-orphan")
 
 
@@ -69,6 +70,7 @@ class Database:
             await conn.run_sync(Base.metadata.create_all)
             # Migrate: add columns introduced after initial schema
             for col in ['context TEXT', 'thumbnail_path TEXT', 'hidden TEXT DEFAULT 0', 'has_transcript INTEGER DEFAULT 0',
+                        'has_frames INTEGER DEFAULT 1',
                         'fps REAL', 'video_codec TEXT', 'audio_codec TEXT', 'container TEXT',
                         'extension TEXT', 'bitrate INTEGER', 'resolution_label TEXT',
                         'recorded_at DATETIME', 'file_modified_at DATETIME', 'transcribe_progress REAL DEFAULT 0']:
@@ -269,5 +271,16 @@ class Database:
                 sa_delete(Frame)
                 .where(Frame.video_id == video_id)
                 .where(Frame.frame_path == "")
+            )
+            await session.commit()
+
+    async def delete_visual_frames_for_video(self, video_id: str):
+        """Delete only visual frame records (frame_path != '') for a video."""
+        async with self.session_maker() as session:
+            from sqlalchemy import delete as sa_delete
+            await session.execute(
+                sa_delete(Frame)
+                .where(Frame.video_id == video_id)
+                .where(Frame.frame_path != "")
             )
             await session.commit()

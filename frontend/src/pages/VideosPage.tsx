@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, Video, AppSettings } from '../services/api'
 import { fmt } from '../utils'
-import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, ChevronDown, ChevronRight, Mic, RotateCcw } from 'lucide-react'
+import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, VideoOff, ChevronDown, ChevronRight, Mic, RotateCcw } from 'lucide-react'
 
 type ViewMode = 'card' | 'tree' | 'folder'
 
@@ -634,6 +634,11 @@ export default function VideosPage() {
                           <VolumeX size={12} />
                         </span>
                       )}
+                      {video.status === 'analyzed' && !video.has_frames && (
+                        <span title="No visual analysis — on-screen content won't appear in search results" style={{ display: 'inline-flex', flexShrink: 0, color: 'var(--warning)', marginRight: '0.4rem' }}>
+                          <VideoOff size={12} />
+                        </span>
+                      )}
                       <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
                     </div>
                     {video.status === 'processing' && video.frame_count > 0 && (
@@ -694,6 +699,8 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
   const [context, setContext] = useState('')
   const [recents] = useState<string[]>(getRecentContexts)
   const [submitting, setSubmitting] = useState(false)
+  // What to analyze: both modalities (default), visual frames only, or audio only.
+  const [scope, setScope] = useState<'both' | 'visual' | 'audio'>('both')
 
   const selectedVideos = videos.filter(v => videoIds.includes(v.id))
   // Videos that already have analysis results (complete or partially-failed) can
@@ -706,15 +713,18 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
   const [resume, setResume] = useState(true)
   // Only ask for context when there's something to caption fresh: a brand-new
   // analysis, or an explicit "start over". A resume reuses each video's original
-  // stored context on the backend, so we don't prompt for it again.
-  const askContext = !showResumeChoice || !resume
+  // stored context on the backend, so we don't prompt for it again. Audio-only
+  // runs never caption frames, so context is irrelevant there too.
+  const askContext = (!showResumeChoice || !resume) && scope !== 'audio'
 
   const handleSubmit = async () => {
     setSubmitting(true)
     const useResume = showResumeChoice && resume
     const ctx = askContext ? (context.trim() || undefined) : undefined
     if (askContext && context.trim()) saveContext(context.trim())
-    await Promise.all(videoIds.map(id => api.reprocessVideo(id, ctx, useResume).catch(() => {})))
+    const visual = scope !== 'audio'
+    const audio = scope !== 'visual'
+    await Promise.all(videoIds.map(id => api.reprocessVideo(id, ctx, useResume, visual, audio).catch(() => {})))
     onDone()
   }
 
@@ -731,6 +741,28 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
           {selectedVideos.map(v => (
             <div key={v.id} style={{ fontSize: '0.82rem', color: 'var(--muted)' }}>• {v.display_name || v.name}</div>
           ))}
+        </div>
+
+        <div>
+          <label style={{ fontSize: '0.82rem', color: 'var(--muted)', display: 'block', marginBottom: '0.4rem' }}>
+            What to analyze
+          </label>
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            {([
+              { key: 'both', label: 'Both', icon: null, desc: 'Visual + audio' },
+              { key: 'visual', label: 'Video only', icon: <VideoIcon size={13} />, desc: 'Frame captions' },
+              { key: 'audio', label: 'Audio only', icon: <Mic size={13} />, desc: 'Transcript' },
+            ] as const).map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => setScope(opt.key)}
+                className={scope === opt.key ? '' : 'ghost'}
+                style={{ flex: 1, minWidth: 0, fontSize: '0.8rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.15rem', padding: '0.45rem 0.4rem', textAlign: 'center', whiteSpace: 'normal' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', fontWeight: 600 }}>{opt.icon}{opt.label}</span>
+                <span style={{ fontSize: '0.68rem', opacity: 0.8, fontWeight: 400 }}>{opt.desc}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
         {showResumeChoice && (

@@ -253,6 +253,7 @@ class VideoResponse(BaseModel):
     context: Optional[str] = None
     analyzed_at: Optional[str] = None
     has_transcript: bool = False
+    has_frames: bool = True
     transcribe_progress: float = 0.0
 
 
@@ -408,12 +409,16 @@ async def _rerank_segments(query, segments: list[dict]) -> list[dict]:
         print(f"Re-rank predict failed: {e}")
         return segments
 
-def _start_analysis(video_path: str, video_id: str, context: str = '', resume: bool = False) -> None:
+def _start_analysis(video_path: str, video_id: str, context: str = '', resume: bool = False,
+                    do_visual: bool = True, do_audio: bool = True) -> None:
     """Cancel any existing task for this video, then start a fresh one."""
     existing = _active_tasks.get(video_id)
     if existing and not existing.done():
         existing.cancel()
-    task = asyncio.create_task(process_video(video_path, video_id, context=context, resume=resume))
+    task = asyncio.create_task(process_video(
+        video_path, video_id, context=context, resume=resume,
+        do_visual=do_visual, do_audio=do_audio,
+    ))
     _active_tasks[video_id] = task
 
 
@@ -433,114 +438,139 @@ def _make_transcribe_progress_cb(video_id: str, loop):
 
     return _cb
 
+    return _cb
+
+
+def _delete_video_points(video_id: str, is_transcript: Optional[bool] = None) -> None:
+    """Delete a video's Qdrant points. ``is_transcript=None`` removes all of them;
+    True removes only transcript points; False removes only visual points."""
+    try:
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        must = [FieldCondition(key="video_id", match=MatchValue(value=video_id))]
+        if is_transcript is not None:
+            must.append(FieldCondition(key="is_transcript", match=MatchValue(value=is_transcript)))
+        embed_service.qdrant_client.delete(
+            collection_name=embed_service.collection_name,
+            points_selector=Filter(must=must),
+        )
+    except Exception:
+        pass
+
+
 # Background tasks
-async def process_video(video_path: str, video_id: str, context: str = '', resume: bool = False):
-    """Process a video: extract frames, caption, transcribe audio, and index."""
+async def process_video(video_path: str, video_id: str, context: str = '', resume: bool = False,
+                        do_visual: bool = True, do_audio: bool = True):
+    """Process a video: extract frames, caption, transcribe audio, and index.
+
+    ``do_visual`` / ``do_audio`` select which modalities to analyze (default both).
+    Audio-only or video-only runs still reach the 'analyzed' status; the missing
+    modality is flagged on the video (has_frames / has_transcript) so the UI can
+    show the appropriate "no video" / "no audio" indicator.
+    """
+    if not do_visual and not do_audio:
+        do_visual = do_audio = True  # nothing selected: fall back to full analysis
     try:
         await db.update_video(video_id, {'status': 'processing'})
         async with _analysis_semaphore:
-            if not resume:
-                # Full restart: clear any leftover frame records and embeddings
-                await db.update_video(video_id, {'frame_count': 0})
-                await db.delete_frames_for_video(video_id)
-                try:
-                    from qdrant_client.models import Filter, FieldCondition, MatchValue
-                    embed_service.qdrant_client.delete(
-                        collection_name=embed_service.collection_name,
-                        points_selector=Filter(
-                            must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
-                        ),
-                    )
-                except Exception:
-                    pass
-                existing_frame_ids: set[str] = set()
-                has_existing_transcript = False
-            else:
-                # Resume: collect which frame IDs and transcript segments already exist
-                existing_db_frames = await db.get_frames_for_video(video_id)
-                existing_frame_ids = {f.id for f in existing_db_frames}
-                has_existing_transcript = any(f.frame_path == '' for f in existing_db_frames)
-
-            # Use persistent per-video frame directory
-            frame_dir = FRAMES_DIR / video_id
-            frame_dir.mkdir(parents=True, exist_ok=True)
             loop = asyncio.get_running_loop()
-            frames = await loop.run_in_executor(
-                None, lambda: frame_extractor.extract_frames(
-                    video_path, str(frame_dir), prefix=f"frame_{video_id}"
+            if not resume:
+                # Start over: clear ONLY the modalities we're about to redo, so an
+                # audio-only re-run never wipes existing visual frames and vice versa.
+                if do_visual:
+                    await db.update_video(video_id, {'frame_count': 0})
+                    await db.delete_visual_frames_for_video(video_id)
+                    _delete_video_points(video_id, is_transcript=False)
+                if do_audio:
+                    await db.delete_transcript_frames_for_video(video_id)
+                    _delete_video_points(video_id, is_transcript=True)
+
+            # Collect what already exists (for resume gap-filling and skip logic)
+            existing_db_frames = await db.get_frames_for_video(video_id)
+            existing_frame_ids = {f.id for f in existing_db_frames}
+            has_existing_transcript = any(f.frame_path == '' for f in existing_db_frames)
+
+            # ---- Visual: extract + caption frames ----
+            if do_visual:
+                frame_dir = FRAMES_DIR / video_id
+                frame_dir.mkdir(parents=True, exist_ok=True)
+                frames = await loop.run_in_executor(
+                    None, lambda: frame_extractor.extract_frames(
+                        video_path, str(frame_dir), prefix=f"frame_{video_id}"
+                    )
                 )
-            )
+                if not frames and not do_audio:
+                    # Visual-only run with no extractable frames is a hard failure.
+                    await db.update_video(video_id, {'status': 'error'})
+                    return
+                for i, frame_path in enumerate(frames or []):
+                    frame_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_frame_{i}"))
+                    if frame_id in existing_frame_ids:
+                        # Already captioned and indexed in a previous run — skip
+                        continue
+                    timestamp = i * frame_extractor.interval
+                    caption = await vlm_service.caption_frame(frame_path, context=context)
+                    await embed_service.index_frame(
+                        video_id=video_id, frame_path=frame_path,
+                        timestamp=timestamp, caption=caption
+                    )
+                    await db.create_frame({
+                        "id": frame_id, "video_id": video_id,
+                        "timestamp": timestamp, "frame_path": frame_path,
+                        "caption": caption, "embedding_id": frame_id
+                    })
+                    await db.update_video(video_id, {'frame_count': i + 1})
 
-            if not frames:
-                await db.update_video(video_id, {'status': 'error'})
-                return
+                # Set a random frame as the default thumbnail if none set
+                video_check = await db.get_video(video_id)
+                if frames and not video_check.thumbnail_path:
+                    await db.update_video(video_id, {'thumbnail_path': str(random.choice(frames))})
 
-            for i, frame_path in enumerate(frames):
-                frame_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_frame_{i}"))
-                if frame_id in existing_frame_ids:
-                    # Already captioned and indexed in a previous run — skip
-                    continue
-                timestamp = i * frame_extractor.interval
-                caption = await vlm_service.caption_frame(frame_path, context=context)
-                await embed_service.index_frame(
-                    video_id=video_id, frame_path=frame_path,
-                    timestamp=timestamp, caption=caption
-                )
-                await db.create_frame({
-                    "id": frame_id, "video_id": video_id,
-                    "timestamp": timestamp, "frame_path": frame_path,
-                    "caption": caption, "embedding_id": frame_id
-                })
-                await db.update_video(video_id, {'frame_count': i + 1})
-
-            # Set a random frame as the default thumbnail if none set
-            video_check = await db.get_video(video_id)
-            if frames and not video_check.thumbnail_path:
-                await db.update_video(video_id, {'thumbnail_path': str(random.choice(frames))})
-
-            if resume and has_existing_transcript:
+            # ---- Audio: transcribe ----
+            if do_audio and not (resume and has_existing_transcript):
+                await db.update_video(video_id, {'status': 'transcribing', 'transcribe_progress': 0.0})
+                print(f"Transcribing audio for {video_id}...")
+                _progress_cb = _make_transcribe_progress_cb(video_id, loop)
+                async with _transcribe_semaphore:
+                    segments = await loop.run_in_executor(
+                        None,
+                        lambda: transcription_service.transcribe_video(video_path, progress_callback=_progress_cb),
+                    )
+                print(f"Whisper: {len(segments)} transcript segment(s) for {video_id}")
+                for seg in segments:
+                    text = f"[transcript] {seg.text}"
+                    seg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_transcript_{seg.start}"))
+                    await embed_service.index_frame(
+                        video_id=video_id, frame_path="",
+                        timestamp=seg.start, caption=text, _point_id=seg_id,
+                    )
+                    await db.create_frame({
+                        "id": seg_id, "video_id": video_id,
+                        "timestamp": seg.start, "frame_path": "",
+                        "caption": text, "embedding_id": seg_id
+                    })
+            elif do_audio:
                 print(f"Resume: skipping transcription for {video_id} (already indexed)")
-                await db.update_video(video_id, {'status': 'analyzed'})
-                return
 
-            await db.update_video(video_id, {'status': 'transcribing', 'transcribe_progress': 0.0})
-            print(f"Transcribing audio for {video_id}...")
-            _progress_cb = _make_transcribe_progress_cb(video_id, loop)
-            async with _transcribe_semaphore:
-                segments = await loop.run_in_executor(
-                    None,
-                    lambda: transcription_service.transcribe_video(video_path, progress_callback=_progress_cb),
-                )
-            print(f"Whisper: {len(segments)} transcript segment(s) for {video_id}")
-
-            for seg in segments:
-                text = f"[transcript] {seg.text}"
-                seg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_transcript_{seg.start}"))
-                await embed_service.index_frame(
-                    video_id=video_id, frame_path="",
-                    timestamp=seg.start, caption=text, _point_id=seg_id,
-                )
-                await db.create_frame({
-                    "id": seg_id, "video_id": video_id,
-                    "timestamp": seg.start, "frame_path": "",
-                    "caption": text, "embedding_id": seg_id
-                })
-
-        await db.update_video(video_id, {'status': 'analyzed', 'has_transcript': 1})
+        # Derive the final modality flags from what's actually indexed, so the
+        # "no video" / "no audio" badges always reflect reality.
+        final_frames = await db.get_frames_for_video(video_id)
+        has_frames = 1 if any(f.frame_path for f in final_frames) else 0
+        has_transcript = 1 if any(not f.frame_path for f in final_frames) else 0
+        await db.update_video(video_id, {
+            'status': 'analyzed', 'has_transcript': has_transcript, 'has_frames': has_frames,
+        })
 
     except asyncio.CancelledError:
         print(f"Analysis cancelled for {video_id}")
         await db.update_video(video_id, {'status': 'error'})
-        try:
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            embed_service.qdrant_client.delete(
-                collection_name=embed_service.collection_name,
-                points_selector=Filter(
-                    must=[FieldCondition(key="video_id", match=MatchValue(value=video_id))]
-                ),
-            )
-        except Exception:
-            pass
+        # Only clear the modalities this run was (re)building, so cancelling an
+        # audio-only re-run doesn't discard the existing visual index.
+        if do_visual and do_audio:
+            _delete_video_points(video_id, is_transcript=None)
+        elif do_visual:
+            _delete_video_points(video_id, is_transcript=False)
+        elif do_audio:
+            _delete_video_points(video_id, is_transcript=True)
         raise
     except Exception as e:
         import traceback
@@ -725,6 +755,7 @@ _VIDEO_COLS = [
     'resolution_label', 'recorded_at', 'file_modified_at', 'file_hash', 'summary',
     'tags', 'status', 'frame_count', 'thumbnail_path', 'context',
     'transcribe_progress', 'created_at', 'updated_at', 'hidden', 'has_transcript',
+    'has_frames',
 ]
 _FRAME_COLS = ['id', 'video_id', 'timestamp', 'frame_path', 'caption', 'embedding_id', 'created_at']
 _DATETIME_VIDEO_COLS = {'recorded_at', 'file_modified_at', 'created_at', 'updated_at'}
@@ -1636,6 +1667,7 @@ def _video_to_response(v) -> VideoResponse:
         context=getattr(v, 'context', None),
         analyzed_at=_analyzed_at,
         has_transcript=bool(getattr(v, 'has_transcript', 0)),
+        has_frames=bool(getattr(v, 'has_frames', 1)),
         transcribe_progress=float(getattr(v, 'transcribe_progress', 0.0) or 0.0),
     )
 
@@ -1891,6 +1923,8 @@ async def download_clip(video_id: str, start: float, end: float, background_task
 class AnalyzeRequest(BaseModel):
     context: Optional[str] = None
     resume: bool = False
+    visual: bool = True   # caption video frames
+    audio: bool = True    # transcribe audio
 
 ReprocessRequest = AnalyzeRequest  # backward-compat alias
 
@@ -1907,7 +1941,8 @@ async def _run_analyze(video_id: str, req: AnalyzeRequest) -> dict:
         updates['context'] = req.context
     await db.update_video(video_id, updates)
     context = req.context or getattr(video, 'context', '') or ''
-    _start_analysis(video.path, video_id, context=context, resume=req.resume)
+    _start_analysis(video.path, video_id, context=context, resume=req.resume,
+                    do_visual=req.visual, do_audio=req.audio)
     return {"status": "processing", "video_id": video_id}
 
 
