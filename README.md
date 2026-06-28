@@ -97,7 +97,7 @@ VRAM_TIER=mid              # 7B FP8 needs ~16 GB VRAM
 docker compose up -d
 ```
 
-> **Note:** vLLM does not support Apple Silicon or AMD GPUs.
+> **Note:** This project's bundled vLLM profile uses the official NVIDIA image. vLLM itself also supports AMD (ROCm) and other accelerators, but you'd need to swap `VLLM_IMAGE` for the matching build. For Apple Silicon, use `ollama-native` instead.
 
 ---
 
