@@ -124,7 +124,17 @@ class Transcriber:
                 chunks.append(self._mk_chunk(buf))
                 buf = []
         if buf:
-            chunks.append(self._mk_chunk(buf))
+            # Fold a sub-MIN trailing remainder ("...see you in the next" + "one")
+            # back into the previous chunk instead of emitting a meaningless tiny
+            # fragment that pollutes search. Only stands alone if it's the only chunk.
+            if len(buf) < self.MIN_CHUNK_WORDS and chunks:
+                prev = chunks[-1]
+                tail = self._mk_chunk(buf)
+                chunks[-1] = TranscriptSegment(
+                    prev.start, tail.end, (prev.text + " " + tail.text).strip()
+                )
+            else:
+                chunks.append(self._mk_chunk(buf))
         return chunks
 
     @staticmethod

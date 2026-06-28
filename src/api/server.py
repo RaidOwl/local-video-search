@@ -1396,6 +1396,18 @@ async def search_videos(
             })
             existing.add(k)
 
+    # Drop degenerate transcript fragments — a stray 1-2 word chunk like a lone
+    # "one" (the tail of "...see you in the next one") carries no meaning yet the
+    # cross-encoder can score it in the noise band and surface it as a bogus hit.
+    # Visual captions are always descriptive, so this only filters tiny transcripts.
+    def _degenerate(seg: dict) -> bool:
+        if seg.get("frame_path"):
+            return False
+        text = (seg.get("caption") or "").replace("[transcript]", "", 1)
+        return len(text.split()) < 3
+
+    all_segments = [s for s in all_segments if not _degenerate(s)]
+
     # Cross-encoder re-ranking — always applied.
     # Qdrant + keyword boost above served only to pick candidates (recall);
     # the cross-encoder now assigns the final absolute relevance score (precision).
