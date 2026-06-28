@@ -12,9 +12,12 @@ const SS_SEARCH_AUDIO = 'vss_search_audio'
 const SS_FILTERS = 'vss_search_filters'
 
 // The reranker emits relevance scores that cluster in a narrow band; apply a
-// power curve so strong matches display as 80%+ and feel intuitive to users.
-const normalizeScore = (s: number) => 1 - Math.pow(Math.max(0, 1 - s), 1.5)
-const rawThreshold = (t: number) => 1 - Math.pow(Math.max(0, 1 - t), 1 / 1.5)
+// gentle power curve so strong matches read as high while mid-band "topically
+// adjacent" hits (e.g. raw ~0.72) aren't over-inflated. 1.0 = linear; >1 lifts.
+// Kept mild (1.1) so a weak +0.6-logit match shows ~68% rather than ~85%.
+const SCORE_CURVE = 1.1
+const normalizeScore = (s: number) => 1 - Math.pow(Math.max(0, 1 - s), SCORE_CURVE)
+const rawThreshold = (t: number) => 1 - Math.pow(Math.max(0, 1 - t), 1 / SCORE_CURVE)
 const thresholdLabel = (t: number) => {
   if (t >= 0.80) return 'near exact'
   if (t >= 0.65) return 'close match'

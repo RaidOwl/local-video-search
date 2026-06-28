@@ -371,6 +371,23 @@ async def _rerank_segments(query, segments: list[dict]) -> list[dict]:
                 if rf > best_raw[i]:
                     best_raw[i] = rf
 
+        # Short-segment damp: a 1-2 word caption/transcript line (e.g. "Micro
+        # Center.") can ride a single domain-adjacent word to a moderate positive
+        # logit (~0.6) even when it isn't a real answer — with almost no context
+        # the cross-encoder can't distinguish a true match from topical
+        # adjacency. Scale down *positive* logits for very short segments so weak
+        # adjacency falls below the relevance threshold while genuine matches
+        # (logit ~1.0) stay comfortably above it. Factor: 0→0.4, 1→0.55, 2→0.70,
+        # 3→0.85, ≥4→1.0 (no change).
+        import re as _re
+        def _content_words(text: str) -> int:
+            return len([w for w in _re.findall(r"[A-Za-z0-9']+", text) if len(w) > 1])
+        for i, cap in enumerate(captions):
+            if best_raw[i] > 0:
+                n = _content_words(cap)
+                if n < 4:
+                    best_raw[i] *= min(1.0, 0.4 + 0.15 * n)
+
         def _sigmoid(x: float) -> float:
             # bge-reranker logits are calibrated (>0 relevant, <0 not) but small
             # in magnitude on descriptive captions, so a plain sigmoid bunches
