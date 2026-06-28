@@ -170,6 +170,38 @@ VIDEO_DIR_1=/path/to/your/videos
 
 See `.env.example` for all options including port overrides and frame extraction settings.
 
+#### Videos on a NAS / network share
+
+If your videos live on a network share (SMB/NFS), **don't** point `VIDEO_DIR_*`
+at a host mount like `/Volumes/NAS` when using **Docker Desktop** (macOS/Windows).
+Docker Desktop's file sharing lets host-mounted network shares go stale inside
+the container (`Not a directory` / `Bad file descriptor`), so imports fail
+intermittently.
+
+Instead, mount the share into the container directly. Create a
+`docker-compose.override.yml` next to `docker-compose.yml` (it's auto-loaded and
+gitignored) — for an SMB/CIFS share:
+
+```yaml
+services:
+  local-vss-api:
+    volumes:
+      - videos_lib1:/data/videos/lib1:ro
+
+volumes:
+  videos_lib1:
+    driver: local
+    driver_opts:
+      type: cifs
+      o: "addr=NAS_IP,username=${SMB_USER},password=${SMB_PASS},ro,uid=0,gid=0,file_mode=0444,dir_mode=0555,vers=3.0"
+      device: "//NAS_IP/Share/Path/To/Videos"
+```
+
+Put `SMB_USER` / `SMB_PASS` in `.env`, replace `NAS_IP` and the share path, then
+`docker compose up -d`. The container's own kernel mounts the share, bypassing
+the flaky host bind. (On native Linux Docker, host bind mounts of NFS work fine
+and this isn't needed.)
+
 ### Step 3 — Start services
 
 ```bash

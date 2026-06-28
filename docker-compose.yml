@@ -74,8 +74,11 @@ services:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 15s
       timeout: 5s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      # Cold start loads torch/transformers and, on first run, downloads the
+      # ~1.1 GB reranker model — keep the container in "starting" (not unhealthy)
+      # so dependents waiting on service_healthy don't abort the first `up`.
+      start_period: 300s
     restart: unless-stopped
 
   local-vss-frontend:

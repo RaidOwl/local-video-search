@@ -24,6 +24,7 @@ data/videos/
 data/frames/
 data/qdrant/
 data/placeholder/
+data/models/
 
 # IDE
 .idea/
