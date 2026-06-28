@@ -48,6 +48,10 @@ const SEARCH_EXAMPLES = [
 
 export default function SearchPage() {
   const [query, setQuery] = useState(() => sessionStorage.getItem(SS_QUERY) ?? '')
+  // The query text that actually produced `results` (persisted at search time).
+  // Relevance badges depend on THIS, not the live input — clearing the search
+  // box must not retroactively blank the badges on already-displayed results.
+  const [resultQuery, setResultQuery] = useState(() => sessionStorage.getItem(SS_QUERY) ?? '')
   const [results, setResults] = useState<SearchResult[]>(() => {
     try { return JSON.parse(sessionStorage.getItem(SS_RESULTS) ?? '[]') } catch { return [] }
   })
@@ -91,8 +95,9 @@ export default function SearchPage() {
     filters.mediaTypes.length + (filters.resolution ? 1 : 0) + (filters.dateFrom ? 1 : 0) + (filters.dateTo ? 1 : 0)
 
   // Filters-only browse (no text query) returns synthetic 100% scores, so the
-  // relevance badges are meaningless and hidden in that mode.
-  const isBrowse = searched && results.length > 0 && !query.trim()
+  // relevance badges are meaningless and hidden in that mode. Keyed off the
+  // query that produced the results, so clearing the input won't hide them.
+  const isBrowse = searched && results.length > 0 && !resultQuery.trim()
 
   useEffect(() => {
     api.metadataFacets().then(setFacets).catch(() => {})
@@ -133,6 +138,7 @@ export default function SearchPage() {
         date_to: filters.dateTo,
       }, enhanced && searchVideo && searchAudio)).results
       setResults(res)
+      setResultQuery(query)
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
       sessionStorage.setItem(SS_TIER, String(tierIdx))
