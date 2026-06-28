@@ -1365,6 +1365,37 @@ async def search_videos(
                 "frame_path": s.frame_path,
             })
 
+    # Loosest tier ("Nearly everything", threshold <= 0.50): also pull every clip
+    # that LITERALLY mentions the query words straight from the DB, independent of
+    # the semantic recall pool. The cross-encoder rejects bare-noun queries to the
+    # ~0.50 noise band, so a purely semantic pool misses many genuine mentions;
+    # this lexical pass guarantees keyword recall. These hits get reranked below
+    # like everything else, then bypass the relevance floor (see broad_keyword).
+    broad_keyword = (threshold <= 0.50) and bool(key_terms)
+    if broad_keyword:
+        existing = {(s["video_id"], round(s["start_time"], 3)) for s in all_segments}
+        for f in await db.search_captions(key_terms, limit=300):
+            k = (f.video_id, round(f.timestamp, 3))
+            if k in existing:
+                continue
+            meta = video_meta.get(f.video_id)
+            if meta is None:
+                v = video_objs.get(f.video_id) or await db.get_video(f.video_id)
+                if not v:
+                    continue
+                video_objs[f.video_id] = v
+                meta = {"name": v.name, "path": v.path, "duration": v.duration}
+                video_meta[f.video_id] = meta
+            all_segments.append({
+                "video_id": f.video_id,
+                "start_time": f.timestamp,
+                "end_time": f.timestamp,
+                "caption": f.caption or "",
+                "score": 0.0,
+                "frame_path": f.frame_path or "",
+            })
+            existing.add(k)
+
     # Cross-encoder re-ranking — always applied.
     # Qdrant + keyword boost above served only to pick candidates (recall);
     # the cross-encoder now assigns the final absolute relevance score (precision).
@@ -1408,14 +1439,26 @@ async def search_videos(
     RELEVANCE_FLOOR = 0.52
     seg_threshold = max(threshold, RELEVANCE_FLOOR)
 
+    # In the loosest tier we ALSO keep any segment that literally contains every
+    # query keyword, even if the reranker scored it in the noise band. This lets
+    # "Nearly everything" mean "every semantic match OR every literal mention".
+    def _kw_match(caption: str) -> bool:
+        cap = (caption or "").lower()
+        return all(t in cap for t in key_terms)
+
     final_results = []
     for vid, segs in video_segs.items():
         meta = video_meta.get(vid)
         if not meta:
             continue
-        top_segments = [s for s in segs if s["score"] >= seg_threshold]
+        top_segments = [
+            s for s in segs
+            if s["score"] >= seg_threshold
+            or (broad_keyword and _kw_match(s.get("caption", "")))
+        ]
         if not top_segments:
             continue
+        top_segments.sort(key=lambda s: s["score"], reverse=True)
         best_score = max(s["score"] for s in top_segments)
         final_results.append({
             "video_id": vid,
@@ -1427,8 +1470,12 @@ async def search_videos(
             "segments": top_segments,
         })
 
-    # Only return videos where the best-matching segment is above threshold
-    final_results = [r for r in final_results if r["score"] >= seg_threshold]
+    # Only return videos where the best-matching segment is above threshold. In
+    # the loosest tier, keep videos kept solely via a literal keyword match too.
+    final_results = [
+        r for r in final_results
+        if r["score"] >= seg_threshold or broad_keyword
+    ]
 
     # Apply explicit, user-supplied metadata filters as a hard AND over results,
     # reusing the Video rows already fetched above (no full-library scan). Hidden

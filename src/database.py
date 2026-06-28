@@ -180,6 +180,25 @@ class Database:
                 .order_by(Frame.timestamp)
             )
             return list(result.scalars().all())
+
+    async def search_captions(self, terms: list[str], limit: int = 300) -> list[Frame]:
+        """Lexical fallback: frames whose caption contains ALL of ``terms``.
+
+        Used by the loosest search tier so "Nearly everything" can surface every
+        clip that literally mentions the query words, independent of the semantic
+        recall pool. Case-insensitive substring match (AND across terms).
+        """
+        terms = [t for t in (terms or []) if t]
+        if not terms:
+            return []
+        async with self.session_maker() as session:
+            from sqlalchemy import select, func
+            stmt = select(Frame)
+            for t in terms:
+                stmt = stmt.where(func.lower(Frame.caption).like(f"%{t.lower()}%"))
+            stmt = stmt.limit(limit)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
     
     async def get_frame(self, frame_id: str) -> Frame | None:
         """Get a single frame by ID."""
