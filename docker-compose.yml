@@ -75,9 +75,11 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      # Cold start loads torch/transformers and, on first run, downloads the
-      # ~1.1 GB reranker model — keep the container in "starting" (not unhealthy)
-      # so dependents waiting on service_healthy don't abort the first `up`.
+      # The API reports healthy within ~15-30s, then warms the reranker (which
+      # stalls /health while it loads and, on first run, downloads ~1.1 GB). The
+      # long start_period keeps those warmup stalls from flipping the container
+      # to "unhealthy" before the model finishes, so dependents waiting on
+      # service_healthy aren't disturbed.
       start_period: 300s
     restart: unless-stopped
 

@@ -53,7 +53,8 @@ async def lifespan(_app: FastAPI):
         task = asyncio.create_task(_retranscribe_audio(v.id, v.path))
         _active_tasks[v.id] = task
     _auto_import_task = asyncio.create_task(_auto_import_loop())
-    # Warm the reranker in the background so the first search isn't slow.
+    # Warm the reranker after a short delay (see _warm_reranker) so the API can
+    # pass its healthcheck before the GIL-heavy model load stalls the event loop.
     asyncio.create_task(_warm_reranker())
     # Backfill file metadata for videos imported before those columns existed.
     asyncio.create_task(_backfill_metadata())
@@ -297,8 +298,21 @@ def _load_reranker():
 
 
 async def _warm_reranker() -> None:
-    """Pre-load the reranker at startup so the first search isn't slow."""
+    """Pre-load the reranker shortly after startup so the first search isn't slow.
+
+    The load is delayed so the container can pass its healthcheck first. Building
+    the cross-encoder does enough pure-Python (transformers/torch) work to hold
+    the GIL, which starves the asyncio event loop even from a thread executor —
+    so while it runs, the trivial ``/health`` endpoint stalls. On a fresh deploy
+    the first run also downloads ~1.1 GB, which can take minutes. Warming
+    immediately would keep ``/health`` unresponsive long enough to exceed the
+    healthcheck ``start_period``, marking the API unhealthy and aborting any
+    ``up`` where the frontend waits on ``service_healthy``. Delaying lets the API
+    report healthy first; the brief warmup stall afterward is harmless because
+    dependents have already started.
+    """
     try:
+        await asyncio.sleep(30)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _load_reranker)
     except Exception as e:
