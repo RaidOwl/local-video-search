@@ -6,23 +6,28 @@ import { Mic, Film, SlidersHorizontal } from 'lucide-react'
 
 const SS_QUERY = 'vss_search_query'
 const SS_RESULTS = 'vss_search_results'
-const SS_THRESHOLD = 'vss_search_threshold'
+const SS_TIER = 'vss_search_tier'
 const SS_SEARCH_VIDEO = 'vss_search_video'
 const SS_SEARCH_AUDIO = 'vss_search_audio'
 const SS_FILTERS = 'vss_search_filters'
 
-// The reranker emits relevance scores that cluster in a narrow band; apply a
-// gentle power curve so strong matches read as high while mid-band "topically
-// adjacent" hits (e.g. raw ~0.72) aren't over-inflated. 1.0 = linear; >1 lifts.
-// Kept mild (1.1) so a weak +0.6-logit match shows ~68% rather than ~85%.
-const SCORE_CURVE = 1.1
-const normalizeScore = (s: number) => 1 - Math.pow(Math.max(0, 1 - s), SCORE_CURVE)
-const rawThreshold = (t: number) => 1 - Math.pow(Math.max(0, 1 - t), 1 / SCORE_CURVE)
-const thresholdLabel = (t: number) => {
-  if (t >= 0.80) return 'near exact'
-  if (t >= 0.65) return 'close match'
-  if (t >= 0.50) return 'some match'
-  return 'broad match'
+// Relevance is the reranker's raw score (0–1; ~0.50 = "the model rejects this").
+// Rather than dress that up as a misleading precise percentage, we expose four
+// discrete confidence bands. Each slider stop maps to a FIXED raw threshold sent
+// straight to the API, and every result is badged with the band its raw score
+// falls into — no curve, no score→percentage translation.
+// Ordered loosest → strictest (slider index 0–3). `pick` = the slider-stop label
+// (filter intent); `badge` = the per-result quality label.
+type RelTier = { min: number; pick: string; badge: string; color: string }
+const REL_TIERS: RelTier[] = [
+  { min: 0.50, pick: 'Nearly everything', badge: 'Loosely related',  color: '#94a3b8' },
+  { min: 0.60, pick: 'Somewhat matches',  badge: 'Somewhat matches', color: '#fbbf24' },
+  { min: 0.68, pick: 'Mostly matches',    badge: 'Mostly matches',   color: '#818cf8' },
+  { min: 0.76, pick: 'Exact match',       badge: 'Exact match',      color: '#34d399' },
+]
+const tierForScore = (s: number): RelTier => {
+  for (let i = REL_TIERS.length - 1; i > 0; i--) if (s >= REL_TIERS[i].min) return REL_TIERS[i]
+  return REL_TIERS[0]
 }
 
 // Concise, teach-by-example placeholders. Describe what's on screen or said —
@@ -42,7 +47,10 @@ export default function SearchPage() {
   const [results, setResults] = useState<SearchResult[]>(() => {
     try { return JSON.parse(sessionStorage.getItem(SS_RESULTS) ?? '[]') } catch { return [] }
   })
-  const [threshold, setThreshold] = useState(() => Number(sessionStorage.getItem(SS_THRESHOLD) ?? '0.50'))
+  const [tierIdx, setTierIdx] = useState(() => {
+    const v = parseInt(sessionStorage.getItem(SS_TIER) ?? '', 10)
+    return Number.isInteger(v) && v >= 0 && v <= 3 ? v : 1
+  })
   const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem(SS_SEARCH_VIDEO) !== '0')
   const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
   const [loading, setLoading] = useState(false)
@@ -112,7 +120,7 @@ export default function SearchPage() {
     if (!query.trim() && activeFilterCount === 0) return
     setLoading(true); setSearched(true)
     try {
-      const res = (await api.search(query, undefined, rawThreshold(threshold), sources, {
+      const res = (await api.search(query, undefined, REL_TIERS[tierIdx].min, sources, {
         media_types: filters.mediaTypes.join(','),
         resolution: filters.resolution,
         date_from: filters.dateFrom,
@@ -121,7 +129,7 @@ export default function SearchPage() {
       setResults(res)
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
-      sessionStorage.setItem(SS_THRESHOLD, String(threshold))
+      sessionStorage.setItem(SS_TIER, String(tierIdx))
     } catch { /* ignore */ }
     finally { setLoading(false) }
   }
@@ -193,14 +201,14 @@ export default function SearchPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem', color: 'var(--muted)', fontSize: '0.82rem' }}>
           <span style={{ flexShrink: 0 }}>Min relevance</span>
           <input
-            type="range" min={0.1} max={0.9} step={0.05}
-            value={threshold}
-            onChange={e => setThreshold(Number(e.target.value))}
-            style={{ flex: 1, accentColor: 'var(--accent)', cursor: 'pointer' }}
+            type="range" min={0} max={3} step={1}
+            value={tierIdx}
+            onChange={e => setTierIdx(Number(e.target.value))}
+            style={{ flex: 1, accentColor: REL_TIERS[tierIdx].color, cursor: 'pointer' }}
           />
-          <span style={{ flexShrink: 0, minWidth: 48, textAlign: 'right', lineHeight: 1.2 }}>
-            <div style={{ color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{Math.round(threshold * 100)}%</div>
-            <div style={{ fontSize: '0.68rem', color: 'var(--muted)', marginTop: 1 }}>{thresholdLabel(threshold)}</div>
+          <span style={{ flexShrink: 0, minWidth: 132, display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.35rem', color: REL_TIERS[tierIdx].color, fontWeight: 600 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: REL_TIERS[tierIdx].color, flexShrink: 0 }} />
+            {REL_TIERS[tierIdx].pick}
           </span>
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
@@ -319,14 +327,15 @@ export default function SearchPage() {
                       </div>
                     </div>
                     <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      {!isBrowse && (
-                        <>
-                          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent)' }}>
-                            {Math.round(normalizeScore(r.score) * 100)}%
+                      {!isBrowse && (() => {
+                        const t = tierForScore(r.score)
+                        return (
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <span style={{ width: 9, height: 9, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
+                            <span style={{ fontSize: '0.9rem', fontWeight: 600, color: t.color }}>{t.badge}</span>
                           </div>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>relevance</div>
-                        </>
-                      )}
+                        )
+                      })()}
                     </div>
                   </div>
 
@@ -369,11 +378,12 @@ export default function SearchPage() {
                           <span style={{ fontSize: '0.82rem', color: 'var(--text)', lineHeight: 1.4, flex: 1 }}>
                             {seg.caption.replace(/^\[transcript\]\s*/i, '')}
                           </span>
-                          {!isBrowse && (
-                            <span style={{ fontSize: '0.72rem', color: 'var(--muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-                              {Math.round(normalizeScore(seg.score) * 100)}%
-                            </span>
-                          )}
+                          {!isBrowse && (() => {
+                            const t = tierForScore(seg.score)
+                            return (
+                              <span title={t.badge} style={{ width: 9, height: 9, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
+                            )
+                          })()}
                         </div>
                       ))}
                     </div>
