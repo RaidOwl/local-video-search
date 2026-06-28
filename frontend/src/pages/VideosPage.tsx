@@ -424,6 +424,15 @@ export default function VideosPage() {
     videoIds.forEach(id => delete snapshots.current[id])
   }
 
+  const handleRetranscribeSelected = async () => {
+    const ids = [...selected]
+    if (ids.length === 0) return
+    if (!window.confirm(`Re-transcribe audio for ${ids.length} video${ids.length !== 1 ? 's' : ''}? This replaces only the transcript (visual frames are kept).`)) return
+    await Promise.all(ids.map(id => api.retranscribeAudio(id).catch(() => {})))
+    setSelected(new Set())
+    loadVideos()
+  }
+
   const handleReimport = async () => {
     setReimporting(true); setReimportMsg('')
     const before = videos.length
@@ -541,6 +550,7 @@ export default function VideosPage() {
               <>
                 <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>{selected.size} selected</span>
                 <button onClick={() => setShowModal(true)} style={{ fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}><Play size={13} /> Analyze {selected.size} video{selected.size !== 1 ? 's' : ''}</button>
+                <button className="ghost" onClick={handleRetranscribeSelected} title="Re-run audio transcription only (keeps visual frames)" style={{ fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}><Mic size={13} /> Re-transcribe audio</button>
                 <button className="ghost" style={{ fontSize: '0.85rem' }} onClick={() => setSelected(new Set())}>Clear</button>
               </>
             ) : (
