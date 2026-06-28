@@ -1343,12 +1343,11 @@ async def search_videos(
     # Fetch video details and build segments per video
     all_segments: list[dict] = []
     video_meta: dict = {}
-    video_objs: dict = {}
+    video_objs: dict = await db.get_videos(list(video_hits.keys()))
     for vid, data in video_hits.items():
-        video = await db.get_video(vid)
+        video = video_objs.get(vid)
         if not video:
             continue
-        video_objs[vid] = video
         for h in data["hits"]:
             h["video_name"] = video.name
         segments = segment_retriever.group_segments(data["hits"], vid)
@@ -1373,28 +1372,33 @@ async def search_videos(
     # like everything else, then bypass the relevance floor (see broad_keyword).
     broad_keyword = (threshold <= 0.50) and bool(key_terms)
     if broad_keyword:
-        existing = {(s["video_id"], round(s["start_time"], 3)) for s in all_segments}
-        for f in await db.search_captions(key_terms, limit=300):
-            k = (f.video_id, round(f.timestamp, 3))
-            if k in existing:
-                continue
-            meta = video_meta.get(f.video_id)
-            if meta is None:
-                v = video_objs.get(f.video_id) or await db.get_video(f.video_id)
-                if not v:
-                    continue
-                video_objs[f.video_id] = v
-                meta = {"name": v.name, "path": v.path, "duration": v.duration}
-                video_meta[f.video_id] = meta
+        # Existing semantic segments as (video_id, [start, end]) intervals so a
+        # lexical frame already covered by a grouped segment doesn't surface twice.
+        spans: dict = {}
+        for s in all_segments:
+            spans.setdefault(s["video_id"], []).append((s["start_time"], s["end_time"]))
+        lexical = await db.search_captions(key_terms, limit=300)
+        missing_ids = [f.video_id for f in lexical if f.video_id not in video_meta]
+        if missing_ids:
+            extra = await db.get_videos(missing_ids)
+            video_objs.update(extra)
+            for vid, v in extra.items():
+                video_meta[vid] = {"name": v.name, "path": v.path, "duration": v.duration}
+        for f in lexical:
+            if f.video_id not in video_meta:
+                continue  # video row missing/deleted
+            ts = f.timestamp
+            if any(a <= ts <= b for a, b in spans.get(f.video_id, ())):
+                continue  # already represented by a grouped segment
             all_segments.append({
                 "video_id": f.video_id,
-                "start_time": f.timestamp,
-                "end_time": f.timestamp,
+                "start_time": ts,
+                "end_time": ts,
                 "caption": f.caption or "",
                 "score": 0.0,
                 "frame_path": f.frame_path or "",
             })
-            existing.add(k)
+            spans.setdefault(f.video_id, []).append((ts, ts))
 
     # Drop degenerate transcript fragments — a stray 1-2 word chunk like a lone
     # "one" (the tail of "...see you in the next one") carries no meaning yet the
@@ -1408,12 +1412,20 @@ async def search_videos(
 
     all_segments = [s for s in all_segments if not _degenerate(s)]
 
+    # Cap the cross-encoder workload: reranking is the latency bottleneck (CPU on
+    # some deployments). Keep the strongest recall candidates so a broad keyword
+    # search can't feed thousands of pairs through the model. Lexical hits carry
+    # recall score 0.0, so they sort last and are trimmed first once the cap is hit.
+    RERANK_CAP = 400
+    if len(all_segments) > RERANK_CAP:
+        all_segments.sort(key=lambda s: s["score"], reverse=True)
+        all_segments = all_segments[:RERANK_CAP]
+
     # Cross-encoder re-ranking — always applied.
     # Qdrant + keyword boost above served only to pick candidates (recall);
     # the cross-encoder now assigns the final absolute relevance score (precision).
     # Feed the cleaned query (filler words like "find the segment where" stripped)
     # so the reranker judges the actual subject, not conversational scaffolding.
-    all_segments.sort(key=lambda s: s["score"], reverse=True)
     rerank_query = processed.get("search_terms") or q
 
     # bge-reranker returns a neutral ~0.5 score for bare-noun queries — it expects

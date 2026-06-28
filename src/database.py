@@ -100,7 +100,21 @@ class Database:
                 # Expire to load relationships
                 await session.refresh(result)
             return result
-    
+
+    async def get_videos(self, video_ids: list[str]) -> dict[str, Video]:
+        """Batch-fetch videos by ID in a single query, returned keyed by ID.
+
+        Used by the search path to avoid an N+1 of per-video ``get_video`` calls
+        (each of which opened a session and did a redundant refresh).
+        """
+        ids = [vid for vid in dict.fromkeys(video_ids) if vid]
+        if not ids:
+            return {}
+        async with self.session_maker() as session:
+            from sqlalchemy import select
+            result = await session.execute(select(Video).where(Video.id.in_(ids)))
+            return {v.id: v for v in result.scalars().all()}
+
     async def get_video_by_path(self, path: str) -> Optional[Video]:
         """Get a video by file path."""
         async with self.session_maker() as session:
@@ -195,7 +209,10 @@ class Database:
             from sqlalchemy import select, func
             stmt = select(Frame)
             for t in terms:
-                stmt = stmt.where(func.lower(Frame.caption).like(f"%{t.lower()}%"))
+                # Escape LIKE wildcards so a stray % / _ in a term is matched
+                # literally rather than acting as a wildcard.
+                esc = t.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                stmt = stmt.where(func.lower(Frame.caption).like(f"%{esc}%", escape="\\"))
             stmt = stmt.limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())
