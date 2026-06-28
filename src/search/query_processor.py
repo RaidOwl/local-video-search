@@ -17,10 +17,11 @@ VISUAL_PATTERNS = re.compile(
 
 # Words to strip from the query before embedding so the topic is cleaner
 INTENT_STRIP = re.compile(
-    r'\b(when (did|does|do) (i|they|he|she|we|the user|someone)|'
-    r'where did (i|they|he|she|the user)|'
-    r'(i |they |he |she |the user )?(say|said|talk(ed)? about|mention(ed)?|spoke about|'
-    r'discuss(ed)?|hear(d)?|explain(ed)?)|'
+    r'\b(when (did|does|do|was|were|have|had) (i|they|he|she|we|you|the user|someone)|'
+    r'where (did|do|does|was|were|have|had|can|could) (i|they|he|she|we|you|the user)|'
+    r'(i |they |he |she |we |you |the user )?(say|said|saying|says|'
+    r'talk(ed|ing|s)? about|mention(ed|ing|s)?|spoke about|speak(ing)? about|'
+    r'discuss(ed|ing|es)?|hear(d)?|explain(ed|ing|s)?)|'
     r'show(ed)? (me )?(where|when)|'
     r'appear(ed)? (on ?screen|in (the )?video))\b',
     re.IGNORECASE
@@ -61,7 +62,7 @@ class QueryProcessor:
         cleaned = INTENT_STRIP.sub(' ', query)
         # Also remove leading question words
         cleaned = re.sub(
-            r'^(find|search for|show me|where is|where are|when does|when did)\s+',
+            r'^(find|search for|show me|where is|where are|where was|where were|when does|when did|when was|when were)\s+',
             '', cleaned.strip(), flags=re.IGNORECASE
         )
         cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip(' ?.,!')

@@ -22,6 +22,18 @@ const thresholdLabel = (t: number) => {
   return 'broad match'
 }
 
+// Concise, teach-by-example placeholders. Describe what's on screen or said —
+// short noun phrases rerank far better than verbose meta questions like
+// "show me where I was talking about...".
+const SEARCH_EXAMPLES = [
+  'a man standing next to a red car',
+  'kvm switch on a desk',
+  'someone explaining pricing',
+  'a laptop showing a blue screen',
+  'person holding a coffee mug',
+  'talking about graphics cards',
+]
+
 export default function SearchPage() {
   const [query, setQuery] = useState(() => sessionStorage.getItem(SS_QUERY) ?? '')
   const [results, setResults] = useState<SearchResult[]>(() => {
@@ -33,6 +45,13 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
+
+  // Rotate the example placeholder so users learn the concise phrasing pattern.
+  const [phIdx, setPhIdx] = useState(() => Math.floor(Math.random() * SEARCH_EXAMPLES.length))
+  useEffect(() => {
+    const t = setInterval(() => setPhIdx(i => (i + 1) % SEARCH_EXAMPLES.length), 3500)
+    return () => clearInterval(t)
+  }, [])
 
   // --- optional metadata filters (explicit, opt-in via the popup) ---
   type Filters = { mediaTypes: string[]; resolution: string; dateFrom: string; dateTo: string }
@@ -126,7 +145,7 @@ export default function SearchPage() {
             <input
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="e.g. 'what video was I talking about the AMD Strix Halo?'"
+              placeholder={`e.g. "${SEARCH_EXAMPLES[phIdx]}"`}
               style={{ fontSize: '1rem', padding: '0.75rem 1rem', paddingRight: query ? '2.25rem' : '1rem', flex: 1 }}
               autoFocus
             />
