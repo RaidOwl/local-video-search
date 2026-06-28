@@ -35,9 +35,17 @@ Transcription (Whisper) runs on CPU inside the API container — no extra GPU ne
 
 ## Quick Start
 
-### Step 1 — Pick your AI backend
+### Step 1 — Clone the repo
 
-The system needs three AI models: an **embedding model** (converts text/frames to vectors for search), a **vision model** (captions video frames), and a **text LLM** (generates summaries). How you run them determines which backend to use.
+```bash
+git clone https://github.com/RaidOwl/local-video-search.git
+cd local-video-search
+cp .env.example .env
+```
+
+### Step 2 — Pick your AI backend
+
+The system needs three AI models: an **embedding model** (converts text/frames to vectors for search), a **vision model** (captions video frames), and a **text LLM** (generates summaries). How you run them determines which backend to use. Set your choice in `.env`.
 
 ---
 
@@ -144,15 +152,9 @@ docker compose up -d
 
 ---
 
-### Step 2 — Clone & configure
+#### Set your video directories
 
-```bash
-git clone https://github.com/RaidOwl/local-video-search.git
-cd local-video-search
-cp .env.example .env
-```
-
-Edit `.env` based on your chosen backend (see above), then set your video directory:
+After choosing a backend above, point `.env` at your videos:
 
 ```env
 VIDEO_DIR_1=/path/to/your/videos
