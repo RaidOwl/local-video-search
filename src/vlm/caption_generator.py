@@ -91,20 +91,33 @@ class VLMService:
     
     async def caption_frame(self, frame_path: str, context: str = '') -> str:
         """Generate caption for a single frame."""
+        # The caption is the ONLY text indexed for visual search, so it must name
+        # objects with the attributes people actually search by. A generic
+        # "a person using a laptop" makes "blue laptop" unsearchable even when a
+        # blue laptop is clearly in frame — so we explicitly ask the VLM to record
+        # distinguishing details (color, brand/model, on-screen or label text,
+        # material, count) for each notable object, in plain prose (lists/markdown
+        # break the reranker and the short-segment heuristics downstream).
+        role = (
+            'You are writing the searchable description for one frame of a video '
+            'search engine. People will look for specific things by their visible '
+            'attributes, so name each notable object and give its distinguishing '
+            'details — color, brand or model, any readable on-screen or label text, '
+            'material, and how many there are (e.g. "a blue laptop, a yellow laptop, '
+            'and a silver laptop" rather than just "laptops"). Then state the main '
+            'subject, what is happening, and the setting. Write 1-3 plain sentences '
+            'of prose with no lists, headers, or markdown. Describe only what is '
+            'actually visible; never guess or invent details.'
+        )
         if context:
             prompt = (
                 f'Background (may help identify subjects — ignore it if it does not '
                 f'match this frame): {context}\n\n'
-                'Describe only what is actually visible in this video frame in 1-2 plain '
-                'sentences. Include the main subject, action, and setting. Do not assume '
-                'the background applies if the frame shows something else. '
-                'No lists, no headers, no markdown.'
+                + role +
+                ' Do not assume the background applies if the frame shows something else.'
             )
         else:
-            prompt = (
-                'Describe what is happening in this video frame in 1-2 plain sentences. '
-                'Include the main subject, action, and setting. No lists, no headers, no markdown.'
-            )
+            prompt = role
         return await self.generator.caption_image(frame_path, prompt=prompt)
     
     async def caption_frames(self, frame_paths: list[str]) -> list[str]:
