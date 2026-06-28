@@ -14,6 +14,16 @@ class TranscriptSegment:
 class Transcriber:
     """Transcribe audio from video files using faster-whisper."""
 
+    # Sentence-window chunking targets (in words). Whisper's VAD only breaks on
+    # ~½-second pauses, so in continuous narration it emits 40-60 word run-ons.
+    # A single topic mention buried in such a chunk dilutes to a weak reranker
+    # score. We instead re-chunk from the word stream into ~sentence units so
+    # each indexed point is focused (precise reranking) and carries accurate
+    # per-chunk start/end timestamps (accurate seek). MIN avoids tiny fragments;
+    # MAX force-breaks a run-on sentence that never punctuates.
+    MIN_CHUNK_WORDS = 6
+    MAX_CHUNK_WORDS = 30
+
     def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8"):
         self._model_size = model_size
         self._device = device
@@ -66,16 +76,21 @@ class Transcriber:
                 audio_path,
                 beam_size=5,
                 vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 500}
+                vad_parameters={"min_silence_duration_ms": 500},
+                word_timestamps=True,
             )
 
             total = getattr(info, "duration", 0.0) or 0.0
-            out: List[TranscriptSegment] = []
+            words: List[tuple] = []        # (start, end, text) per word
+            raw: List[TranscriptSegment] = []  # fallback if no word timestamps
             # faster-whisper yields segments lazily, so iterating drives the work
             # and lets us report progress from each segment's end timestamp.
             for seg in segments:
                 if seg.text.strip():
-                    out.append(TranscriptSegment(seg.start, seg.end, seg.text))
+                    raw.append(TranscriptSegment(seg.start, seg.end, seg.text))
+                for w in (getattr(seg, "words", None) or []):
+                    if w.word and w.word.strip():
+                        words.append((w.start, w.end, w.word))
                 if progress_callback and total > 0:
                     try:
                         progress_callback(min(seg.end, total), total)
@@ -86,9 +101,36 @@ class Transcriber:
                     progress_callback(total, total)
                 except Exception:
                     pass
-            return out
+            # Re-chunk from words into sentence units; fall back to Whisper's own
+            # segments only if word timestamps were unavailable.
+            return self._chunk_words(words) if words else raw
         finally:
             os.unlink(audio_path)
+
+    def _chunk_words(self, words: List[tuple]) -> List[TranscriptSegment]:
+        """Group word-level timestamps into ~sentence chunks.
+
+        Closes a chunk at sentence-ending punctuation once it has at least
+        MIN_CHUNK_WORDS words, or force-closes at MAX_CHUNK_WORDS so a run-on
+        sentence can't grow unbounded. Each chunk's start/end come from its
+        first/last word, so timestamps stay accurate.
+        """
+        chunks: List[TranscriptSegment] = []
+        buf: List[tuple] = []
+        for start, end, txt in words:
+            buf.append((start, end, txt))
+            ends_sentence = txt.strip().endswith(('.', '!', '?', '…'))
+            if (ends_sentence and len(buf) >= self.MIN_CHUNK_WORDS) or len(buf) >= self.MAX_CHUNK_WORDS:
+                chunks.append(self._mk_chunk(buf))
+                buf = []
+        if buf:
+            chunks.append(self._mk_chunk(buf))
+        return chunks
+
+    @staticmethod
+    def _mk_chunk(buf: List[tuple]) -> TranscriptSegment:
+        text = "".join(t for _, _, t in buf).strip()
+        return TranscriptSegment(buf[0][0], buf[-1][1], text)
 
 
 class TranscriptionService:

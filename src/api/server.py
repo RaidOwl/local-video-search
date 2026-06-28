@@ -515,37 +515,16 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
 
             for seg in segments:
                 text = f"[transcript] {seg.text}"
+                seg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_transcript_{seg.start}"))
                 await embed_service.index_frame(
                     video_id=video_id, frame_path="",
-                    timestamp=seg.start, caption=text
+                    timestamp=seg.start, caption=text, _point_id=seg_id,
                 )
-                seg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_transcript_{seg.start}"))
                 await db.create_frame({
                     "id": seg_id, "video_id": video_id,
                     "timestamp": seg.start, "frame_path": "",
                     "caption": text, "embedding_id": seg_id
                 })
-
-            # Sliding windows: embed overlapping groups of 3 consecutive transcript
-            # segments so multi-sentence topics get a single strong embedding rather
-            # than being spread across individually-weak points.
-            WINDOW_SIZE = 3
-            WINDOW_STEP = 2  # 1-segment overlap between adjacent windows
-            for i in range(0, len(segments) - 1, WINDOW_STEP):
-                win = segments[i:i + WINDOW_SIZE]
-                if len(win) < 2:
-                    continue
-                combined = " ".join(s.text.strip() for s in win if s.text.strip())
-                if not combined:
-                    continue
-                win_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                    f"{video_id}_win_{win[0].start:.3f}_{win[-1].end:.3f}"))
-                await embed_service.index_frame(
-                    video_id=video_id, frame_path="",
-                    timestamp=win[0].start,
-                    caption=f"[transcript] {combined}",
-                    _point_id=win_id,
-                )
 
         await db.update_video(video_id, {'status': 'analyzed', 'has_transcript': 1})
 
@@ -1881,19 +1860,22 @@ async def reprocess_video(video_id: str, req: AnalyzeRequest = AnalyzeRequest())
 async def _retranscribe_audio(video_id: str, video_path: str):
     """Replace only the transcript segments for a video, leaving visual frames intact."""
     try:
-        # Remove existing transcript frames from Qdrant
-        frames = await db.get_frames_for_video(video_id)
-        transcript_frames = [f for f in frames if f.frame_path == "" and f.embedding_id]
-        if transcript_frames:
-            from qdrant_client.models import HasIdCondition
-            try:
-                embed_service.qdrant_client.delete(
-                    collection_name=embed_service.collection_name,
-                    points_selector=HasIdCondition(has_id=[f.embedding_id for f in transcript_frames]),
-                )
-            except Exception:
-                pass
-        # Remove from DB
+        # Remove ALL existing transcript points for this video from Qdrant by
+        # payload filter — this covers per-segment points AND any legacy sliding-
+        # window points regardless of how their ids were assigned (deleting by
+        # the DB's embedding_id missed points whose Qdrant id was derived
+        # differently). Then clear the transcript rows from the DB.
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            embed_service.qdrant_client.delete(
+                collection_name=embed_service.collection_name,
+                points_selector=Filter(must=[
+                    FieldCondition(key="video_id", match=MatchValue(value=video_id)),
+                    FieldCondition(key="is_transcript", match=MatchValue(value=True)),
+                ]),
+            )
+        except Exception as e:
+            print(f"Retranscribe: failed clearing old transcript points for {video_id}: {e}")
         await db.delete_transcript_frames_for_video(video_id)
 
         # Re-transcribe
@@ -1909,32 +1891,16 @@ async def _retranscribe_audio(video_id: str, video_path: str):
 
         for seg in segments:
             text = f"[transcript] {seg.text}"
-            await embed_service.index_frame(
-                video_id=video_id, frame_path="", timestamp=seg.start, caption=text
-            )
             seg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_transcript_{seg.start}"))
+            await embed_service.index_frame(
+                video_id=video_id, frame_path="", timestamp=seg.start,
+                caption=text, _point_id=seg_id,
+            )
             await db.create_frame({
                 "id": seg_id, "video_id": video_id,
                 "timestamp": seg.start, "frame_path": "",
                 "caption": text, "embedding_id": seg_id
             })
-
-        # Sliding windows
-        WINDOW_SIZE = 3
-        WINDOW_STEP = 2
-        for i in range(0, len(segments) - 1, WINDOW_STEP):
-            win = segments[i:i + WINDOW_SIZE]
-            if len(win) < 2:
-                continue
-            combined = " ".join(s.text.strip() for s in win if s.text.strip())
-            if not combined:
-                continue
-            win_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                f"{video_id}_win_{win[0].start:.3f}_{win[-1].end:.3f}"))
-            await embed_service.index_frame(
-                video_id=video_id, frame_path="", timestamp=win[0].start,
-                caption=f"[transcript] {combined}", _point_id=win_id,
-            )
 
         await db.update_video(video_id, {'status': 'analyzed', 'has_transcript': 1})
     except asyncio.CancelledError:
