@@ -75,7 +75,7 @@ VRAM_TIER=mid
 ```
 
 ```bash
-docker compose --profile ollama up -d
+docker compose up -d
 ```
 
 **CPU-only / no GPU**
@@ -90,11 +90,11 @@ vLLM runs models in FP8 rather than Ollama's Q4 quantization, giving better outp
 
 ```env
 AI_BACKEND=vllm
-VRAM_TIER=mid         # 7B FP8 needs ~16 GB VRAM
+VRAM_TIER=mid              # 7B FP8 needs ~16 GB VRAM
 ```
 
 ```bash
-docker compose --profile vllm up -d
+docker compose up -d
 ```
 
 > **Note:** vLLM does not support Apple Silicon or AMD GPUs.
@@ -122,7 +122,7 @@ LLM_MODEL=Qwen/Qwen3-8B
 ```
 
 ```bash
-docker compose up -d   # no profile needed
+docker compose up -d
 ```
 
 ---
@@ -164,15 +164,12 @@ See `.env.example` for all options including port overrides and frame extraction
 ### Step 3 — Start services
 
 ```bash
-# ollama-native or custom
 docker compose up -d
-
-# ollama in Docker
-docker compose --profile ollama up -d
-
-# vllm in Docker
-docker compose --profile vllm up -d
 ```
+
+That's it for every backend. `AI_BACKEND` is the only switch you set — Docker
+starts the matching model server automatically (or none, for `custom` and
+`ollama-native`).
 
 ### Step 4 — Open the UI
 
