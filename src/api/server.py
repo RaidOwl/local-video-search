@@ -136,7 +136,6 @@ def _effective_cfg() -> dict:
             backend=ai_backend,
             family=settings.model_family,
             tier=settings.vram_tier,
-            settings=settings,
         )
         base["qdrant_url"]       = settings.qdrant_url
         base["whisper_model"]    = settings.whisper_model

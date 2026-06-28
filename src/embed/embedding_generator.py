@@ -69,20 +69,60 @@ class EmbeddingService:
             self._qdrant_client = QdrantClient(url=self.qdrant_url)
         return self._qdrant_client
     
-    async def ensure_collection(self, vector_size: int = 1024):
-        """Ensure the collection exists in Qdrant."""
+    async def ensure_collection(self, vector_size: int = None):
+        """Ensure the Qdrant collection exists and matches the embed model's dim.
+
+        The vector size is probed from the embed model itself (bge-m3 → 1024,
+        nomic-embed-text → 768, etc.) rather than hardcoded, so any embedding
+        backend works. If the collection already exists with a different size
+        and is empty, it is recreated; if it has points, a warning is logged
+        and the operator must re-analyze to rebuild the index at the new dim.
+        """
         from qdrant_client.models import Distance, VectorParams
-        
+
         client = self.qdrant_client
-        collections = [c.name for c in client.get_collections().collections]
-        
-        if self.collection_name not in collections:
+        existing = {c.name for c in client.get_collections().collections}
+
+        # Probe the actual embedding dimension (best-effort; endpoint may be down).
+        if vector_size is None:
+            try:
+                import asyncio
+                probe = await asyncio.wait_for(self.generator.embed_text("dimension probe"), timeout=15)
+                vector_size = len(probe)
+            except Exception as e:
+                vector_size = None
+                print(f"[ensure_collection] could not probe embedding dim: {e}")
+
+        if self.collection_name not in existing:
+            if vector_size is None:
+                # Can't size it yet; it'll be created on a later startup once the
+                # embedding endpoint is reachable.
+                return
             client.create_collection(
                 collection_name=self.collection_name,
-                vectors_config=VectorParams(
-                    size=vector_size,
-                    distance=Distance.COSINE
-                )
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+            )
+            return
+
+        # Collection exists — reconcile dimension if we know the model's size.
+        if vector_size is None:
+            return
+        current = client.get_collection(self.collection_name).config.params.vectors.size
+        if current == vector_size:
+            return
+        count = client.count(self.collection_name).count
+        if count == 0:
+            client.delete_collection(self.collection_name)
+            client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+            )
+            print(f"[ensure_collection] recreated '{self.collection_name}' {current}→{vector_size} dim")
+        else:
+            print(
+                f"[ensure_collection] WARNING: '{self.collection_name}' is {current}-dim but the "
+                f"embedding model emits {vector_size}-dim and holds {count} points. The embed model "
+                f"changed — re-analyze your library (or clear the collection) to rebuild at {vector_size} dim."
             )
     
     async def index_frame(

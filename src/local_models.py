@@ -82,16 +82,16 @@ TIER_VRAM: dict = {
 }
 
 
-def resolve_local_config(backend: str, family: str, tier: str, settings=None) -> dict:
+def resolve_local_config(backend: str, family: str, tier: str) -> dict:
     """
     Return the base config dict for a local backend mode.
     backend: ollama | ollama-native | vllm
     family:  qwen | gemma
     tier:    low | mid | high | ultra
 
-    If `settings` is provided, any explicitly set URL env vars override the
-    auto-resolved defaults. This lets users point vllm/ollama mode at existing
-    servers without switching to custom mode.
+    URLs and model names are fully determined by the tier registry. The
+    EMBED_URL / VLM_URL / LLM_URL (and *_MODEL) env vars are only honoured in
+    custom mode — local backends always auto-configure from the registry.
     """
     backend_key = "ollama" if backend in ("ollama", "ollama-native") else "vllm"
     family = family if family in TIER_MODELS[backend_key] else "qwen"
@@ -100,50 +100,24 @@ def resolve_local_config(backend: str, family: str, tier: str, settings=None) ->
     models = TIER_MODELS[backend_key][family][tier]
     urls = BACKEND_URLS[backend]
 
-    # URL defaults from backend registry — overridable via env vars
-    default_embed_url = urls["embed_url"]
-    default_vlm_url   = urls["model_url"]
-    default_llm_url   = urls["model_url"]
-
-    # Model name defaults from tier registry — overridable when URL is overridden
-    default_embed_model = models["embed"]
-    default_vlm_model   = models["model"]
-    default_llm_model   = models["model"]
-
-    # If the user explicitly set URL env vars, honour them over the defaults.
-    # When a URL is overridden, also use the corresponding model name env var
-    # so users don't have to know what the tier registry would have resolved.
-    LOCALHOST_DEFAULTS = {"http://localhost:8001", "http://localhost:8002", "http://localhost:8000"}
-    if settings:
-        embed_url_set = getattr(settings, "embed_url", None) not in LOCALHOST_DEFAULTS
-        vlm_url_set   = getattr(settings, "vlm_url",   None) not in LOCALHOST_DEFAULTS
-        llm_url_set   = getattr(settings, "llm_url",   None) not in LOCALHOST_DEFAULTS
-
-        if embed_url_set:
-            default_embed_url   = settings.embed_url
-            default_embed_model = settings.embed_model
-        if vlm_url_set:
-            default_vlm_url   = settings.vlm_url
-            default_vlm_model = settings.vlm_model
-        if llm_url_set:
-            default_llm_url   = settings.llm_url
-            default_llm_model = settings.llm_model
-        # If only the shared LLM URL was set but not a separate VLM URL, share it
-        if llm_url_set and not vlm_url_set:
-            default_vlm_url   = default_llm_url
-            default_vlm_model = default_llm_model
+    embed_url = urls["embed_url"]
+    vlm_url   = urls["model_url"]
+    llm_url   = urls["model_url"]
+    embed_model = models["embed"]
+    vlm_model   = models["model"]
+    llm_model   = models["model"]
 
     return {
-        "embed_url":   default_embed_url,
-        "vlm_url":     default_vlm_url,
-        "llm_url":     default_llm_url,
-        "embed_model": default_embed_model,
-        "vlm_model":   default_vlm_model,
-        "llm_model":   default_llm_model,
+        "embed_url":   embed_url,
+        "vlm_url":     vlm_url,
+        "llm_url":     llm_url,
+        "embed_model": embed_model,
+        "vlm_model":   vlm_model,
+        "llm_model":   llm_model,
         # resolved metadata (not used by services, but surfaced in /settings)
         "_resolved_backend": backend,
         "_resolved_family":  family,
         "_resolved_tier":    tier,
-        "_resolved_model":   default_llm_model,
-        "_resolved_embed":   default_embed_model,
+        "_resolved_model":   llm_model,
+        "_resolved_embed":   embed_model,
     }
