@@ -1682,7 +1682,7 @@ async def search_videos(
     # channels in view, whether the moment genuinely matches. The verdict replaces
     # the reranker score for that moment. This reuses captions we already have —
     # no frames are re-examined — and is capped to a small shortlist for latency.
-    if enhanced and all_segments:
+    if enhanced and all_segments and source_intent == 'mixed':
         JUDGE_WINDOW = 20.0     # seconds of context handed to the judge per moment
         MAX_MOMENTS = 14        # shortlist size (bounds latency / token budget)
 

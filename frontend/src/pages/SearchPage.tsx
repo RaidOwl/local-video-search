@@ -130,7 +130,7 @@ export default function SearchPage() {
         resolution: filters.resolution,
         date_from: filters.dateFrom,
         date_to: filters.dateTo,
-      }, enhanced)).results
+      }, enhanced && searchVideo && searchAudio)).results
       setResults(res)
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
@@ -225,13 +225,19 @@ export default function SearchPage() {
             Audio
           </label>
 
-          <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
-          <label
-            title="Have an AI read both what's shown and what's said in each candidate moment and re-judge the matches. More accurate for cross-modal queries, but slower."
-            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0, color: enhanced ? 'var(--accent-hover)' : undefined, fontWeight: enhanced ? 600 : undefined }}>
-            <input type="checkbox" checked={enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
-            Enhanced
-          </label>
+          {/* Enhanced re-judges fused visual+spoken moments, so it only applies
+              when both channels are searched. Hide it in single-channel mode. */}
+          {searchVideo && searchAudio && (
+            <>
+              <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
+              <label
+                title="Have an AI read both what's shown and what's said in each candidate moment and re-judge the matches. More accurate for cross-modal queries, but slower."
+                style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0, color: enhanced ? 'var(--accent-hover)' : undefined, fontWeight: enhanced ? 600 : undefined }}>
+                <input type="checkbox" checked={enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
+                Enhanced
+              </label>
+            </>
+          )}
 
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
           <div ref={filterRef} style={{ position: 'relative', flexShrink: 0 }}>
