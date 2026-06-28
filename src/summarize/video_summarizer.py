@@ -5,8 +5,8 @@ from typing import List
 class VideoSummarizer:
     """Generate summaries for videos using a remote LLM (vLLM)."""
     
-    def __init__(self, vllm_url: str, model: str = "Qwen/Qwen3.5-9B"):
-        self.vllm_url = vllm_url.rstrip('/')
+    def __init__(self, base_url: str, model: str = "Qwen/Qwen3.5-9B"):
+        self.base_url = base_url.rstrip('/')
         self.model = model
     
     async def summarize(
@@ -68,7 +68,7 @@ class VideoSummarizer:
         
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(
-                f"{self.vllm_url}/v1/chat/completions",
+                f"{self.base_url}/v1/chat/completions",
                 json={
                     "model": self.model,
                     "messages": [
@@ -98,8 +98,8 @@ class VideoSummarizer:
 class SummarizationService:
     """Service for managing video summarization."""
     
-    def __init__(self, vllm_url: str, model: str = "Qwen/Qwen3-8B"):
-        self.summarizer = VideoSummarizer(vllm_url, model=model)
+    def __init__(self, base_url: str, model: str = "Qwen/Qwen3-8B"):
+        self.summarizer = VideoSummarizer(base_url, model=model)
     
     async def summarize_video(
         self,

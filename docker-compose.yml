@@ -39,13 +39,14 @@ services:
       AI_BACKEND: ${AI_BACKEND:-custom}
       VRAM_TIER: ${VRAM_TIER:-mid}
       MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
-      # Custom-mode endpoints (ignored in local modes — auto-configured)
-      VLLM_EMBED_URL: ${VLLM_EMBED_URL:-http://localhost:8001}
-      VLLM_VLM_URL: ${VLLM_VLM_URL:-http://localhost:8002}
-      VLLM_URL: ${VLLM_URL:-http://localhost:8000}
-      VLLM_EMBED_MODEL: ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
-      VLLM_VLM_MODEL: ${VLLM_VLM_MODEL:-llava-hf/llava-v1.6-vicuna-7b-hf}
-      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-8B}
+      # Custom-mode endpoints (ignored in local modes — auto-configured).
+      # Backend-agnostic: may point at vLLM, Ollama, MLX, or a cloud API.
+      EMBED_URL: ${EMBED_URL:-http://localhost:8001}
+      VLM_URL: ${VLM_URL:-http://localhost:8002}
+      LLM_URL: ${LLM_URL:-http://localhost:8000}
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      VLM_MODEL: ${VLM_MODEL:-llava-hf/llava-v1.6-vicuna-7b-hf}
+      LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3-8B}
       # Infrastructure
       QDRANT_URL: http://qdrant:6333
       DATABASE_URL: sqlite+aiosqlite:////data/metadata.db
@@ -127,15 +128,15 @@ services:
       - -c
       - |
         # Resolve model names from MODEL_FAMILY + VRAM_TIER
-        if [ "$MODEL_FAMILY" = "gemma" ]; then
-          case "$VRAM_TIER" in
+        if [ "$$MODEL_FAMILY" = "gemma" ]; then
+          case "$$VRAM_TIER" in
             low)   MAIN_MODEL="gemma3:4b"  ;;
             high)  MAIN_MODEL="gemma3:27b" ;;
             ultra) MAIN_MODEL="gemma3:27b" ;;
             *)     MAIN_MODEL="gemma3:12b" ;;
           esac
         else
-          case "$VRAM_TIER" in
+          case "$$VRAM_TIER" in
             low)   MAIN_MODEL="qwen2.5vl:3b"  ;;
             high)  MAIN_MODEL="qwen2.5vl:32b" ;;
             ultra) MAIN_MODEL="qwen2.5vl:72b" ;;
@@ -145,10 +146,10 @@ services:
         EMBED_MODEL="nomic-embed-text"
         echo "==> Waiting for Ollama to be ready..."
         until ollama list >/dev/null 2>&1; do sleep 2; done
-        echo "==> Pulling embed model: $EMBED_MODEL"
-        ollama list | grep -q "$EMBED_MODEL" || ollama pull "$EMBED_MODEL"
-        echo "==> Pulling main model: $MAIN_MODEL"
-        ollama list | grep -q "$MAIN_MODEL" || ollama pull "$MAIN_MODEL"
+        echo "==> Pulling embed model: $$EMBED_MODEL"
+        ollama list | grep -q "$$EMBED_MODEL" || ollama pull "$$EMBED_MODEL"
+        echo "==> Pulling main model: $$MAIN_MODEL"
+        ollama list | grep -q "$$MAIN_MODEL" || ollama pull "$$MAIN_MODEL"
         echo "==> Models ready."
     restart: "no"
 
@@ -163,7 +164,7 @@ services:
     profiles: [vllm]
     command:
       - --model
-      - ${VLLM_EMBED_MODEL:-BAAI/bge-m3}
+      - ${EMBED_MODEL:-BAAI/bge-m3}
       - --port
       - "8001"
       - --host

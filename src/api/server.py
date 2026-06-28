@@ -119,13 +119,13 @@ def _effective_cfg() -> dict:
 
     if ai_backend == "custom":
         base = {
-            "vllm_embed_url":   settings.vllm_embed_url,
-            "vllm_vlm_url":     settings.vllm_vlm_url,
-            "vllm_url":         settings.vllm_url,
+            "embed_url":   settings.embed_url,
+            "vlm_url":     settings.vlm_url,
+            "llm_url":     settings.llm_url,
             "qdrant_url":       settings.qdrant_url,
-            "vllm_embed_model": settings.vllm_embed_model,
-            "vllm_vlm_model":   settings.vllm_vlm_model,
-            "vllm_model":       settings.vllm_model,
+            "embed_model": settings.embed_model,
+            "vlm_model":   settings.vlm_model,
+            "llm_model":       settings.llm_model,
             "whisper_model":    settings.whisper_model,
             "frame_extraction_interval": settings.frame_extraction_interval,
             "embed_batch_size": settings.embed_batch_size,
@@ -150,8 +150,8 @@ def _effective_cfg() -> dict:
     # model URLs or swap model names — those are always determined by the tier.
     # Only user-tunable processing settings are overridable.
     _URL_MODEL_KEYS = {
-        'vllm_embed_url', 'vllm_vlm_url', 'vllm_url', 'qdrant_url',
-        'vllm_embed_model', 'vllm_vlm_model', 'vllm_model',
+        'embed_url', 'vlm_url', 'llm_url', 'qdrant_url',
+        'embed_model', 'vlm_model', 'llm_model',
     }
     override = _load_override()
     if ai_backend != "custom":
@@ -193,9 +193,9 @@ _analysis_semaphore = asyncio.Semaphore(int(_cfg.get("max_concurrent_jobs", 8)))
 _transcribe_semaphore = asyncio.Semaphore(max(1, int(_cfg.get("transcription_concurrency", 2))))
 
 # Services
-embed_service = EmbeddingService(_cfg["vllm_embed_url"], _cfg["qdrant_url"], model=_cfg["vllm_embed_model"])
-vlm_service = VLMService(_cfg["vllm_vlm_url"], model=_cfg["vllm_vlm_model"])
-summarizer_service = SummarizationService(_cfg["vllm_url"], model=_cfg["vllm_model"])
+embed_service = EmbeddingService(_cfg["embed_url"], _cfg["qdrant_url"], model=_cfg["embed_model"])
+vlm_service = VLMService(_cfg["vlm_url"], model=_cfg["vlm_model"])
+summarizer_service = SummarizationService(_cfg["llm_url"], model=_cfg["llm_model"])
 transcription_service = TranscriptionService(model_size=_cfg["whisper_model"])
 query_processor = QueryProcessor()
 segment_retriever = SegmentRetriever()
@@ -208,9 +208,9 @@ frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"])
 
 def _reinit_services(cfg: dict):
     global embed_service, vlm_service, summarizer_service, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
-    embed_service = EmbeddingService(cfg["vllm_embed_url"], cfg["qdrant_url"], model=cfg["vllm_embed_model"])
-    vlm_service = VLMService(cfg["vllm_vlm_url"], model=cfg["vllm_vlm_model"])
-    summarizer_service = SummarizationService(cfg["vllm_url"], model=cfg["vllm_model"])
+    embed_service = EmbeddingService(cfg["embed_url"], cfg["qdrant_url"], model=cfg["embed_model"])
+    vlm_service = VLMService(cfg["vlm_url"], model=cfg["vlm_model"])
+    summarizer_service = SummarizationService(cfg["llm_url"], model=cfg["llm_model"])
     transcription_service = TranscriptionService(model_size=cfg["whisper_model"])
     frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]))
     _analysis_semaphore = asyncio.Semaphore(int(cfg.get("max_concurrent_jobs", 8)))
@@ -759,7 +759,7 @@ async def export_library(include_images: bool = True):
     manifest = {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "embed_model": _effective_cfg().get("vllm_embed_model"),
+        "embed_model": _effective_cfg().get("embed_model"),
         "vector_size": 1024,
         "distance": "Cosine",
         "include_images": include_images,
@@ -825,7 +825,7 @@ async def import_library(file: UploadFile = File(...)):
             status_code=400,
             detail=f"Vector size mismatch: archive has {manifest.get('vector_size')}, expected 1024.",
         )
-    local_model = _effective_cfg().get("vllm_embed_model")
+    local_model = _effective_cfg().get("embed_model")
     arch_model = manifest.get("embed_model")
     if local_model and arch_model and arch_model != local_model:
         raise HTTPException(
@@ -938,9 +938,9 @@ async def model_status():
             return {"name": name, "url": url, "ok": False, "models": []}
 
     results = await asyncio.gather(
-        probe(cfg["vllm_embed_url"], "Embeddings"),
-        probe(cfg["vllm_vlm_url"], "Vision AI"),
-        probe(cfg["vllm_url"], "Summarization"),
+        probe(cfg["embed_url"], "Embeddings"),
+        probe(cfg["vlm_url"], "Vision AI"),
+        probe(cfg["llm_url"], "Summarization"),
     )
     return {"services": list(results)}
 
@@ -1093,13 +1093,13 @@ async def get_settings_endpoint():
 
 
 class SettingsUpdateRequest(BaseModel):
-    vllm_embed_url: Optional[str] = None
-    vllm_vlm_url: Optional[str] = None
-    vllm_url: Optional[str] = None
+    embed_url: Optional[str] = None
+    vlm_url: Optional[str] = None
+    llm_url: Optional[str] = None
     qdrant_url: Optional[str] = None
-    vllm_embed_model: Optional[str] = None
-    vllm_vlm_model: Optional[str] = None
-    vllm_model: Optional[str] = None
+    embed_model: Optional[str] = None
+    vlm_model: Optional[str] = None
+    llm_model: Optional[str] = None
     whisper_model: Optional[str] = None
     frame_extraction_interval: Optional[int] = None
     embed_batch_size: Optional[int] = None

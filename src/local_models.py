@@ -5,7 +5,7 @@ Used when AI_BACKEND is ollama, ollama-native, or vllm.
 Maps (backend_family, model_family, vram_tier) → model names + service URLs.
 
 In local mode a single multimodal model handles both vision captioning (VLM)
-and text summarization (LLM), so vllm_vlm_model == vllm_model.
+and text summarization (LLM), so vlm_model == llm_model.
 """
 
 # ---------------------------------------------------------------------------
@@ -115,31 +115,31 @@ def resolve_local_config(backend: str, family: str, tier: str, settings=None) ->
     # so users don't have to know what the tier registry would have resolved.
     LOCALHOST_DEFAULTS = {"http://localhost:8001", "http://localhost:8002", "http://localhost:8000"}
     if settings:
-        embed_url_set = getattr(settings, "vllm_embed_url", None) not in LOCALHOST_DEFAULTS
-        vlm_url_set   = getattr(settings, "vllm_vlm_url",  None) not in LOCALHOST_DEFAULTS
-        llm_url_set   = getattr(settings, "vllm_url",      None) not in LOCALHOST_DEFAULTS
+        embed_url_set = getattr(settings, "embed_url", None) not in LOCALHOST_DEFAULTS
+        vlm_url_set   = getattr(settings, "vlm_url",   None) not in LOCALHOST_DEFAULTS
+        llm_url_set   = getattr(settings, "llm_url",   None) not in LOCALHOST_DEFAULTS
 
         if embed_url_set:
-            default_embed_url   = settings.vllm_embed_url
-            default_embed_model = settings.vllm_embed_model
+            default_embed_url   = settings.embed_url
+            default_embed_model = settings.embed_model
         if vlm_url_set:
-            default_vlm_url   = settings.vllm_vlm_url
-            default_vlm_model = settings.vllm_vlm_model
+            default_vlm_url   = settings.vlm_url
+            default_vlm_model = settings.vlm_model
         if llm_url_set:
-            default_llm_url   = settings.vllm_url
-            default_llm_model = settings.vllm_model
+            default_llm_url   = settings.llm_url
+            default_llm_model = settings.llm_model
         # If only the shared LLM URL was set but not a separate VLM URL, share it
         if llm_url_set and not vlm_url_set:
             default_vlm_url   = default_llm_url
             default_vlm_model = default_llm_model
 
     return {
-        "vllm_embed_url":   default_embed_url,
-        "vllm_vlm_url":     default_vlm_url,
-        "vllm_url":         default_llm_url,
-        "vllm_embed_model": default_embed_model,
-        "vllm_vlm_model":   default_vlm_model,
-        "vllm_model":       default_llm_model,
+        "embed_url":   default_embed_url,
+        "vlm_url":     default_vlm_url,
+        "llm_url":     default_llm_url,
+        "embed_model": default_embed_model,
+        "vlm_model":   default_vlm_model,
+        "llm_model":   default_llm_model,
         # resolved metadata (not used by services, but surfaced in /settings)
         "_resolved_backend": backend,
         "_resolved_family":  family,

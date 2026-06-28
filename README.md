@@ -109,16 +109,16 @@ Use this if you already have Ollama, vLLM, LiteLLM, or any OpenAI-compatible ser
 AI_BACKEND=custom
 
 # Embedding model (OpenAI /v1/embeddings compatible)
-VLLM_EMBED_URL=http://10.0.0.30:8001
-VLLM_EMBED_MODEL=BAAI/bge-m3
+EMBED_URL=http://10.0.0.30:8001
+EMBED_MODEL=BAAI/bge-m3
 
 # Vision / captioning model (supports image_url in messages)
-VLLM_VLM_URL=http://10.0.0.19:8000
-VLLM_VLM_MODEL=llava-hf/llava-v1.6-vicuna-7b-hf
+VLM_URL=http://10.0.0.19:8000
+VLM_MODEL=llava-hf/llava-v1.6-vicuna-7b-hf
 
 # Text LLM for summaries
-VLLM_URL=http://10.0.0.30:8000
-VLLM_MODEL=Qwen/Qwen3-8B
+LLM_URL=http://10.0.0.30:8000
+LLM_MODEL=Qwen/Qwen3-8B
 ```
 
 ```bash
@@ -205,7 +205,7 @@ Results link directly to the timestamp in the video. Use the **Min relevance** s
 
 | Value | Description |
 |-------|-------------|
-| `custom` | Bring your own servers. Set `VLLM_EMBED_URL`, `VLLM_VLM_URL`, `VLLM_URL` in `.env` |
+| `custom` | Bring your own servers. Set `EMBED_URL`, `VLM_URL`, `LLM_URL` in `.env` |
 | `ollama` | Ollama runs in Docker. Good for NVIDIA Linux or CPU. |
 | `ollama-native` | Ollama runs on your host machine. **Required for Apple Silicon** — Docker VMs can't access Metal. Run `ollama serve` first. |
 | `vllm` | vLLM runs in Docker. Requires NVIDIA GPU (Hopper/Ada/Blackwell) + nvidia-container-toolkit. |

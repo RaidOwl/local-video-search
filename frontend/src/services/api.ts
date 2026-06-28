@@ -44,13 +44,13 @@ export interface AppSettings {
   _resolved_tier?: string
   _resolved_family?: string
   // Editable settings
-  vllm_embed_url: string
-  vllm_vlm_url: string
-  vllm_url: string
+  embed_url: string
+  vlm_url: string
+  llm_url: string
   qdrant_url: string
-  vllm_embed_model: string
-  vllm_vlm_model: string
-  vllm_model: string
+  embed_model: string
+  vlm_model: string
+  llm_model: string
   whisper_model: string
   frame_extraction_interval: number
   embed_batch_size: number

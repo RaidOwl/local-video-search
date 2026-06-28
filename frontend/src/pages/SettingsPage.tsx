@@ -12,21 +12,21 @@ const URL_GROUPS: Array<{
   modelDesc: string
 }> = [
   {
-    urlKey: 'vllm_embed_url', modelKey: 'vllm_embed_model',
+    urlKey: 'embed_url', modelKey: 'embed_model',
     label: 'Embeddings',
-    urlDesc: 'vLLM endpoint serving the embedding model',
+    urlDesc: 'Endpoint serving the embedding model (vLLM, Ollama, MLX, or cloud)',
     modelDesc: 'Model ID used for embedding captions and queries',
   },
   {
-    urlKey: 'vllm_vlm_url', modelKey: 'vllm_vlm_model',
+    urlKey: 'vlm_url', modelKey: 'vlm_model',
     label: 'Vision / VLM',
-    urlDesc: 'vLLM endpoint serving the visual captioning model',
+    urlDesc: 'Endpoint serving the visual captioning model (vLLM, Ollama, MLX, or cloud)',
     modelDesc: 'Model ID used for captioning video frames',
   },
   {
-    urlKey: 'vllm_url', modelKey: 'vllm_model',
+    urlKey: 'llm_url', modelKey: 'llm_model',
     label: 'LLM / Summarizer',
-    urlDesc: 'vLLM endpoint serving the text LLM for summarization',
+    urlDesc: 'Endpoint serving the text LLM for summarization (vLLM, Ollama, MLX, or cloud)',
     modelDesc: 'Model ID used for generating video summaries',
   },
 ]

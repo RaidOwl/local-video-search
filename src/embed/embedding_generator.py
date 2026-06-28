@@ -18,17 +18,17 @@ def _clean_for_embed(text: str) -> str:
 
 
 class EmbeddingGenerator:
-    """Generate embeddings using vLLM OpenAI-compatible API with bge-m3."""
+    """Generate embeddings via an OpenAI-compatible API (vLLM, Ollama, MLX, or cloud) with bge-m3."""
     
-    def __init__(self, vllm_url: str, model: str = "BAAI/bge-m3"):
-        self.vllm_url = vllm_url.rstrip('/')
+    def __init__(self, base_url: str, model: str = "BAAI/bge-m3"):
+        self.base_url = base_url.rstrip('/')
         self.model = model
     
     async def embed_text(self, text: str) -> List[float]:
         """Generate embedding for a text string."""
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{self.vllm_url}/v1/embeddings",
+                f"{self.base_url}/v1/embeddings",
                 json={"model": self.model, "input": text}
             )
             response.raise_for_status()
@@ -39,7 +39,7 @@ class EmbeddingGenerator:
         """Generate embeddings for a batch of texts."""
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                f"{self.vllm_url}/v1/embeddings",
+                f"{self.base_url}/v1/embeddings",
                 json={"model": self.model, "input": items}
             )
             response.raise_for_status()
@@ -52,12 +52,12 @@ class EmbeddingService:
     
     def __init__(
         self,
-        vllm_url: str,
+        base_url: str,
         qdrant_url: str,
         collection_name: str = "video_frames",
         model: str = "BAAI/bge-m3"
     ):
-        self.generator = EmbeddingGenerator(vllm_url, model=model)
+        self.generator = EmbeddingGenerator(base_url, model=model)
         self.qdrant_url = qdrant_url
         self.collection_name = collection_name
         self._qdrant_client = None

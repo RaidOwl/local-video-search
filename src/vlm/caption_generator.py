@@ -7,8 +7,8 @@ from typing import Optional
 class CaptionGenerator:
     """Generate captions for video frames using vLLM OpenAI-compatible API (LLaVA)."""
     
-    def __init__(self, vllm_url: str, model: str = "llava-hf/llava-v1.6-vicuna-7b-hf"):
-        self.vllm_url = vllm_url.rstrip('/')
+    def __init__(self, base_url: str, model: str = "llava-hf/llava-v1.6-vicuna-7b-hf"):
+        self.base_url = base_url.rstrip('/')
         self.model = model
     
     async def caption_image(
@@ -39,7 +39,7 @@ class CaptionGenerator:
             try:
                 async with httpx.AsyncClient(timeout=300.0) as client:
                     response = await client.post(
-                        f"{self.vllm_url}/v1/chat/completions",
+                        f"{self.base_url}/v1/chat/completions",
                         json=payload
                     )
                     response.raise_for_status()
@@ -77,8 +77,8 @@ class CaptionGenerator:
 class VLMService:
     """Service for managing VLM captioning."""
     
-    def __init__(self, vllm_url: str, model: str = "llava-hf/llava-v1.6-vicuna-7b-hf"):
-        self.generator = CaptionGenerator(vllm_url, model=model)
+    def __init__(self, base_url: str, model: str = "llava-hf/llava-v1.6-vicuna-7b-hf"):
+        self.generator = CaptionGenerator(base_url, model=model)
     
     async def caption_frame(self, frame_path: str, context: str = '') -> str:
         """Generate caption for a single frame."""
