@@ -15,16 +15,16 @@ and text summarization (LLM), so vlm_model == llm_model.
 TIER_MODELS: dict = {
     "ollama": {
         "qwen": {
-            "low":   {"model": "qwen2.5vl:3b",  "embed": "nomic-embed-text"},
-            "mid":   {"model": "qwen2.5vl:7b",  "embed": "nomic-embed-text"},
-            "high":  {"model": "qwen2.5vl:32b", "embed": "nomic-embed-text"},
-            "ultra": {"model": "qwen2.5vl:72b", "embed": "nomic-embed-text"},
+            "low":   {"model": "qwen2.5vl:3b",  "embed": "bge-m3"},
+            "mid":   {"model": "qwen2.5vl:7b",  "embed": "bge-m3"},
+            "high":  {"model": "qwen2.5vl:32b", "embed": "bge-m3"},
+            "ultra": {"model": "qwen2.5vl:72b", "embed": "bge-m3"},
         },
         "gemma": {
-            "low":   {"model": "gemma3:4b",  "embed": "nomic-embed-text"},
-            "mid":   {"model": "gemma3:12b", "embed": "nomic-embed-text"},
-            "high":  {"model": "gemma3:27b", "embed": "nomic-embed-text"},
-            "ultra": {"model": "gemma3:27b", "embed": "nomic-embed-text"},
+            "low":   {"model": "gemma3:4b",  "embed": "bge-m3"},
+            "mid":   {"model": "gemma3:12b", "embed": "bge-m3"},
+            "high":  {"model": "gemma3:27b", "embed": "bge-m3"},
+            "ultra": {"model": "gemma3:27b", "embed": "bge-m3"},
         },
     },
     "vllm": {

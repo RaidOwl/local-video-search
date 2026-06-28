@@ -143,7 +143,7 @@ services:
             *)     MAIN_MODEL="qwen2.5vl:7b"  ;;
           esac
         fi
-        EMBED_MODEL="nomic-embed-text"
+        EMBED_MODEL="bge-m3"
         echo "==> Waiting for Ollama to be ready..."
         until ollama list >/dev/null 2>&1; do sleep 2; done
         echo "==> Pulling embed model: $$EMBED_MODEL"

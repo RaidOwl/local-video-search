@@ -71,7 +71,7 @@ VRAM_TIER=mid         # or low / high depending on your unified memory
 Because Ollama runs on your host, **you pull the models yourself** — unlike the dockerized `ollama` backend, `ollama-native` has no auto-pull. Grab the embedding model plus the vision/LLM model for your tier (see the [model size tiers](#model-size-tiers) below):
 
 ```bash
-ollama pull nomic-embed-text     # embeddings (all tiers)
+ollama pull bge-m3               # embeddings (all tiers)
 ollama pull qwen2.5vl:7b         # vision + summaries — mid/qwen (3b/7b/32b/72b per tier)
 ```
 
