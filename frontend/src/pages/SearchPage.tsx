@@ -226,18 +226,24 @@ export default function SearchPage() {
           </label>
 
           {/* Enhanced re-judges fused visual+spoken moments, so it only applies
-              when both channels are searched. Hide it in single-channel mode. */}
-          {searchVideo && searchAudio && (
-            <>
-              <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
-              <label
-                title="Have an AI read both what's shown and what's said in each candidate moment and re-judge the matches. More accurate for cross-modal queries, but slower."
-                style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0, color: enhanced ? 'var(--accent-hover)' : undefined, fontWeight: enhanced ? 600 : undefined }}>
-                <input type="checkbox" checked={enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
-                Enhanced
-              </label>
-            </>
-          )}
+              when both channels are searched. Keep it in a fixed slot and just
+              disable it in single-channel mode so the controls never reflow. */}
+          {(() => {
+            const bothOn = searchVideo && searchAudio
+            return (
+              <>
+                <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
+                <label
+                  title={bothOn
+                    ? "Have an AI read both what's shown and what's said in each candidate moment and re-judge the matches. More accurate for cross-modal queries, but slower."
+                    : 'Enhanced search needs both Video and Audio selected.'}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: bothOn ? 'pointer' : 'not-allowed', flexShrink: 0, opacity: bothOn ? 1 : 0.4, color: bothOn && enhanced ? 'var(--accent-hover)' : undefined, fontWeight: bothOn && enhanced ? 600 : undefined }}>
+                  <input type="checkbox" disabled={!bothOn} checked={bothOn && enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
+                  Enhanced
+                </label>
+              </>
+            )
+          })()}
 
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
           <div ref={filterRef} style={{ position: 'relative', flexShrink: 0 }}>
