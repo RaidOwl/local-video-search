@@ -47,10 +47,18 @@ export default function SearchPage() {
   const navigate = useNavigate()
 
   // Rotate the example placeholder so users learn the concise phrasing pattern.
+  // Uses an overlay span (below) so we can cross-fade — native placeholders can't animate.
   const [phIdx, setPhIdx] = useState(() => Math.floor(Math.random() * SEARCH_EXAMPLES.length))
+  const [phVisible, setPhVisible] = useState(true)
   useEffect(() => {
-    const t = setInterval(() => setPhIdx(i => (i + 1) % SEARCH_EXAMPLES.length), 3500)
-    return () => clearInterval(t)
+    const cycle = setInterval(() => {
+      setPhVisible(false)
+      setTimeout(() => {
+        setPhIdx(i => (i + 1) % SEARCH_EXAMPLES.length)
+        setPhVisible(true)
+      }, 350)
+    }, 2200)
+    return () => clearInterval(cycle)
   }, [])
 
   // --- optional metadata filters (explicit, opt-in via the popup) ---
@@ -145,10 +153,24 @@ export default function SearchPage() {
             <input
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder={`e.g. "${SEARCH_EXAMPLES[phIdx]}"`}
+              placeholder=""
               style={{ fontSize: '1rem', padding: '0.75rem 1rem', paddingRight: query ? '2.25rem' : '1rem', flex: 1 }}
               autoFocus
             />
+            {!query && (
+              <span
+                aria-hidden
+                style={{
+                  position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)',
+                  color: 'var(--muted)', fontSize: '1rem', pointerEvents: 'none',
+                  opacity: phVisible ? 0.65 : 0, transition: 'opacity 0.35s ease',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                  maxWidth: 'calc(100% - 2rem)',
+                }}
+              >
+                e.g. “{SEARCH_EXAMPLES[phIdx]}”
+              </span>
+            )}
             {query && (
               <button type="button" onClick={() => {
                 setQuery('')
