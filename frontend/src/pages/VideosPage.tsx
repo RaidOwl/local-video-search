@@ -675,7 +675,7 @@ function saveContext(ctx: string) {
   localStorage.setItem(RECENT_CONTEXTS_KEY, JSON.stringify([ctx, ...prev].slice(0, 5)))
 }
 
-function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
+export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
   videoIds: string[]
   videos: Video[]
   onClose: () => void

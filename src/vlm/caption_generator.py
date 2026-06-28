@@ -50,6 +50,15 @@ class CaptionGenerator:
                 # Don't retry on client errors that indicate bad input (400, 422)
                 if e.response.status_code in (400, 422):
                     raise
+                # A 404 means the model isn't available at this endpoint — almost
+                # always an ollama model that hasn't been pulled. Retrying can't
+                # help, so fail fast with an actionable message naming the model.
+                if e.response.status_code == 404:
+                    raise RuntimeError(
+                        f"VLM model '{self.model}' not found at {self.base_url} (HTTP 404). "
+                        f"If you're using an ollama backend, pull it first: "
+                        f"ollama pull {self.model}"
+                    ) from e
                 print(f"VLM caption attempt {attempt + 1}/3 failed ({e.response.status_code}): {e}")
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as e:
                 last_exc = e

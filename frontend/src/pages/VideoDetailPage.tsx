@@ -3,6 +3,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { api, Video, Segment, VideoFrame } from '../services/api'
 import { fmt } from '../utils'
 import { Pencil, Play, Square, RotateCcw, X, Download, Check, Mic, Film } from 'lucide-react'
+import { AnalyzeModal } from './VideosPage'
 
 export default function VideoDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -15,7 +16,6 @@ export default function VideoDetailPage() {
   const [segments, setSegments] = useState<Segment[]>([])
   const [searching, setSearching] = useState(false)
   const [summarizing, setSummarizing] = useState(false)
-  const [reprocessing, setReprocessing] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState('')
@@ -29,7 +29,7 @@ export default function VideoDetailPage() {
   const [editingSegId, setEditingSegId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState('')
   const [savingSegId, setSavingSegId] = useState<string | null>(null)
-  const [showResumeDialog, setShowResumeDialog] = useState(false)
+  const [showAnalyzeModal, setShowAnalyzeModal] = useState(false)
   const pollRef = useRef<number | null>(null)
 
   // Seek to timestamp from ?t= param once video metadata is loaded
@@ -118,22 +118,7 @@ export default function VideoDetailPage() {
   }
 
   const handleReprocess = () => {
-    if (!id || reprocessing) return
-    if ((video?.frame_count ?? 0) > 0) {
-      setShowResumeDialog(true)
-    } else {
-      doReprocess(false)
-    }
-  }
-
-  const doReprocess = async (resume: boolean) => {
-    if (!id) return
-    setShowResumeDialog(false)
-    setReprocessing(true)
-    try {
-      await api.reprocessVideo(id, video?.context ?? undefined, resume)
-      setVideo(v => v ? { ...v, status: 'processing', frame_count: resume ? (v.frame_count ?? 0) : 0, summary: resume ? v.summary : undefined } : v)
-    } catch { /* ignore */ } finally { setReprocessing(false) }
+    setShowAnalyzeModal(true)
   }
 
   const handleCancel = async () => {
@@ -294,11 +279,11 @@ export default function VideoDetailPage() {
         <button
           className="ghost"
           onClick={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? handleCancel : handleReprocess}
-          disabled={reprocessing || cancelling}
+          disabled={cancelling}
           style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined, borderColor: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined }}
           title={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'Stop' : 'Re-run full analysis'}
         >
-          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13 }} />Stopping…</> : reprocessing ? <><span className="spinner" style={{ width: 13, height: 13 }} />Starting…</> : (video.status === 'processing' || video.status === 'transcribing') ? <><Square size={12} /> Stop</> : video.status === 'retranscribing' ? <><Square size={12} /> Stop Audio</> : (video.status === 'analyzed' || video.status === 'error') ? <><RotateCcw size={12} /> Re-analyze</> : <><Play size={12} /> Analyze</>}
+          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13 }} />Stopping…</> : (video.status === 'processing' || video.status === 'transcribing') ? <><Square size={12} /> Stop</> : video.status === 'retranscribing' ? <><Square size={12} /> Stop Audio</> : (video.status === 'analyzed' || video.status === 'error') ? <><RotateCcw size={12} /> Re-analyze</> : <><Play size={12} /> Analyze</>}
         </button>
       </div>
 
@@ -570,22 +555,13 @@ export default function VideoDetailPage() {
         )}
       </div>
 
-      {showResumeDialog && video && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-          onClick={() => setShowResumeDialog(false)}>
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: '1.5rem', maxWidth: 380, width: '90%' }}
-            onClick={e => e.stopPropagation()}>
-            <p style={{ margin: '0 0 0.5rem', fontWeight: 600 }}>Re-analyze video?</p>
-            <p style={{ margin: '0 0 1.25rem', fontSize: '0.875rem', color: 'var(--muted)' }}>
-              This video was partially analyzed ({video.frame_count} scenes complete). Resume from where it left off, or start completely over?
-            </p>
-            <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
-              <button className="ghost" onClick={() => setShowResumeDialog(false)}>Cancel</button>
-              <button className="ghost" onClick={() => doReprocess(false)}>Start over</button>
-              <button onClick={() => doReprocess(true)}>Resume</button>
-            </div>
-          </div>
-        </div>
+      {showAnalyzeModal && video && (
+        <AnalyzeModal
+          videoIds={[video.id]}
+          videos={[video]}
+          onClose={() => setShowAnalyzeModal(false)}
+          onDone={() => { setShowAnalyzeModal(false); loadVideo() }}
+        />
       )}
     </div>
   )
