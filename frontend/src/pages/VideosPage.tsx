@@ -350,7 +350,10 @@ export default function VideosPage() {
   const [showModal, setShowModal] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem('vss_view_mode') as ViewMode) || 'card')
   const [filterText, setFilterText] = useState(() => localStorage.getItem('vss_filter') ?? '')
-  const [sortBy, setSortBy] = useState<'name' | 'duration' | 'status' | 'frames'>(() => (localStorage.getItem('vss_sort_by') as any) || 'name')
+  const [sortBy, setSortBy] = useState<'name' | 'duration' | 'status'>(() => {
+    const stored = localStorage.getItem('vss_sort_by')
+    return (stored === 'name' || stored === 'duration' || stored === 'status') ? stored : 'name'
+  })
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => (localStorage.getItem('vss_sort_dir') as any) || 'asc')
   const [statusFilter, setStatusFilter] = useState<'all' | 'analyzed' | 'processing' | 'error' | 'ready'>(() => (localStorage.getItem('vss_status_filter') as any) || 'all')
   const [treeToggle, setTreeToggle] = useState<{ open: boolean; seq: number } | null>(null)
@@ -465,7 +468,6 @@ export default function VideosPage() {
       if (sortBy === 'name') cmp = (a.display_name || a.name).localeCompare(b.display_name || b.name)
       else if (sortBy === 'duration') cmp = a.duration - b.duration
       else if (sortBy === 'status') cmp = (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
-      else if (sortBy === 'frames') cmp = a.frame_count - b.frame_count
       return sortDir === 'asc' ? cmp : -cmp
     })
 
@@ -526,7 +528,6 @@ export default function VideosPage() {
               <option value="name">Name</option>
               <option value="duration">Duration</option>
               <option value="status">Status</option>
-              <option value="frames">Frames</option>
             </select>
             <button className="ghost" onClick={toggleSortDir} title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
               style={{ fontSize: '0.85rem', padding: '0.45rem 0.6rem', minWidth: 0 }}>
