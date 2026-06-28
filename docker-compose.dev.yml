@@ -1,12 +1,15 @@
 # ── Development overlay ───────────────────────────────────────────────────────
-# Restores LOCAL builds + a live source mount so code changes don't require a
-# Docker Hub push/pull round-trip during development.
+# Restores LOCAL builds + live source so code changes don't require a Docker Hub
+# push/pull round-trip during development.
 #
-#   Dev (build locally, hot-reload Python via scp/edit + restart):
+#   Dev (build the API locally, run the UI via Vite with hot-reload):
 #     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 #
-#   After editing Python under ./src, just restart — the bind mount picks it up:
+#   Backend: after editing/scp into ./src, restart — the bind mount picks it up:
 #     docker compose -f docker-compose.yml -f docker-compose.dev.yml restart local-vss-api
+#
+#   Frontend: just save a file under ./frontend/src — Vite HMR reloads instantly,
+#   no rebuild and no restart needed.
 #
 # The base docker-compose.yml on its own runs the published Hub images, so anyone
 # pulling the image (no overlay) is completely unaffected by this file.
@@ -21,5 +24,18 @@ services:
       - ./src:/app/src
 
   local-vss-frontend:
-    # Build the UI from local source instead of pulling the Hub image.
-    pull_policy: build
+    # Run the Vite dev server (HMR) instead of the nginx production build.
+    image: node:20-alpine
+    build: !reset null
+    pull_policy: missing
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    environment:
+      # Vite proxies /api here (prefix stripped) just like the nginx prod config.
+      - VITE_API_PROXY_TARGET=http://local-vss-api:8000
+    volumes:
+      - ./frontend:/app
+      # Keep container-installed node_modules from being shadowed by the mount.
+      - /app/node_modules
+    ports: !override
+      - "${FRONTEND_PORT:-3000}:3000"
