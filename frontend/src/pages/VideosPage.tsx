@@ -626,20 +626,21 @@ export default function VideosPage() {
                         <button className="icon-btn" title="Remove from library" onClick={e => handleRemove(e, video.id)} style={{ padding: '0.2rem 0.3rem', color: 'var(--muted)' }}><X size={14} /></button>
                       </div>
                     </div>
-                    <div className="video-meta" style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap' }}>
+                    <div className="video-meta" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', rowGap: '0.3rem' }}>
                       <span>{fmt(video.duration)}</span>
-                      <span style={{ flex: 1 }} />
-                      {video.status === 'analyzed' && !video.has_transcript && (
-                        <span title="No audio transcription — spoken words won't appear in search results" style={{ display: 'inline-flex', flexShrink: 0, color: 'var(--warning)', marginRight: '0.4rem' }}>
-                          <VolumeX size={12} />
-                        </span>
-                      )}
-                      {video.status === 'analyzed' && !video.has_frames && (
-                        <span title="No visual analysis — on-screen content won't appear in search results" style={{ display: 'inline-flex', flexShrink: 0, color: 'var(--warning)', marginRight: '0.4rem' }}>
-                          <VideoOff size={12} />
-                        </span>
-                      )}
-                      <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
+                      <div style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
+                        {video.status === 'analyzed' && !video.has_transcript && (
+                          <span title="No audio transcription — spoken words won't appear in search results" style={{ display: 'inline-flex', flexShrink: 0, color: 'var(--warning)', marginRight: '0.4rem' }}>
+                            <VolumeX size={12} />
+                          </span>
+                        )}
+                        {video.status === 'analyzed' && !video.has_frames && (
+                          <span title="No visual analysis — on-screen content won't appear in search results" style={{ display: 'inline-flex', flexShrink: 0, color: 'var(--warning)', marginRight: '0.4rem' }}>
+                            <VideoOff size={12} />
+                          </span>
+                        )}
+                        <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
+                      </div>
                     </div>
                     {video.status === 'processing' && video.frame_count > 0 && (
                       <div className="progress-wrap" style={{ marginTop: 4 }}>

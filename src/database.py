@@ -197,6 +197,17 @@ class Database:
             )
             return list(result.scalars().all())
 
+    async def count_frames(self) -> int:
+        """Total number of indexed frames (visual + transcript) library-wide.
+
+        Used by cross-modal search to size the 'distinctive term' rarity cap
+        relative to the corpus rather than a hard-coded constant.
+        """
+        async with self.session_maker() as session:
+            from sqlalchemy import select, func
+            result = await session.execute(select(func.count()).select_from(Frame))
+            return int(result.scalar() or 0)
+
     async def frame_modality_counts(self) -> dict:
         """Per-video (visual_frame_count, transcript_frame_count) in a single query.
 

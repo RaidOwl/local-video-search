@@ -292,18 +292,20 @@ export default function SettingsPage() {
 
             {/* Auto-analyze */}
             <div>
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem' }}>
-                <div>
-                  <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Auto-analyze</div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.2rem' }}>Automatically start analysis on newly imported videos</div>
-                </div>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', flexShrink: 0 }}>
-                  <input type="checkbox" checked={form.auto_analyze}
-                    onChange={e => set('auto_analyze', e.target.checked)}
-                    style={{ width: 'auto', boxShadow: 'none' }} />
-                </label>
+              <div>
+                <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>Auto-analyze</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.2rem' }}>Automatically analyze newly imported videos. Choose what to process.</div>
               </div>
-              {form.auto_analyze && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.65rem', flexWrap: 'wrap' }}>
+                {([{ label: 'Off', value: 'off' }, { label: 'Audio', value: 'audio' }, { label: 'Video', value: 'video' }, { label: 'Both', value: 'both' }] as const).map(opt => (
+                  <button key={opt.value} className={form.auto_analyze === opt.value ? '' : 'ghost'}
+                    onClick={() => set('auto_analyze', opt.value)}
+                    style={{ fontSize: '0.78rem', padding: '0.25rem 0.7rem' }}>
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {(form.auto_analyze === 'video' || form.auto_analyze === 'both') && (
                 <div style={{ marginTop: '0.65rem' }}>
                   <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>Default context <span style={{ fontStyle: 'italic' }}>(optional)</span></label>
                   <input type="text" value={form.default_context}

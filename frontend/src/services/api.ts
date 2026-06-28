@@ -57,7 +57,7 @@ export interface AppSettings {
   max_concurrent_jobs: number
   import_blacklist: string[]
   auto_import_interval: number
-  auto_analyze: boolean
+  auto_analyze: 'off' | 'audio' | 'video' | 'both'
   default_context: string
 }
 
@@ -157,8 +157,9 @@ export const api = {
     threshold?: number,
     sources?: string,
     filters?: { media_types?: string; resolution?: string; date_from?: string; date_to?: string },
+    enhanced?: boolean,
   ): Promise<{ results: SearchResult[]; query: string }> => {
-    const res = await client.get('/search', { params: { q: query, limit, threshold, sources, ...filters } })
+    const res = await client.get('/search', { params: { q: query, limit, threshold, sources, enhanced, ...filters } })
     return res.data
   },
 

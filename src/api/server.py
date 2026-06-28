@@ -27,6 +27,7 @@ from ..search.segment_retriever import SegmentRetriever
 from ..search.metadata_filter import build_filters, video_matches, describe_metadata
 from ..summarize.video_summarizer import SummarizationService
 from ..transcribe.transcriber import TranscriptionService
+from ..llm_judge import JudgeService
 
 # Stopwords stripped before computing the keyword-overlap boost in /search.
 _SEARCH_STOPWORDS = {
@@ -35,6 +36,32 @@ _SEARCH_STOPWORDS = {
     'have', 'had', 'has', 'do', 'did', 'does', 'about', 'that', 'this', 'which',
     'when', 'where', 'how', 'what', 'who', 'their', 'its', 'by', 'from', 'up',
     'specifically', 'really', 'actually', 'just', 'so', 'some', 'any',
+}
+
+# Words that must never be chosen as a distinctive cross-modal "anchor" (the rare
+# locating noun like robot/museum/kvm), even when they are statistically rare in
+# the caption corpus. VLM captions describe actions with a narrow vocabulary
+# ("gesturing", "speaking") and almost never write "talking", so a user's generic
+# verb like "talking" looks rarer than a real object like "robot" and would
+# hijack the anchor. These are the "how/where someone is" words — they describe
+# the SCENE, not the THING to locate — so they are excluded from anchoring (but
+# still used everywhere else in search). Stored as base/gerund/3rd-person/past
+# variants since users type any form.
+_ANCHOR_STOPLIST = {
+    'talk', 'talks', 'talking', 'talked', 'speak', 'speaks', 'speaking', 'spoke',
+    'say', 'says', 'saying', 'said', 'discuss', 'discusses', 'discussing',
+    'explain', 'explains', 'explaining', 'tell', 'tells', 'telling', 'told',
+    'show', 'shows', 'showing', 'showed', 'look', 'looks', 'looking', 'looked',
+    'watch', 'watches', 'watching', 'see', 'sees', 'seeing', 'seen',
+    'stand', 'stands', 'standing', 'stood', 'sit', 'sits', 'sitting', 'sat',
+    'walk', 'walks', 'walking', 'walked', 'hold', 'holds', 'holding', 'held',
+    'use', 'uses', 'using', 'used', 'wear', 'wears', 'wearing', 'wore',
+    'play', 'plays', 'playing', 'played', 'work', 'works', 'working', 'worked',
+    'run', 'runs', 'running', 'move', 'moves', 'moving', 'moved',
+    'point', 'points', 'pointing', 'gesture', 'gestures', 'gesturing',
+    'make', 'makes', 'making', 'made', 'doing', 'going', 'getting', 'being',
+    'person', 'people', 'man', 'men', 'woman', 'women', 'guy', 'guys',
+    'someone', 'somebody', 'thing', 'things', 'something', 'stuff',
 }
 
 
@@ -162,10 +189,19 @@ def _effective_cfg() -> dict:
     base.update(override)
     base.setdefault("max_concurrent_jobs", 8)
     base.setdefault("transcription_concurrency", 2)
-    base.setdefault("import_blacklist", [])
-    base.setdefault("auto_import_interval", 0)
-    base.setdefault("auto_analyze", False)
-    base.setdefault("default_context", "")
+    # Automation: .env values seed the defaults; the override file (Settings UI) wins.
+    if "import_blacklist" not in base:
+        base["import_blacklist"] = [p.strip() for p in settings.import_blacklist.split(",") if p.strip()]
+    base.setdefault("auto_import_interval", settings.auto_import_interval)
+    base.setdefault("auto_analyze", settings.auto_analyze)
+    base.setdefault("default_context", settings.default_context)
+    # Normalize auto_analyze: legacy bool overrides -> mode string; validate.
+    aa = base.get("auto_analyze")
+    if isinstance(aa, bool):
+        aa = "both" if aa else "off"
+    if aa not in ("off", "audio", "video", "both"):
+        aa = "off"
+    base["auto_analyze"] = aa
     return base
 
 
@@ -199,6 +235,8 @@ _transcribe_semaphore = asyncio.Semaphore(max(1, int(_cfg.get("transcription_con
 embed_service = EmbeddingService(_cfg["embed_url"], _cfg["qdrant_url"], model=_cfg["embed_model"])
 vlm_service = VLMService(_cfg["vlm_url"], model=_cfg["vlm_model"])
 summarizer_service = SummarizationService(_cfg["llm_url"], model=_cfg["llm_model"])
+# Enhanced-search LLM judge reuses the summarizer's text LLM endpoint.
+judge_service = JudgeService(_cfg["llm_url"], model=_cfg["llm_model"])
 transcription_service = TranscriptionService(model_size=_cfg["whisper_model"])
 query_processor = QueryProcessor()
 segment_retriever = SegmentRetriever()
@@ -210,10 +248,11 @@ _reranker = None
 frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"])
 
 def _reinit_services(cfg: dict):
-    global embed_service, vlm_service, summarizer_service, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
+    global embed_service, vlm_service, summarizer_service, judge_service, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
     embed_service = EmbeddingService(cfg["embed_url"], cfg["qdrant_url"], model=cfg["embed_model"])
     vlm_service = VLMService(cfg["vlm_url"], model=cfg["vlm_model"])
     summarizer_service = SummarizationService(cfg["llm_url"], model=cfg["llm_model"])
+    judge_service = JudgeService(cfg["llm_url"], model=cfg["llm_model"])
     transcription_service = TranscriptionService(model_size=cfg["whisper_model"])
     frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]))
     _analysis_semaphore = asyncio.Semaphore(int(cfg.get("max_concurrent_jobs", 8)))
@@ -615,7 +654,7 @@ def _build_video_record(video_id: str, video_path: Path, metadata: dict) -> dict
     }
 
 
-async def _auto_import(auto_analyze: bool = False, default_context: str = ""):
+async def _auto_import(auto_analyze: str = "off", default_context: str = ""):
     """Scan all configured video library directories and add new files."""
     import fnmatch as _fnmatch
     blacklist: list = _effective_cfg().get("import_blacklist", [])
@@ -632,8 +671,12 @@ async def _auto_import(auto_analyze: bool = False, default_context: str = ""):
             metadata = get_video_metadata(video_path)
             await db.create_video(_build_video_record(video_id, video_path, metadata))
             await db.update_video(video_id, {"status": "ready"})
-            if auto_analyze:
-                _start_analysis(path_str, video_id, context=default_context)
+            if auto_analyze and auto_analyze != "off":
+                _start_analysis(
+                    path_str, video_id, context=default_context,
+                    do_visual=auto_analyze in ("video", "both"),
+                    do_audio=auto_analyze in ("audio", "both"),
+                )
 
 
 async def _auto_import_loop():
@@ -641,7 +684,7 @@ async def _auto_import_loop():
     while True:
         cfg = _effective_cfg()
         await _auto_import(
-            auto_analyze=bool(cfg.get("auto_analyze", False)),
+            auto_analyze=str(cfg.get("auto_analyze", "off")),
             default_context=str(cfg.get("default_context", "")),
         )
         interval = int(cfg.get("auto_import_interval", 0))
@@ -1182,7 +1225,7 @@ class SettingsUpdateRequest(BaseModel):
     max_concurrent_jobs: Optional[int] = None
     import_blacklist: Optional[List[str]] = None
     auto_import_interval: Optional[int] = None
-    auto_analyze: Optional[bool] = None
+    auto_analyze: Optional[str] = None  # off | audio | video | both
     default_context: Optional[str] = None
     # Note: ai_backend, vram_tier, model_family are .env-only — not overridable via UI
 
@@ -1313,6 +1356,7 @@ async def search_videos(
     resolution: str = "",
     date_from: str = "",
     date_to: str = "",
+    enhanced: bool = False,
 ):
     """Search for videos by natural language query, with optional metadata filters.
 
@@ -1376,9 +1420,13 @@ async def search_videos(
 
     # Keyword overlap boost with prefix matching (handles plurals/conjugations):
     # "speeds" matches "speed", "drives" matches "drive", etc.
+    # Tokens are length >= 2 and must contain a letter, so high-signal model names
+    # like "m5", "m1", "4k", "rtx" (and "pc"/"tv"/"ai") survive while bare numbers
+    # ("16", "2024") are dropped. A 3+ letter-only rule used to silently discard
+    # "m5", which is exactly the kind of concise query the search box teaches.
     key_terms = [
-        w.lower() for w in re.findall(r'\b[a-zA-Z]{3,}\b', processed["search_terms"])
-        if w.lower() not in _SEARCH_STOPWORDS
+        w.lower() for w in re.findall(r'\b[A-Za-z0-9]{2,}\b', processed["search_terms"])
+        if w.lower() not in _SEARCH_STOPWORDS and re.search(r'[A-Za-z]', w)
     ]
     def _boost(caption: str) -> float:
         if not key_terms:
@@ -1431,13 +1479,20 @@ async def search_videos(
                 "frame_path": s.frame_path,
             })
 
-    # Loosest tier ("Nearly everything", threshold <= 0.50): also pull every clip
-    # that LITERALLY mentions the query words straight from the DB, independent of
-    # the semantic recall pool. The cross-encoder rejects bare-noun queries to the
-    # ~0.50 noise band, so a purely semantic pool misses many genuine mentions;
-    # this lexical pass guarantees keyword recall. These hits get reranked below
-    # like everything else, then bypass the relevance floor (see broad_keyword).
-    broad_keyword = (threshold <= 0.50) and bool(key_terms)
+    # Literal keyword pass: also pull every clip that LITERALLY mentions the query
+    # words straight from the DB, independent of the semantic recall pool. The
+    # cross-encoder rejects terse product queries ("m5 macbook") to the ~0.50 noise
+    # band, so a purely semantic pool misses many genuine mentions; this lexical
+    # pass guarantees keyword recall. These hits get reranked below like everything
+    # else, then bypass the relevance floor (see broad_keyword).
+    #
+    # It runs when EITHER the tier is loosest, OR the query has 2+ key terms. A
+    # multi-word literal match (e.g. "m5" AND "macbook" both present in the caption)
+    # is precise enough to show at ANY relevance tier — otherwise we'd teach users
+    # to search concisely and then penalize them for it. Single-word literal matches
+    # stay gated to the loosest tier so stricter tiers remain semantically clean.
+    multi_literal = len(key_terms) >= 2
+    broad_keyword = bool(key_terms) and (threshold <= 0.50 or multi_literal)
     if broad_keyword:
         # Existing semantic segments as (video_id, [start, end]) intervals so a
         # lexical frame already covered by a grouped segment doesn't surface twice.
@@ -1454,6 +1509,14 @@ async def search_videos(
         for f in lexical:
             if f.video_id not in video_meta:
                 continue  # video row missing/deleted
+            # Honor the modality filter: a visual-only search must not surface a
+            # transcript caption (empty frame_path) and vice versa, matching the
+            # is_transcript filter applied to the semantic recall pool above.
+            is_transcript = not (f.frame_path or "")
+            if source_intent == 'visual' and is_transcript:
+                continue
+            if source_intent == 'speech' and not is_transcript:
+                continue
             ts = f.timestamp
             if any(a <= ts <= b for a, b in spans.get(f.video_id, ())):
                 continue  # already represented by a grouped segment
@@ -1513,7 +1576,234 @@ async def search_videos(
         if 1 <= len(_content) <= 2:
             rerank_queries.append(f"a video of {rerank_query.strip()}")
 
+    # Co-temporal cross-modal fusion (Both mode only). A single moment's meaning
+    # is split across channels: the visual caption says WHAT IS SHOWN, the
+    # transcript says WHAT IS SAID. A query like "an interview about AI in
+    # museums" needs both, yet each caption holds only half, so neither clears the
+    # reranker on its own. Enrich each candidate's RERANK TEXT (never its displayed
+    # caption) with the OTHER modality's words from the same time window, so the
+    # cross-encoder judges the whole moment instead of just one half of it.
     all_segments = await _rerank_segments(rerank_queries, all_segments)
+
+    # Cross-modal anchoring (Both mode). A concise query's RARE word is its real
+    # intent: "an interview about ai in museums" is really "find where MUSEUM is
+    # said over an interview shot" — the user wouldn't have typed "museum" unless
+    # it mattered. But semantic recall routinely drops that rare word (a single
+    # spoken "museum" is a faint signal next to a video saying "AI" 100 times), so
+    # a stray strong "AI" line outranks the real clip. We therefore (1) decide
+    # which query words are DISTINCTIVE from the whole LIBRARY (not the recalled
+    # pool, which already dropped them), then (2) cross-reference each candidate
+    # moment against the full caption timeline — both what's SHOWN and what's SAID
+    # in its time window. A moment that literally contains every distinctive word
+    # is confirmed by cross-reference (high confidence — "fairly sure this is it");
+    # a moment missing them is held to the loosest tier so it only surfaces when
+    # the user explicitly asks for "Nearly everything".
+    if source_intent == 'mixed' and all_segments and key_terms:
+        AGREE_WINDOW = 30.0    # seconds within which evidence must line up
+
+        def _stem(w: str) -> str:
+            return w[:-1] if len(w) > 3 and w.endswith("s") else w
+
+        # Distinctive anchors = query terms that NAME a thing to locate and are
+        # RARE across the whole library. Two filters, both required:
+        #   1) not a generic "scene" word (talk/stand/person/...) — those describe
+        #      HOW someone is, not WHAT to find, and VLM captions word them so
+        #      oddly ("gesturing", never "talking") that a user's verb can look
+        #      rarer than a real object and hijack the anchor.
+        #   2) rare library-wide — a term in a small fraction of frames is a
+        #      deliberate locating noun (robot, museum, kvm); a ubiquitous one
+        #      (ai, man, person) carries no locating power and must not gate.
+        # Library document frequency (not the recalled pool, which already dropped
+        # the rare word) is what makes a term distinctive.
+        total_frames = await db.count_frames()
+        rare_cap = max(40, int(0.04 * total_frames))   # term in <= ~4% of frames is rare
+        anchor_terms: list = []
+        for t in dict.fromkeys(_stem(x) for x in key_terms):
+            if t in _ANCHOR_STOPLIST or len(t) < 3:
+                continue
+            hits = await db.search_captions([t], limit=rare_cap + 1)
+            if 1 <= len(hits) <= rare_cap:
+                anchor_terms.append(t)
+
+        if anchor_terms:
+            # Full per-video caption timeline (both channels) so a co-temporal
+            # mention that was NOT itself recalled still counts toward coverage.
+            timelines: dict = {}
+            for _vid in {s["video_id"] for s in all_segments}:
+                entries = []
+                for _f in await db.get_frames_for_video(_vid):
+                    _cap = (_f.caption or "").replace("[transcript] ", "").strip().lower()
+                    if _cap:
+                        entries.append((_f.timestamp, _cap))
+                entries.sort()
+                timelines[_vid] = entries
+
+            NONE_CEIL = 0.595      # missing every anchor -> "Nearly everything" only
+            PARTIAL_CEIL = 0.73    # some but not all anchors -> up to "Mostly matches"
+            ANCHOR_CONF = 0.74     # literal cross-reference is strong evidence
+            DIRECT_BONUS = 0.12    # this very segment SHOWS/SAYS the distinctive thing
+            for s in all_segments:
+                lo, hi = s["start_time"] - AGREE_WINDOW, s["end_time"] + AGREE_WINDOW
+                moment = " ".join(
+                    c for ts, c in timelines.get(s["video_id"], []) if lo <= ts <= hi
+                )
+                covered = sum(1 for t in anchor_terms if t in moment)
+                coverage = covered / len(anchor_terms)
+                if coverage >= 1.0:
+                    # Every distinctive word is present in this moment's window:
+                    # cross-referenced. Probabilistic OR with the reranker's own
+                    # score lifts a faintly-recalled-but-confirmed clip into the
+                    # confident tiers, where the user is "fairly sure this is it".
+                    s["score"] = 1.0 - (1.0 - s["score"]) * (1.0 - ANCHOR_CONF)
+                    # Direct evidence: the distinctive thing is named in THIS
+                    # segment's own caption (the robot is on screen here / the word
+                    # is spoken here), not merely nearby. That's the frame the user
+                    # actually wants to see, so float it above co-temporal frames
+                    # that only match the generic words ("a man talking") and just
+                    # happen to sit next to the real moment.
+                    own = (s.get("caption") or "").replace("[transcript] ", "").lower()
+                    if any(t in own for t in anchor_terms):
+                        s["score"] = min(0.98, s["score"] + DIRECT_BONUS)
+                elif coverage <= 0.0:
+                    # The defining word is nowhere near this moment — it cannot be
+                    # the intent. Hold it to the loosest tier.
+                    s["score"] = min(s["score"], NONE_CEIL)
+                else:
+                    # Partial: some distinctive words present, not all. Allow it up
+                    # to "Mostly matches" but never "Exact match", which requires
+                    # every distinctive term cross-referenced.
+                    s["score"] = min(s["score"], PARTIAL_CEIL)
+
+    # Enhanced search (opt-in). The cross-encoder above scored each caption in
+    # isolation, so it is blind to a moment split across channels and weak on
+    # relational queries ("a man talking TO a robot"). Here we take the shortlist
+    # of best moments, hand the LLM each WHOLE moment as text (every on-screen
+    # caption + the spoken transcript in its window) and let it judge, with both
+    # channels in view, whether the moment genuinely matches. The verdict replaces
+    # the reranker score for that moment. This reuses captions we already have —
+    # no frames are re-examined — and is capped to a small shortlist for latency.
+    if enhanced and all_segments:
+        JUDGE_WINDOW = 20.0     # seconds of context handed to the judge per moment
+        MAX_MOMENTS = 14        # shortlist size (bounds latency / token budget)
+
+        # Distinctive subjects named in the query (library-rare, not generic verbs
+        # like "talking"). These tell us WHERE in each video to actually look — the
+        # human strategy: scan for the spots that show/say the rare thing (the
+        # robot), then read both channels there. The cross-encoder cannot do this:
+        # it ranks generic "a man talking" frames highest and buries the few real
+        # robot frames, so judging only the reranker's top windows would never see
+        # the robot. We seed candidate windows from where the anchor truly appears.
+        def _estem(w: str) -> str:
+            return w[:-1] if len(w) > 3 and w.endswith("s") else w
+
+        _enh_total = await db.count_frames()
+        _enh_cap = max(40, int(0.04 * _enh_total))
+        enh_anchors: list = []
+        for t in dict.fromkeys(_estem(x) for x in key_terms):
+            if t in _ANCHOR_STOPLIST or len(t) < 3:
+                continue
+            hits = await db.search_captions([t], limit=_enh_cap + 1)
+            if 1 <= len(hits) <= _enh_cap:
+                enh_anchors.append(t)
+
+        # Anchor-seeded frames: the actual on-screen/spoken occurrences of the rare
+        # subject, pulled straight from the DB (independent of semantic recall, so
+        # we find robot moments the embedding never surfaced).
+        anchor_frames: list = []
+        for t in enh_anchors:
+            for f in await db.search_captions([t], limit=_enh_cap):
+                anchor_frames.append((f.video_id, f.timestamp, f.frame_path or "", f.caption or ""))
+
+        ranked = sorted(all_segments, key=lambda s: -s["score"])
+        enh_vids = {s["video_id"] for s in ranked[:40]} | {af[0] for af in anchor_frames}
+        enh_tl: dict = {}
+        for _vid in enh_vids:
+            entries = []
+            for _f in await db.get_frames_for_video(_vid):
+                _cap = (_f.caption or "").strip()
+                if _cap:
+                    entries.append((_f.timestamp, bool(_f.frame_path), _cap))
+            entries.sort()
+            enh_tl[_vid] = entries
+
+        # Build the candidate window list: anchor windows first (where the rare
+        # subject is), then the top reranker windows (to confirm/deny strong
+        # semantic hits). Collapse near-duplicate timestamps per video so the judge
+        # sees variety rather than six frames of one shot.
+        candidates: list = []
+        chosen: list = []   # (video_id, time) already represented
+        for vid, ts, fp, cap in sorted(anchor_frames, key=lambda x: (x[0], x[1])):
+            if any(v == vid and abs(ts - tt) <= JUDGE_WINDOW for v, tt in chosen):
+                continue
+            chosen.append((vid, ts))
+            candidates.append({"video_id": vid, "t": ts, "seed_fp": fp, "seed_cap": cap})
+        for s in ranked:
+            if s["score"] < 0.50:
+                break   # below this the reranker is actively rejecting — skip
+            vid, t = s["video_id"], s["start_time"]
+            if any(v == vid and abs(t - tt) <= JUDGE_WINDOW for v, tt in chosen):
+                continue
+            chosen.append((vid, t))
+            candidates.append({"video_id": vid, "t": t,
+                               "seed_fp": s.get("frame_path", ""), "seed_cap": s.get("caption", "")})
+
+        moments: list = []
+        for c in candidates:
+            if len(moments) >= MAX_MOMENTS:
+                break
+            vid, t = c["video_id"], c["t"]
+            lo, hi = t - JUDGE_WINDOW, t + JUDGE_WINDOW
+            lines = []
+            for ts, is_visual, cap in enh_tl.get(vid, []):
+                if lo <= ts <= hi:
+                    text = cap.replace("[transcript] ", "")
+                    kind = "shown" if is_visual else "spoken"
+                    lines.append(f"[{int(ts // 60):02d}:{int(ts % 60):02d}] ({kind}) {text}")
+            if not lines:
+                continue
+            meta = video_meta.get(vid)
+            name = meta["name"] if meta else vid
+            moments.append({
+                "video_id": vid, "lo": lo, "hi": hi, "t": t,
+                "seed_fp": c["seed_fp"], "seed_cap": c["seed_cap"],
+                "label": f"{name} @ {int(t // 60)}:{int(t % 60):02d}",
+                "text": "\n".join(lines),
+            })
+
+        verdicts = await judge_service.judge_moments(q, moments)
+        # Enhanced is strictly ADDITIVE: a small local judge is good at confirming
+        # an obvious cross-modal match but unreliable at ruling things OUT (it will
+        # reject a real "AI used in museums" discussion just because no museum is
+        # literally on screen). So we only ever PROMOTE moments the judge is
+        # confident about and never demote a base result. Worst case Enhanced ==
+        # base; best case it surfaces a buried moment recall/rerank missed (the
+        # actual robot frame) and lifts genuine cross-modal hits.
+        PROMOTE = 0.62          # judge must be at least "likely a match" to act
+        best_conf: dict = {}
+        for idx, conf in verdicts.items():
+            if conf < PROMOTE:
+                continue        # unsure / negative -> leave base scoring untouched
+            m = moments[idx]
+            claimed = False
+            for s in all_segments:
+                if s["video_id"] == m["video_id"] and m["lo"] <= s["start_time"] <= m["hi"]:
+                    k = id(s)
+                    best_conf[k] = max(best_conf.get(k, 0.0), conf)
+                    claimed = True
+            # The judge confirmed a moment semantic recall never surfaced (the robot
+            # frame the embedding buried). Inject it so the user sees what they
+            # searched for.
+            if not claimed:
+                all_segments.append({
+                    "video_id": m["video_id"],
+                    "start_time": m["t"], "end_time": m["t"],
+                    "caption": m["seed_cap"], "score": conf,
+                    "frame_path": m["seed_fp"],
+                })
+        for s in all_segments:
+            k = id(s)
+            if k in best_conf and best_conf[k] > s["score"]:
+                s["score"] = best_conf[k]
 
     # Re-group by video for the response
     video_segs: dict = {}
@@ -1530,9 +1820,9 @@ async def search_videos(
     RELEVANCE_FLOOR = 0.52
     seg_threshold = max(threshold, RELEVANCE_FLOOR)
 
-    # In the loosest tier we ALSO keep any segment that literally contains every
-    # query keyword, even if the reranker scored it in the noise band. This lets
-    # "Nearly everything" mean "every semantic match OR every literal mention".
+    # We ALSO keep any segment that literally contains every query keyword, even if
+    # the reranker scored it in the noise band (see broad_keyword above). This makes
+    # a literal mention count as a match regardless of how terse the query was.
     def _kw_match(caption: str) -> bool:
         cap = (caption or "").lower()
         return all(t in cap for t in key_terms)
@@ -1542,11 +1832,19 @@ async def search_videos(
         meta = video_meta.get(vid)
         if not meta:
             continue
-        top_segments = [
-            s for s in segs
-            if s["score"] >= seg_threshold
-            or (broad_keyword and _kw_match(s.get("caption", "")))
-        ]
+        top_segments = []
+        for s in segs:
+            if s["score"] >= seg_threshold:
+                top_segments.append(s)
+            elif broad_keyword and _kw_match(s.get("caption", "")):
+                # A clip that literally contains every query term satisfies the
+                # relevance bar by definition, so present it AT the selected
+                # threshold rather than its unreliable terse-query rerank score.
+                # Otherwise the slider says "Mostly matches" while sub-threshold
+                # literal hits render with lower-relevance dots — penalizing the
+                # concise queries the search box actively encourages.
+                s["score"] = max(s["score"], seg_threshold)
+                top_segments.append(s)
         if not top_segments:
             continue
         top_segments.sort(key=lambda s: s["score"], reverse=True)

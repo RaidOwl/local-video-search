@@ -9,21 +9,25 @@ const SS_RESULTS = 'vss_search_results'
 const SS_TIER = 'vss_search_tier'
 const SS_SEARCH_VIDEO = 'vss_search_video'
 const SS_SEARCH_AUDIO = 'vss_search_audio'
+const SS_ENHANCED = 'vss_search_enhanced'
 const SS_FILTERS = 'vss_search_filters'
 
 // Relevance is the reranker's raw score (0–1; ~0.50 = "the model rejects this").
-// Rather than dress that up as a misleading precise percentage, we expose four
+// Rather than dress that up as a misleading precise percentage, we expose three
 // discrete confidence bands. Each slider stop maps to a FIXED raw threshold sent
 // straight to the API, and every result is badged with the band its raw score
 // falls into — no curve, no score→percentage translation.
-// Ordered loosest → strictest (slider index 0–3). `pick` = the slider-stop label
+// Ordered loosest → strictest (slider index 0–2). `pick` = the slider-stop label
 // (filter intent); `badge` = the per-result quality label.
+//  • Nearly everything — super broad; the user sifts through it themselves.
+//  • Mostly matches     — the normal, default return.
+//  • Exact match        — "I'm fairly sure this is it" (distinctive query words
+//                         must be cross-referenced across what's shown AND said).
 type RelTier = { min: number; pick: string; badge: string; color: string }
 const REL_TIERS: RelTier[] = [
-  { min: 0.50, pick: 'Nearly everything', badge: 'Loosely related',  color: '#94a3b8' },
-  { min: 0.60, pick: 'Somewhat matches',  badge: 'Somewhat matches', color: '#fbbf24' },
-  { min: 0.68, pick: 'Mostly matches',    badge: 'Mostly matches',   color: '#818cf8' },
-  { min: 0.76, pick: 'Exact match',       badge: 'Exact match',      color: '#34d399' },
+  { min: 0.50, pick: 'Nearly everything', badge: 'Loosely related', color: '#94a3b8' },
+  { min: 0.62, pick: 'Mostly matches',    badge: 'Mostly matches',  color: '#818cf8' },
+  { min: 0.74, pick: 'Exact match',       badge: 'Exact match',     color: '#34d399' },
 ]
 const tierForScore = (s: number): RelTier => {
   for (let i = REL_TIERS.length - 1; i > 0; i--) if (s >= REL_TIERS[i].min) return REL_TIERS[i]
@@ -49,10 +53,11 @@ export default function SearchPage() {
   })
   const [tierIdx, setTierIdx] = useState(() => {
     const v = parseInt(sessionStorage.getItem(SS_TIER) ?? '', 10)
-    return Number.isInteger(v) && v >= 0 && v <= 3 ? v : 1
+    return Number.isInteger(v) && v >= 0 && v <= 2 ? v : 1
   })
   const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem(SS_SEARCH_VIDEO) !== '0')
   const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
+  const [enhanced, setEnhanced] = useState(() => sessionStorage.getItem(SS_ENHANCED) === '1')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
@@ -125,7 +130,7 @@ export default function SearchPage() {
         resolution: filters.resolution,
         date_from: filters.dateFrom,
         date_to: filters.dateTo,
-      })).results
+      }, enhanced)).results
       setResults(res)
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
@@ -201,7 +206,7 @@ export default function SearchPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem', color: 'var(--muted)', fontSize: '0.82rem' }}>
           <span style={{ flexShrink: 0 }}>Min relevance</span>
           <input
-            type="range" min={0} max={3} step={1}
+            type="range" min={0} max={REL_TIERS.length - 1} step={1}
             value={tierIdx}
             onChange={e => setTierIdx(Number(e.target.value))}
             style={{ flex: 1, accentColor: REL_TIERS[tierIdx].color, cursor: 'pointer' }}
@@ -218,6 +223,14 @@ export default function SearchPage() {
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
             <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem(SS_SEARCH_AUDIO, e.target.checked ? '1' : '0') }} />
             Audio
+          </label>
+
+          <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
+          <label
+            title="Have an AI read both what's shown and what's said in each candidate moment and re-judge the matches. More accurate for cross-modal queries, but slower."
+            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0, color: enhanced ? 'var(--accent-hover)' : undefined, fontWeight: enhanced ? 600 : undefined }}>
+            <input type="checkbox" checked={enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
+            Enhanced
           </label>
 
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />

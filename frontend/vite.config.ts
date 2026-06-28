@@ -17,6 +17,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      // FastAPI's interactive docs live at the API root. Proxy them in dev so the
+      // "API" nav link (/docs) works just like it does behind nginx in production.
+      '^/(docs|redoc|openapi.json)': {
+        target: apiTarget,
+        changeOrigin: true,
+      },
     },
   },
 })

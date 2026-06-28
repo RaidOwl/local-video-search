@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     frame_extraction_interval: int = 5
     embed_batch_size: int = 16
 
+    # Automation (defaults; the Settings UI override file takes precedence at runtime)
+    auto_import_interval: int = 0      # minutes between library scans; 0 = scan on startup only
+    auto_analyze: str = "off"          # off | audio | video | both
+    import_blacklist: str = ""         # comma-separated glob patterns matched against file paths
+    default_context: str = ""          # context applied to auto-analyzed videos
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
