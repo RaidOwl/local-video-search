@@ -197,6 +197,25 @@ class Database:
             )
             return list(result.scalars().all())
 
+    async def frame_modality_counts(self) -> dict:
+        """Per-video (visual_frame_count, transcript_frame_count) in a single query.
+
+        Visual frames have a non-empty frame_path; transcript frames have ''.
+        Used by the startup backfill to derive has_frames / has_transcript.
+        """
+        async with self.session_maker() as session:
+            from sqlalchemy import select, func, case
+            stmt = (
+                select(
+                    Frame.video_id,
+                    func.sum(case((Frame.frame_path != "", 1), else_=0)),
+                    func.sum(case((Frame.frame_path == "", 1), else_=0)),
+                )
+                .group_by(Frame.video_id)
+            )
+            result = await session.execute(stmt)
+            return {vid: (int(v or 0), int(t or 0)) for vid, v, t in result.all()}
+
     async def search_captions(self, terms: list[str], limit: int = 300) -> list[Frame]:
         """Lexical fallback: frames whose caption contains ALL of ``terms``.
 

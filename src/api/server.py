@@ -60,6 +60,9 @@ async def lifespan(_app: FastAPI):
     asyncio.create_task(_backfill_metadata())
     # Tag Qdrant points with is_transcript so the Video/Audio source filter works.
     asyncio.create_task(_backfill_source_flags())
+    # Correct has_frames/has_transcript for videos analyzed before the has_frames
+    # column existed (its migration blanket-defaulted every row to 1).
+    asyncio.create_task(_backfill_modality_flags())
     yield
 
 app = FastAPI(
@@ -681,6 +684,39 @@ async def _backfill_metadata():
             pass
     if updated:
         print(f"[metadata] backfilled {updated} video(s) with file metadata", flush=True)
+
+
+async def _backfill_modality_flags():
+    """Derive has_frames / has_transcript from the actual indexed frames.
+
+    The has_frames column was added with a blanket DEFAULT 1, so videos that were
+    analyzed audio-only before this feature (no visual frames) were wrongly marked
+    as having video — hiding the "no video" indicator. This recomputes both flags
+    for every analyzed video from real frame data and fixes any mismatch. Cheap
+    single grouped query; only writes rows that are actually wrong.
+    """
+    try:
+        counts = await db.frame_modality_counts()
+        videos = await db.get_all_videos(include_all=True)
+    except Exception:
+        return
+    fixed = 0
+    for v in videos:
+        if getattr(v, 'status', None) != 'analyzed':
+            continue
+        vis, tr = counts.get(v.id, (0, 0))
+        want_frames = 1 if vis > 0 else 0
+        want_tr = 1 if tr > 0 else 0
+        cur_frames = 1 if getattr(v, 'has_frames', 1) else 0
+        cur_tr = 1 if getattr(v, 'has_transcript', 0) else 0
+        if want_frames != cur_frames or want_tr != cur_tr:
+            try:
+                await db.update_video(v.id, {'has_frames': want_frames, 'has_transcript': want_tr})
+                fixed += 1
+            except Exception:
+                pass
+    if fixed:
+        print(f"[modality] corrected has_frames/has_transcript for {fixed} video(s)", flush=True)
 
 
 def _do_source_backfill():
