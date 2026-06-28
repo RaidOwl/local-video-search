@@ -235,7 +235,7 @@ export default function SearchPage() {
             title={enhancedAvailable
               ? "Have an AI read both what's shown and what's said in each candidate moment and re-judge the matches. More accurate for cross-modal queries, but slower."
               : 'Enhanced search needs both Video and Audio selected.'}
-            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: enhancedAvailable ? 'pointer' : 'not-allowed', flexShrink: 0, opacity: enhancedAvailable ? 1 : 0.4, color: enhancedAvailable && enhanced ? 'var(--accent-hover)' : undefined, fontWeight: enhancedAvailable && enhanced ? 600 : undefined }}>
+            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: enhancedAvailable ? 'pointer' : 'not-allowed', flexShrink: 0, opacity: enhancedAvailable ? 1 : 0.4 }}>
             <input type="checkbox" disabled={!enhancedAvailable} checked={enhancedAvailable && enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
             Enhanced
           </label>

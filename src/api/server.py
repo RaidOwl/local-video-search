@@ -1493,13 +1493,48 @@ async def search_videos(
     # stay gated to the loosest tier so stricter tiers remain semantically clean.
     multi_literal = len(key_terms) >= 2
     broad_keyword = bool(key_terms) and (threshold <= 0.50 or multi_literal)
-    if broad_keyword:
-        # Existing semantic segments as (video_id, [start, end]) intervals so a
-        # lexical frame already covered by a grouped segment doesn't surface twice.
-        spans: dict = {}
+
+    # Distinctive-term lexical recall. The cross-encoder reranker is blind to a
+    # clearly-relevant transcript when the query's real anchor word is absent from
+    # a more common synonym: for "ai helping doctors" it ranks "...AI voice
+    # assistant" (has the literal token "ai") ABOVE "...help nurses and doctors"
+    # (the actual answer, but with no "ai" token). A query word that is RARE across
+    # the WHOLE library is high-signal intent, so pull every clip that literally
+    # contains one and let it bypass the reranker's mistake. Such a term matches
+    # only a handful of frames by definition, so this never floods the results.
+    distinctive_terms: list[str] = []
+    distinctive_frames: list = []
+    if key_terms:
+        _rare_cap = max(6, int(0.003 * await db.count_frames()))
+        for t in key_terms:
+            if len(t) < 4:
+                continue  # skip terse/common tokens (ai, pc, two, 4k, ...)
+            hits = await db.search_captions([t], limit=_rare_cap + 1)
+            if 0 < len(hits) <= _rare_cap:
+                distinctive_terms.append(t)
+                distinctive_frames.extend(hits)
+
+    if broad_keyword or distinctive_frames:
+        # Existing semantic segments as (video_id, [start, end]) intervals, split by
+        # modality so a lexical frame already covered by a SAME-modality grouped
+        # segment doesn't surface twice — but a spoken line is NOT suppressed by an
+        # overlapping VISUAL segment. In Both mode the visual frames around a moment
+        # get grouped into a span that would otherwise swallow the very transcript
+        # line the distinctive-term recall exists to surface.
+        vis_spans: dict = {}
+        txt_spans: dict = {}
         for s in all_segments:
-            spans.setdefault(s["video_id"], []).append((s["start_time"], s["end_time"]))
-        lexical = await db.search_captions(key_terms, limit=300)
+            (vis_spans if s.get("frame_path") else txt_spans).setdefault(
+                s["video_id"], []).append((s["start_time"], s["end_time"]))
+        # Multi-term literal matches (broad_keyword) plus single rare-term matches,
+        # deduped by frame id so a clip caught by both passes is added once.
+        lexical_map: dict = {}
+        if broad_keyword:
+            for f in await db.search_captions(key_terms, limit=300):
+                lexical_map[f.id] = f
+        for f in distinctive_frames:
+            lexical_map[f.id] = f
+        lexical = list(lexical_map.values())
         missing_ids = [f.video_id for f in lexical if f.video_id not in video_meta]
         if missing_ids:
             extra = await db.get_videos(missing_ids)
@@ -1518,8 +1553,9 @@ async def search_videos(
             if source_intent == 'speech' and not is_transcript:
                 continue
             ts = f.timestamp
+            spans = txt_spans if is_transcript else vis_spans
             if any(a <= ts <= b for a, b in spans.get(f.video_id, ())):
-                continue  # already represented by a grouped segment
+                continue  # already represented by a same-modality grouped segment
             all_segments.append({
                 "video_id": f.video_id,
                 "start_time": ts,
@@ -1827,6 +1863,15 @@ async def search_videos(
         cap = (caption or "").lower()
         return all(t in cap for t in key_terms)
 
+    # A clip that literally contains a library-rare query word (see
+    # distinctive_terms) is a confident match the reranker may have underscored
+    # only because a commoner synonym carried the literal token instead.
+    def _distinctive_match(caption: str) -> bool:
+        if not distinctive_terms:
+            return False
+        cap = (caption or "").lower()
+        return any(t in cap for t in distinctive_terms)
+
     final_results = []
     for vid, segs in video_segs.items():
         meta = video_meta.get(vid)
@@ -1836,7 +1881,7 @@ async def search_videos(
         for s in segs:
             if s["score"] >= seg_threshold:
                 top_segments.append(s)
-            elif broad_keyword and _kw_match(s.get("caption", "")):
+            elif (broad_keyword and _kw_match(s.get("caption", ""))) or _distinctive_match(s.get("caption", "")):
                 # A clip that literally contains every query term satisfies the
                 # relevance bar by definition, so present it AT the selected
                 # threshold rather than its unreliable terse-query rerank score.
@@ -1863,7 +1908,7 @@ async def search_videos(
     # the loosest tier, keep videos kept solely via a literal keyword match too.
     final_results = [
         r for r in final_results
-        if r["score"] >= seg_threshold or broad_keyword
+        if r["score"] >= seg_threshold or broad_keyword or distinctive_terms
     ]
 
     # Apply explicit, user-supplied metadata filters as a hard AND over results,
