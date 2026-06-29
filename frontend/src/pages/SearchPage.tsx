@@ -61,7 +61,7 @@ export default function SearchPage() {
   })
   const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem(SS_SEARCH_VIDEO) !== '0')
   const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
-  const [enhanced, setEnhanced] = useState(() => sessionStorage.getItem(SS_ENHANCED) === '1')
+  const [enhanced, setEnhanced] = useState(() => sessionStorage.getItem(SS_ENHANCED) !== '0')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
