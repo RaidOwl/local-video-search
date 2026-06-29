@@ -7,9 +7,11 @@ A self-hosted video search and summarization system powered by local AI models. 
 - **Natural Language Search** — Ask questions like "Find the moment where the car crashes" or "Show me cooking scenes"
 - **Segment-Level Results** — Results point to the exact timestamp within a video, not just which file
 - **Precision Reranking** — A local cross-encoder reranks every search so results respect fine details (e.g. "blonde woman" vs "blonde man"), with a relevance slider to tune strictness
+- **Cross-Modal Enhanced Search** — An optional LLM judge correlates what's shown and what's spoken in the same moment, surfacing matches recall alone would miss; spoken-only hits borrow the nearest frame for visual context
+- **Scene-Aware Frame Sampling** — Frames are sampled on a time grid *and* at detected scene cuts, so brief subjects between grid points still get captioned
 - **Metadata Filters** — Optionally narrow any search by media type, minimum resolution, or creation date — or apply the filters alone to browse your library by those criteria
 - **Visual Frame Analysis** — Vision-language model (VLM) captions every frame during analysis
-- **Speech Transcription** — Whisper transcribes spoken audio; transcript segments are fully searchable
+- **Speech Transcription** — Whisper transcribes spoken audio; transcript segments are fully searchable and show surrounding spoken context
 - **AI Summarization** — On-demand video summaries powered by a local LLM
 - **Segments Timeline** — Browse all visual and speech segments side-by-side with inline caption editing
 - **Download & Clip** — Download the full video or extract a time-range clip directly from the UI
@@ -216,7 +218,7 @@ starts the matching model server automatically (or none, for `custom` and
 
 Navigate to **http://localhost:3000**
 
-Go to **Settings** to verify your AI backend, configure Whisper transcription quality (Low / Medium / High), set the frame extraction interval, and toggle auto-analyze on import.
+Go to **Settings** to verify your AI backend, configure Whisper transcription quality (Low / Medium / High), set the frame extraction interval, cap the CPU threads FFmpeg uses during analysis (defaults to half your cores so the host stays responsive), tune max concurrent jobs, and toggle auto-analyze on import.
 
 ### Step 5 — Add & analyze videos
 

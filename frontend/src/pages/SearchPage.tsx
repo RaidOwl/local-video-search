@@ -402,7 +402,9 @@ export default function SearchPage() {
                             {fmt(seg.start_time)}
                           </span>
                           <span style={{ fontSize: '0.82rem', color: 'var(--text)', lineHeight: 1.4, flex: 1 }}>
+                            {seg.context_before && <span style={{ color: 'var(--muted)', opacity: 0.65 }}>…{seg.context_before} </span>}
                             {seg.caption.replace(/^\[transcript\]\s*/i, '')}
+                            {seg.context_after && <span style={{ color: 'var(--muted)', opacity: 0.65 }}> {seg.context_after}…</span>}
                           </span>
                           {!isBrowse && (() => {
                             const t = tierForScore(seg.score)

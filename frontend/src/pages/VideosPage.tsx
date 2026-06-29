@@ -717,12 +717,24 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
   // stored context on the backend, so we don't prompt for it again. Audio-only
   // runs never caption frames, so context is irrelevant there too.
   const askContext = (!showResumeChoice || !resume) && scope !== 'audio'
+  // On a "start over" the backend already keeps each video's saved context when we
+  // send none — but the empty textarea hid that, so users couldn't tell it was kept
+  // (or deliberately keep it). When any selected video already has a context, offer
+  // to keep it (default on); unchecking reveals the box to write a new one that
+  // overwrites it.
+  const existingContexts = selectedVideos.map(v => (v.context || '').trim()).filter(Boolean)
+  const hasExistingContext = existingContexts.length > 0
+  const [keepContext, setKeepContext] = useState(true)
+  // The free-text box shows only when we're NOT keeping an existing context.
+  const showContextInput = askContext && (!hasExistingContext || !keepContext)
 
   const handleSubmit = async () => {
     setSubmitting(true)
     const useResume = showResumeChoice && resume
-    const ctx = askContext ? (context.trim() || undefined) : undefined
-    if (askContext && context.trim()) saveContext(context.trim())
+    // Keeping the existing context = send none, so the backend reuses each video's
+    // own saved context (correct even when selected videos have different ones).
+    const ctx = showContextInput ? (context.trim() || undefined) : undefined
+    if (showContextInput && context.trim()) saveContext(context.trim())
     const visual = scope !== 'audio'
     const audio = scope !== 'visual'
     await Promise.all(videoIds.map(id => api.reprocessVideo(id, ctx, useResume, visual, audio).catch(() => {})))
@@ -790,11 +802,28 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
           </div>
         )}
 
-        {askContext && (
+        {askContext && hasExistingContext && (
+          <div>
+            <label style={{ fontSize: '0.82rem', color: 'var(--muted)', display: 'block', marginBottom: '0.4rem' }}>Context</label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer', fontSize: '0.82rem' }}>
+              <input type="checkbox" checked={keepContext} onChange={e => setKeepContext(e.target.checked)} style={{ marginTop: '0.2rem' }} />
+              <span style={{ minWidth: 0 }}>
+                <span style={{ fontWeight: 600 }}>Keep existing context</span>
+                <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.15rem', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {videoIds.length > 1 ? "Reuse each video's saved context" : `“${existingContexts[0]}”`}
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
+
+        {showContextInput && (
           <>
             <div>
               <label style={{ fontSize: '0.82rem', color: 'var(--muted)', display: 'block', marginBottom: '0.4rem' }}>
-                Context <span style={{ fontWeight: 400 }}>(optional — helps the AI better understand the video)</span>
+                {hasExistingContext
+                  ? <>New context <span style={{ fontWeight: 400 }}>(replaces the existing one)</span></>
+                  : <>Context <span style={{ fontWeight: 400 }}>(optional — helps the AI better understand the video)</span></>}
               </label>
               <textarea
                 value={context}

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # Processing
     frame_extraction_interval: int = 5
     embed_batch_size: int = 16
+    ffmpeg_threads: int = 0       # max CPU threads ffmpeg may use; 0 = auto (half cores)
 
     # Automation (defaults; the Settings UI override file takes precedence at runtime)
     auto_import_interval: int = 0      # minutes between library scans; 0 = scan on startup only

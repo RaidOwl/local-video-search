@@ -1,54 +1,68 @@
 import subprocess
 import os
+import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import asyncio
 
 
 class FrameExtractor:
     """Extract frames from videos using FFmpeg."""
-    
-    def __init__(self, interval: int = 5):
+
+    def __init__(self, interval: int = 5, scene_threshold: float = 0.4, min_gap: float = 2.0, threads: int = 0):
         """
         Args:
-            interval: Seconds between extracted frames
+            interval: Seconds between extracted grid frames (the coverage floor)
+            scene_threshold: FFmpeg scene score (0-1) above which a cut is a keyframe.
+                Lower = more cuts detected. 0 disables scene detection.
+            min_gap: Minimum seconds between any two extracted frames, used to thin
+                out near-duplicate grid/scene timestamps and bound captioning cost.
+            threads: Max CPU threads FFmpeg may use per decode. 0 lets FFmpeg use all
+                cores; a positive cap keeps the host responsive during analysis.
         """
         self.interval = interval
-    
+        self.scene_threshold = scene_threshold
+        self.min_gap = min_gap
+        self.threads = max(0, int(threads))
+
+    def _threads_args(self) -> List[str]:
+        return ['-threads', str(self.threads)] if self.threads > 0 else []
+
     def extract_frames(
         self,
         video_path: str,
         output_dir: str,
         prefix: str = "frame"
-    ) -> List[str]:
+    ) -> List[Tuple[str, float]]:
         """
-        Extract frames from a video at regular intervals.
-        
+        Extract frames from a video.
+
+        Samples on a fixed time grid (the coverage floor) AND at scene cuts, so a
+        subject that's only on screen briefly between grid points still gets a
+        frame. Returns ``(frame_path, timestamp)`` pairs; the timestamp is the
+        real seek time (NOT index*interval), since scene frames are irregular.
+
         Returns:
-            List of extracted frame file paths
+            List of ``(frame_path, timestamp_seconds)`` tuples, ordered by time.
         """
         video_path = Path(video_path)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Get video duration
         duration = self._get_duration(video_path)
         if duration <= 0:
             return []
-        
-        # Calculate timestamps for frame extraction
-        timestamps = []
-        current_time = 0.0
-        while current_time < duration:
-            timestamps.append(current_time)
-            current_time += self.interval
-        
-        frames = []
+
+        timestamps = self._build_timestamps(video_path, duration)
+
+        frames: List[Tuple[str, float]] = []
         for i, timestamp in enumerate(timestamps):
             output_path = output_dir / f"{prefix}_{i:04d}.jpg"
-            
+
             cmd = [
                 'ffmpeg', '-y',
+                *self._threads_args(),
                 '-ss', str(timestamp),
                 '-i', str(video_path),
                 '-vframes', '1',
@@ -56,12 +70,68 @@ class FrameExtractor:
                 '-vf', 'scale=448:-1',
                 str(output_path)
             ]
-            
+
             result = subprocess.run(cmd, capture_output=True)
             if result.returncode == 0 and output_path.exists():
-                frames.append(str(output_path))
-        
+                frames.append((str(output_path), round(timestamp, 2)))
+
         return frames
+
+    def _build_timestamps(self, video_path: Path, duration: float) -> List[float]:
+        """Merge the regular grid with detected scene cuts, then thin by min_gap.
+
+        The grid guarantees we never sample more sparsely than ``interval`` (so this
+        is never worse than the old uniform sampling); scene cuts add frames at shot
+        boundaries where new subjects/text typically appear. Timestamps closer than
+        ``min_gap`` are collapsed (keeping the earlier one) to avoid near-duplicate
+        captions and bound cost.
+        """
+        grid = []
+        t = 0.0
+        while t < duration:
+            grid.append(t)
+            t += self.interval
+
+        cuts = self._detect_scene_cuts(video_path, duration) if self.scene_threshold > 0 else []
+        merged = sorted(set(grid) | {c for c in cuts if 0.0 < c < duration})
+
+        thinned: List[float] = []
+        last = -1e9
+        for ts in merged:
+            if ts - last >= self.min_gap:
+                thinned.append(ts)
+                last = ts
+        return thinned
+
+    def _detect_scene_cuts(self, video_path: Path, duration: float) -> List[float]:
+        """Return timestamps (s) of scene cuts via a single FFmpeg analysis pass.
+
+        Degrades gracefully: any failure/timeout returns an empty list, leaving the
+        regular grid as the sole source of frames (i.e. old behavior).
+        """
+        cmd = [
+            'ffmpeg', '-hide_banner', *self._threads_args(), '-i', str(video_path),
+            '-vf', f"select='gt(scene,{self.scene_threshold})',showinfo",
+            '-an', '-f', 'null', '-'
+        ]
+        try:
+            # Scene detection decodes the whole stream; allow generous headroom.
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=max(120.0, duration * 3.0)
+            )
+        except Exception:
+            return []
+
+        cuts: List[float] = []
+        for line in result.stderr.splitlines():
+            m = re.search(r'pts_time:([0-9.]+)', line)
+            if m:
+                try:
+                    cuts.append(float(m.group(1)))
+                except ValueError:
+                    pass
+        return cuts
     
     def extract_frame_at(
         self,
@@ -72,6 +142,7 @@ class FrameExtractor:
         """Extract a single frame at a specific timestamp."""
         cmd = [
             'ffmpeg', '-y',
+            *self._threads_args(),
             '-ss', str(timestamp),
             '-i', str(video_path),
             '-vframes', '1',
@@ -109,7 +180,7 @@ async def extract_frames_async(
     video_path: str,
     output_dir: str,
     interval: int = 5
-) -> List[str]:
+) -> List[Tuple[str, float]]:
     """Async wrapper for frame extraction."""
     loop = asyncio.get_event_loop()
     extractor = FrameExtractor(interval=interval)

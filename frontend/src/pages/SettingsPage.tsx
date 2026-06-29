@@ -427,6 +427,19 @@ export default function SettingsPage() {
               </div>
               <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Lower values reduce GPU/CPU pressure during analysis.</p>
             </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                FFmpeg CPU threads — <span style={{ color: 'var(--accent)', fontWeight: 400 }}>{form.ffmpeg_threads}{form.cpu_cores ? ` of ${form.cpu_cores}` : ''}</span>
+              </label>
+              <input type="range" min={1} max={form.cpu_cores ?? 32} step={1} value={form.ffmpeg_threads}
+                onChange={e => set('ffmpeg_threads', Number(e.target.value))}
+                style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.2rem' }}>
+                <span>1 (lightest)</span><span>{form.cpu_cores ?? 32} (all cores)</span>
+              </div>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Caps cores used for frame extraction & scene detection. Defaults to half so the host stays responsive.</p>
+            </div>
           </div>
         </div>
 

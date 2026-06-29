@@ -189,6 +189,13 @@ def _effective_cfg() -> dict:
     base.update(override)
     base.setdefault("max_concurrent_jobs", 8)
     base.setdefault("transcription_concurrency", 2)
+    # CPU thread cap for ffmpeg: 0 = auto (half cores), keeps host responsive.
+    cores = os.cpu_count() or 4
+    base["cpu_cores"] = cores
+    threads = int(base.get("ffmpeg_threads", settings.ffmpeg_threads) or 0)
+    if threads <= 0:
+        threads = max(1, cores // 2)
+    base["ffmpeg_threads"] = max(1, min(threads, cores))
     # Automation: .env values seed the defaults; the override file (Settings UI) wins.
     if "import_blacklist" not in base:
         base["import_blacklist"] = [p.strip() for p in settings.import_blacklist.split(",") if p.strip()]
@@ -245,7 +252,7 @@ segment_retriever = SegmentRetriever()
 _reranker = None
 
 # Frame extractor
-frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"])
+frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"], threads=int(_cfg.get("ffmpeg_threads", 0)))
 
 def _reinit_services(cfg: dict):
     global embed_service, vlm_service, summarizer_service, judge_service, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
@@ -254,7 +261,7 @@ def _reinit_services(cfg: dict):
     summarizer_service = SummarizationService(cfg["llm_url"], model=cfg["llm_model"])
     judge_service = JudgeService(cfg["llm_url"], model=cfg["llm_model"])
     transcription_service = TranscriptionService(model_size=cfg["whisper_model"])
-    frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]))
+    frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]), threads=int(cfg.get("ffmpeg_threads", 0)))
     _analysis_semaphore = asyncio.Semaphore(int(cfg.get("max_concurrent_jobs", 8)))
     _transcribe_semaphore = asyncio.Semaphore(max(1, int(cfg.get("transcription_concurrency", 2))))
 
@@ -544,12 +551,11 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
                     # Visual-only run with no extractable frames is a hard failure.
                     await db.update_video(video_id, {'status': 'error'})
                     return
-                for i, frame_path in enumerate(frames or []):
+                for i, (frame_path, timestamp) in enumerate(frames or []):
                     frame_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_frame_{i}"))
                     if frame_id in existing_frame_ids:
                         # Already captioned and indexed in a previous run — skip
                         continue
-                    timestamp = i * frame_extractor.interval
                     caption = await vlm_service.caption_frame(frame_path, context=context)
                     await embed_service.index_frame(
                         video_id=video_id, frame_path=frame_path,
@@ -565,7 +571,7 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
                 # Set a random frame as the default thumbnail if none set
                 video_check = await db.get_video(video_id)
                 if frames and not video_check.thumbnail_path:
-                    await db.update_video(video_id, {'thumbnail_path': str(random.choice(frames))})
+                    await db.update_video(video_id, {'thumbnail_path': str(random.choice(frames)[0])})
 
             # ---- Audio: transcribe ----
             if do_audio and not (resume and has_existing_transcript):
@@ -1223,6 +1229,7 @@ class SettingsUpdateRequest(BaseModel):
     frame_extraction_interval: Optional[int] = None
     embed_batch_size: Optional[int] = None
     max_concurrent_jobs: Optional[int] = None
+    ffmpeg_threads: Optional[int] = None
     import_blacklist: Optional[List[str]] = None
     auto_import_interval: Optional[int] = None
     auto_analyze: Optional[str] = None  # off | audio | video | both
@@ -1674,8 +1681,7 @@ async def search_videos(
                 entries.sort()
                 timelines[_vid] = entries
 
-            NONE_CEIL = 0.595      # missing every anchor -> "Nearly everything" only
-            PARTIAL_CEIL = 0.73    # some but not all anchors -> up to "Mostly matches"
+            PARTIAL_CEIL = 0.73    # any anchor missing -> at most "Mostly matches"
             ANCHOR_CONF = 0.74     # literal cross-reference is strong evidence
             DIRECT_BONUS = 0.12    # this very segment SHOWS/SAYS the distinctive thing
             for s in all_segments:
@@ -1701,13 +1707,18 @@ async def search_videos(
                     if any(t in own for t in anchor_terms):
                         s["score"] = min(0.98, s["score"] + DIRECT_BONUS)
                 elif coverage <= 0.0:
-                    # The defining word is nowhere near this moment — it cannot be
-                    # the intent. Hold it to the loosest tier.
-                    s["score"] = min(s["score"], NONE_CEIL)
+                    # The defining word is nowhere in this moment's window. An
+                    # "Exact match" MUST literally contain every distinctive term,
+                    # so this can never be exact no matter how confident the
+                    # cross-encoder is on phrase structure alone (it happily rates
+                    # "talk to each other" 0.79 for "talking to a hologram"). Cap
+                    # to "Mostly matches" — still visible (covers a VLM synonym like
+                    # "humanoid machine" for "robot"), never deceptively exact.
+                    s["score"] = min(s["score"], PARTIAL_CEIL)
                 else:
-                    # Partial: some distinctive words present, not all. Allow it up
-                    # to "Mostly matches" but never "Exact match", which requires
-                    # every distinctive term cross-referenced.
+                    # Partial: some distinctive words present, not all. Same rule —
+                    # only a full literal cross-reference earns the exact tier, so
+                    # cap to "Mostly matches" regardless of reranker confidence.
                     s["score"] = min(s["score"], PARTIAL_CEIL)
 
     # Enhanced search (opt-in). The cross-encoder above scored each caption in
@@ -1758,7 +1769,7 @@ async def search_videos(
             for _f in await db.get_frames_for_video(_vid):
                 _cap = (_f.caption or "").strip()
                 if _cap:
-                    entries.append((_f.timestamp, bool(_f.frame_path), _cap))
+                    entries.append((_f.timestamp, bool(_f.frame_path), _cap, _f.frame_path or ""))
             entries.sort()
             enh_tl[_vid] = entries
 
@@ -1790,18 +1801,42 @@ async def search_videos(
             vid, t = c["video_id"], c["t"]
             lo, hi = t - JUDGE_WINDOW, t + JUDGE_WINDOW
             lines = []
-            for ts, is_visual, cap in enh_tl.get(vid, []):
+            has_visual = False
+            seed_fp = c["seed_fp"]
+            tl = enh_tl.get(vid, [])
+            for ts, is_visual, cap, _fp in tl:
                 if lo <= ts <= hi:
                     text = cap.replace("[transcript] ", "")
                     kind = "shown" if is_visual else "spoken"
                     lines.append(f"[{int(ts // 60):02d}:{int(ts % 60):02d}] ({kind}) {text}")
+                    has_visual = has_visual or is_visual
             if not lines:
                 continue
+            # Spoken-only moment: no frame fell in the window. Borrow the nearest
+            # visual frame at-or-before t (same shot, since frames sit on scene cuts)
+            # so the judge gets visual context and the result shows a thumbnail
+            # instead of judging on words alone. Fall back to the first frame after.
+            if not has_visual:
+                prior = None
+                later = None
+                for ts, is_v, cap, fp in tl:
+                    if not is_v:
+                        continue
+                    if ts <= t:
+                        prior = (ts, cap, fp)
+                    elif later is None:
+                        later = (ts, cap, fp)
+                pick = prior or later
+                if pick:
+                    pts, pcap, pfp = pick
+                    lines.append(f"[{int(pts // 60):02d}:{int(pts % 60):02d}] (shown) {pcap}")
+                    if not seed_fp:
+                        seed_fp = pfp
             meta = video_meta.get(vid)
             name = meta["name"] if meta else vid
             moments.append({
                 "video_id": vid, "lo": lo, "hi": hi, "t": t,
-                "seed_fp": c["seed_fp"], "seed_cap": c["seed_cap"],
+                "seed_fp": seed_fp, "seed_cap": c["seed_cap"],
                 "label": f"{name} @ {int(t // 60)}:{int(t % 60):02d}",
                 "text": "\n".join(lines),
             })
@@ -1925,6 +1960,44 @@ async def search_videos(
     # Sort by score descending, cap to limit
     final_results.sort(key=lambda x: x["score"], reverse=True)
     final_results = final_results[:limit]
+
+    # ±1 transcript context: a matched chunk like "the chassis and plug them in."
+    # is too terse to read on its own. Attach the adjacent spoken chunks so the UI
+    # can show (dimmed) the sentence the match actually sits in. Visual captions are
+    # already descriptive, so this is transcript-only; cache the per-video timeline.
+    _tl_cache: dict = {}
+    _vis_cache: dict = {}
+    for r in final_results:
+        for s in r["segments"]:
+            if s.get("frame_path"):
+                continue
+            vid = r["video_id"]
+            if vid not in _tl_cache:
+                all_frames = await db.get_frames_for_video(vid)
+                tl = [f for f in all_frames if not f.frame_path]
+                tl.sort(key=lambda f: f.timestamp)
+                _tl_cache[vid] = tl
+                vis = [f for f in all_frames if f.frame_path]
+                vis.sort(key=lambda f: f.timestamp)
+                _vis_cache[vid] = vis
+            tl = _tl_cache[vid]
+            # Borrow the nearest visual frame at-or-before the spoken timestamp as a
+            # thumbnail. Frames are extracted on scene cuts, so the frame just before
+            # is in the same shot (no cut yet) and visually represents the moment;
+            # a later frame may be past a cut. Caption still carries [transcript], so
+            # the UI keeps the mic icon. Fall back to the first frame after if none.
+            vis = _vis_cache[vid]
+            if vis:
+                t = s["start_time"]
+                before = [f for f in vis if f.timestamp <= t]
+                s["frame_path"] = (before[-1] if before else vis[0]).frame_path
+            if not tl:
+                continue
+            idx = min(range(len(tl)), key=lambda i: abs(tl[i].timestamp - s["start_time"]))
+            if idx > 0:
+                s["context_before"] = (tl[idx - 1].caption or "").replace("[transcript] ", "")
+            if idx < len(tl) - 1:
+                s["context_after"] = (tl[idx + 1].caption or "").replace("[transcript] ", "")
 
     return SearchResponse(results=final_results, query=q)
 

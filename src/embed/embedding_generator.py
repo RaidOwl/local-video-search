@@ -6,6 +6,10 @@ import re
 
 def _clean_for_embed(text: str) -> str:
     """Strip markdown formatting so verbose captions embed cleanly against short queries."""
+    # Drop the "[transcript] " display/filtering prefix before embedding: the query
+    # never contains it, so it's a constant token that only dilutes the vector and
+    # weakens every transcript's cosine similarity against real queries.
+    text = re.sub(r'^\s*\[transcript\]\s*', '', text)
     # Remove headers (### Heading)
     text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
     # Remove bold/italic (**text**, *text*, __text__)

@@ -55,6 +55,8 @@ export interface AppSettings {
   frame_extraction_interval: number
   embed_batch_size: number
   max_concurrent_jobs: number
+  ffmpeg_threads: number
+  cpu_cores?: number
   import_blacklist: string[]
   auto_import_interval: number
   auto_analyze: 'off' | 'audio' | 'video' | 'both'
@@ -100,6 +102,8 @@ export interface SearchResult {
     caption: string
     score: number
     frame_path: string
+    context_before?: string
+    context_after?: string
   }>
 }
 
