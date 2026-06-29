@@ -1947,14 +1947,20 @@ async def search_videos(
             if s["score"] >= seg_threshold:
                 top_segments.append(s)
             elif (broad_keyword and _kw_match(s.get("caption", ""))) or _distinctive_match(s.get("caption", "")):
-                # A clip that literally contains every query term satisfies the
-                # relevance bar by definition, so present it AT the selected
-                # threshold rather than its unreliable terse-query rerank score.
-                # Otherwise the slider says "Mostly matches" while sub-threshold
-                # literal hits render with lower-relevance dots — penalizing the
-                # concise queries the search box actively encourages.
-                s["score"] = max(s["score"], seg_threshold)
-                top_segments.append(s)
+                # A clip that literally contains the query's keywords is shown AT
+                # the selected bar rather than its unreliable terse-query rerank
+                # score, so concise queries aren't penalized with low-relevance
+                # dots. BUT a literal word hit is NOT a high-confidence semantic
+                # match, so it must never qualify as "Exact match". Cap the
+                # presented score just below the Exact tier (0.74): at looser
+                # tiers the match still surfaces at the bar, but when the user
+                # asks for "Exact match" it falls below the threshold and drops
+                # out — so the strictest setting stays purely semantic.
+                LEXICAL_DISPLAY_CEIL = 0.73   # one notch under the 0.74 Exact tier
+                bumped = min(max(s["score"], seg_threshold), LEXICAL_DISPLAY_CEIL)
+                if bumped >= seg_threshold:
+                    s["score"] = bumped
+                    top_segments.append(s)
         if not top_segments:
             continue
         top_segments.sort(key=lambda s: s["score"], reverse=True)
