@@ -1682,8 +1682,6 @@ async def search_videos(
                 timelines[_vid] = entries
 
             PARTIAL_CEIL = 0.73    # any anchor missing -> at most "Mostly matches"
-            ANCHOR_CONF = 0.74     # literal cross-reference is strong evidence
-            DIRECT_BONUS = 0.12    # this very segment SHOWS/SAYS the distinctive thing
             for s in all_segments:
                 lo, hi = s["start_time"] - AGREE_WINDOW, s["end_time"] + AGREE_WINDOW
                 moment = " ".join(
@@ -1692,20 +1690,17 @@ async def search_videos(
                 covered = sum(1 for t in anchor_terms if t in moment)
                 coverage = covered / len(anchor_terms)
                 if coverage >= 1.0:
-                    # Every distinctive word is present in this moment's window:
-                    # cross-referenced. Probabilistic OR with the reranker's own
-                    # score lifts a faintly-recalled-but-confirmed clip into the
-                    # confident tiers, where the user is "fairly sure this is it".
-                    s["score"] = 1.0 - (1.0 - s["score"]) * (1.0 - ANCHOR_CONF)
-                    # Direct evidence: the distinctive thing is named in THIS
-                    # segment's own caption (the robot is on screen here / the word
-                    # is spoken here), not merely nearby. That's the frame the user
-                    # actually wants to see, so float it above co-temporal frames
-                    # that only match the generic words ("a man talking") and just
-                    # happen to sit next to the real moment.
+                    # Distinctive words cross-referenced nearby: don't cap. Promote
+                    # to exact ONLY on direct evidence — every query word literally
+                    # in THIS segment's own caption (the man-talking-to-hologram
+                    # frame), not merely scattered across a wide window. A wide
+                    # window finds "wood" desks + "accents" boxes apart and would
+                    # fake an exact; demanding all words in one caption blocks that
+                    # while still floating the genuine moment to the top.
                     own = (s.get("caption") or "").replace("[transcript] ", "").lower()
-                    if any(t in own for t in anchor_terms):
-                        s["score"] = min(0.98, s["score"] + DIRECT_BONUS)
+                    own_words = set(re.findall(r'\b[a-z]{2,}\b', own))
+                    if all(t in own_words or t in own for t in key_terms):
+                        s["score"] = 1.0 - (1.0 - s["score"]) * (1.0 - 0.74)
                 elif coverage <= 0.0:
                     # The defining word is nowhere in this moment's window. An
                     # "Exact match" MUST literally contain every distinctive term,
