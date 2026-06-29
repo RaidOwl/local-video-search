@@ -1,0 +1,15 @@
+{
+  "_comment": "Query -> expected video name(s). expect_top: must be #1. expect_in: must appear in results. enhanced toggles judge. Add ~12 you can eyeball-verify; keep only labels you are sure are correct.",
+  "cases": [
+    {"q": "man talking to a hologram", "expect_in": ["ai"], "enhanced": true},
+    {"q": "gold macbook", "expect_top": "newmacbook", "enhanced": true},
+    {"q": "black box with wood accents", "expect_in": ["umbrelPro"], "enhanced": true},
+    {"q": "dgx spark", "expect_top": "dgxSpark", "enhanced": true},
+    {"q": "raspberry pi cluster", "expect_top": "piCluster", "enhanced": true},
+    {"q": "red cartoon character", "expect_top": "ugreenOpenclaw", "enhanced": true},
+    {"q": "BIOS screen", "expect_top": "pciexpansion", "enhanced": true},
+    {"q": "man sitting by piano", "expect_top": "tplinknetworkandcameras", "enhanced": true},
+    {"q": "gray backpack", "expect_in": ["travelRouterShowdown"], "enhanced": true},
+    {"q": "SODOLA network switch", "expect_top": "miniLab2026", "enhanced": true}
+  ]
+}

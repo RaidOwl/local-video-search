@@ -142,10 +142,10 @@ services:
           esac
         else
           case "$$VRAM_TIER" in
-            low)   MAIN_MODEL="qwen2.5vl:3b"  ;;
-            high)  MAIN_MODEL="qwen2.5vl:32b" ;;
-            ultra) MAIN_MODEL="qwen2.5vl:72b" ;;
-            *)     MAIN_MODEL="qwen2.5vl:7b"  ;;
+            low)   MAIN_MODEL="qwen3-vl:4b"   ;;
+            high)  MAIN_MODEL="qwen3-vl:32b"  ;;
+            ultra) MAIN_MODEL="qwen3-vl:235b" ;;
+            *)     MAIN_MODEL="qwen3-vl:8b"   ;;
           esac
         fi
         EMBED_MODEL="bge-m3"
@@ -223,10 +223,10 @@ services:
           esac
         else
           case "$$VRAM_TIER" in
-            low)   MAIN_MODEL="Qwen/Qwen2.5-VL-3B-Instruct"  ;;
-            high)  MAIN_MODEL="Qwen/Qwen2.5-VL-32B-Instruct" ;;
-            ultra) MAIN_MODEL="Qwen/Qwen2.5-VL-72B-Instruct" ;;
-            *)     MAIN_MODEL="Qwen/Qwen2.5-VL-7B-Instruct"  ;;
+            low)   MAIN_MODEL="Qwen/Qwen3-VL-4B-Instruct"        ;;
+            high)  MAIN_MODEL="Qwen/Qwen3-VL-32B-Instruct"       ;;
+            ultra) MAIN_MODEL="Qwen/Qwen3-VL-235B-A22B-Instruct" ;;
+            *)     MAIN_MODEL="Qwen/Qwen3-VL-8B-Instruct"        ;;
           esac
         fi
         # Auto-scale the GPU memory cap to the tier when not pinned explicitly,

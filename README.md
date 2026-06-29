@@ -4,10 +4,11 @@ A self-hosted video search and summarization system powered by local AI models. 
 
 ## Features
 
-- **Natural Language Search** — Ask questions like "Find the moment where the car crashes" or "Show me cooking scenes"
+- **Natural Language Search** — Ask questions like "Find the moment where the car crashes" or "Show me cooking scenes" ([how it works under the hood](docs/QUERY-MECHANICS.md))
 - **Segment-Level Results** — Results point to the exact timestamp within a video, not just which file
-- **Precision Reranking** — A local cross-encoder reranks every search so results respect fine details (e.g. "blonde woman" vs "blonde man"), with a relevance slider to tune strictness
-- **Cross-Modal Enhanced Search** — An optional LLM judge correlates what's shown and what's spoken in the same moment, surfacing matches recall alone would miss; spoken-only hits borrow the nearest frame for visual context
+- **Hybrid Retrieval + Precision Reranking** — Every search runs both a meaning (semantic) and a keyword (BM25) recall pass, then a local cross-encoder reranks the results so they respect fine details (e.g. "blonde woman" vs "blonde man"), with a relevance slider to tune strictness
+- **Cross-Modal Search** — When searching both sources, the system correlates what's shown and what's spoken in the same moment, and a fused per-moment description surfaces matches that neither track alone would catch; spoken-only hits borrow the nearest frame for visual context
+- **Compositional Precision** — Multi-word searches are checked by a local LLM so a query's attributes must describe the *same* object (e.g. "mini pc with wooden accent" won't match a separate mini PC and a separate wooden desk)
 - **Scene-Aware Frame Sampling** — Frames are sampled on a time grid *and* at detected scene cuts, so brief subjects between grid points still get captioned
 - **Metadata Filters** — Optionally narrow any search by media type, minimum resolution, or creation date — or apply the filters alone to browse your library by those criteria
 - **Visual Frame Analysis** — Vision-language model (VLM) captions every frame during analysis

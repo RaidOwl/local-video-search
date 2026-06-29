@@ -35,6 +35,7 @@ class Video(Base):
     thumbnail_path = Column(String, nullable=True)
     context = Column(Text, nullable=True)  # user-supplied context used during analysis
     transcribe_progress = Column(Float, nullable=True, default=0.0)  # 0..1 during transcription
+    fuse_progress = Column(Float, nullable=True, default=0.0)  # 0..1 during fusion (3rd pass)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
@@ -73,12 +74,22 @@ class Database:
                         'has_frames INTEGER DEFAULT 1',
                         'fps REAL', 'video_codec TEXT', 'audio_codec TEXT', 'container TEXT',
                         'extension TEXT', 'bitrate INTEGER', 'resolution_label TEXT',
-                        'recorded_at DATETIME', 'file_modified_at DATETIME', 'transcribe_progress REAL DEFAULT 0']:
+                        'recorded_at DATETIME', 'file_modified_at DATETIME', 'transcribe_progress REAL DEFAULT 0',
+                        'fuse_progress REAL DEFAULT 0']:
                 col_name = col.split()[0]
                 try:
                     await conn.execute(text(f'ALTER TABLE videos ADD COLUMN {col}'))
                 except Exception:
                     pass  # already exists
+            # Lexical (BM25) full-text index mirroring every Qdrant point, used for
+            # hybrid recall (dense + sparse) in /search. One row per point id —
+            # visual, transcript, and fused captions alike — so a strong lexical
+            # match the bi-encoder buries can still reach the reranker.
+            await conn.execute(text(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS segment_fts USING fts5("
+                "point_id UNINDEXED, video_id UNINDEXED, is_transcript UNINDEXED, "
+                "fused UNINDEXED, frame_path UNINDEXED, timestamp UNINDEXED, caption)"
+            ))
     
     async def get_session(self) -> AsyncSession:
         """Get a new database session."""
@@ -248,7 +259,130 @@ class Database:
             stmt = stmt.limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())
-    
+
+    # ---- Lexical (BM25 / FTS5) segment index for hybrid recall ----
+
+    @staticmethod
+    def _fts_match(terms: list[str]) -> str:
+        """Build an FTS5 MATCH expression: OR of prefix tokens.
+
+        Prefix (`wood*`) bridges simple inflections the unicode61 tokenizer can't
+        (query "wood" -> caption "wooden"), and OR (not AND) means a partial term
+        overlap still retrieves + ranks the row by BM25 rather than dropping it.
+        """
+        import re as _re
+        toks = []
+        for t in (terms or []):
+            t = _re.sub(r'[^a-z0-9]', '', (t or '').lower())
+            if t:
+                toks.append(f'"{t}"*')
+        return " OR ".join(toks)
+
+    async def index_segment_text(self, point_id: str, video_id: str, caption: str,
+                                 is_transcript: bool = False, fused: bool = False,
+                                 frame_path: str = "", timestamp: float = 0.0) -> None:
+        """Upsert one point's caption into the lexical index (delete-then-insert)."""
+        from sqlalchemy import text
+        async with self.session_maker() as session:
+            await session.execute(text("DELETE FROM segment_fts WHERE point_id = :pid"),
+                                  {"pid": point_id})
+            await session.execute(text(
+                "INSERT INTO segment_fts(point_id, video_id, is_transcript, fused, "
+                "frame_path, timestamp, caption) VALUES (:pid, :vid, :istr, :fused, "
+                ":fp, :ts, :cap)"), {
+                    "pid": point_id, "vid": video_id,
+                    "istr": "1" if is_transcript else "0",
+                    "fused": "1" if fused else "0",
+                    "fp": frame_path or "", "ts": float(timestamp or 0.0),
+                    "cap": caption or "",
+                })
+            await session.commit()
+
+    async def index_segments_bulk(self, rows: list[dict]) -> int:
+        """Insert many segment rows in a single transaction (used by the backfill)."""
+        from sqlalchemy import text
+        if not rows:
+            return 0
+        async with self.session_maker() as session:
+            for r in rows:
+                await session.execute(text(
+                    "INSERT INTO segment_fts(point_id, video_id, is_transcript, fused, "
+                    "frame_path, timestamp, caption) VALUES (:pid, :vid, :istr, :fused, "
+                    ":fp, :ts, :cap)"), {
+                        "pid": r["point_id"], "vid": r.get("video_id") or "",
+                        "istr": "1" if r.get("is_transcript") else "0",
+                        "fused": "1" if r.get("fused") else "0",
+                        "fp": r.get("frame_path") or "", "ts": float(r.get("timestamp") or 0.0),
+                        "cap": r.get("caption") or "",
+                    })
+            await session.commit()
+        return len(rows)
+
+    async def delete_segment_text(self, video_id: str, is_transcript: Optional[bool] = None,
+                                  fused: Optional[bool] = None) -> None:
+        """Remove a video's lexical rows, mirroring _delete_video_points' filters."""
+        from sqlalchemy import text
+        clauses = ["video_id = :vid"]
+        params: dict = {"vid": video_id}
+        if is_transcript is not None:
+            clauses.append("is_transcript = :istr")
+            params["istr"] = "1" if is_transcript else "0"
+        if fused is not None:
+            clauses.append("fused = :fused")
+            params["fused"] = "1" if fused else "0"
+        async with self.session_maker() as session:
+            await session.execute(
+                text(f"DELETE FROM segment_fts WHERE {' AND '.join(clauses)}"), params)
+            await session.commit()
+
+    async def count_segment_text(self) -> int:
+        """Number of rows in the lexical index (0 => backfill needed)."""
+        from sqlalchemy import text
+        async with self.session_maker() as session:
+            res = await session.execute(text("SELECT count(*) FROM segment_fts"))
+            return int(res.scalar() or 0)
+
+    async def search_segment_text(self, terms: list[str], limit: int = 80,
+                                  source_intent: str = 'mixed',
+                                  video_id: str = None) -> list[dict]:
+        """BM25-ranked lexical recall over captions (the sparse arm of hybrid search).
+
+        Returns hit dicts shaped like the dense recall hits so the two can be
+        reciprocal-rank-fused into one candidate pool. Lower bm25() is better, so
+        results are returned best-first.
+        """
+        match = self._fts_match(terms)
+        if not match:
+            return []
+        from sqlalchemy import text
+        clauses = ["segment_fts MATCH :m"]
+        params: dict = {"m": match, "lim": limit}
+        if video_id:
+            clauses.append("video_id = :vid")
+            params["vid"] = video_id
+        if source_intent == 'visual':
+            clauses.append("is_transcript = '0'")
+        elif source_intent == 'speech':
+            clauses.append("is_transcript = '1'")
+        sql = ("SELECT point_id, video_id, is_transcript, fused, frame_path, timestamp, "
+               "caption, bm25(segment_fts) AS rank FROM segment_fts "
+               f"WHERE {' AND '.join(clauses)} ORDER BY rank LIMIT :lim")
+        async with self.session_maker() as session:
+            res = await session.execute(text(sql), params)
+            out: list[dict] = []
+            for row in res.mappings().all():
+                out.append({
+                    "id": row["point_id"],
+                    "video_id": row["video_id"],
+                    "frame_path": row["frame_path"] or "",
+                    "timestamp": row["timestamp"],
+                    "caption": row["caption"] or "",
+                    "is_transcript": row["is_transcript"] == "1",
+                    "fused": row["fused"] == "1",
+                    "score": 0.0,
+                })
+            return out
+
     async def get_frame(self, frame_id: str) -> Frame | None:
         """Get a single frame by ID."""
         async with self.session_maker() as session:

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     vlm_model: str = "llava-hf/llava-v1.6-vicuna-7b-hf"
     llm_model: str = "Qwen/Qwen3-8B"
     whisper_model: str = "base"
+    whisper_beam_size: int = 1                    # 1 = greedy (fast); higher is slower for marginal gain
+    whisper_condition_on_previous: bool = False   # False avoids hallucination loops on silence/room noise
 
     # Storage
     database_url: str = "sqlite+aiosqlite:///./data/metadata.db"

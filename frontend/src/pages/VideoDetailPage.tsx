@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { api, Video, Segment, VideoFrame } from '../services/api'
 import { fmt } from '../utils'
-import { Pencil, Play, Square, RotateCcw, X, Download, Check, Mic, Film } from 'lucide-react'
+import { Pencil, Play, Square, RotateCcw, X, Download, Check, Mic, Film, Sparkles } from 'lucide-react'
 import { AnalyzeModal } from './VideosPage'
 
 export default function VideoDetailPage() {
@@ -25,7 +25,8 @@ export default function VideoDetailPage() {
   const [savingThumbnail, setSavingThumbnail] = useState(false)
   const [thumbnailSaved, setThumbnailSaved] = useState(false)
   const [transcript, setTranscript] = useState<Array<{ id: string; timestamp: number; text: string }> | null>(null)
-  const [segFilter, setSegFilter] = useState<'all' | 'visual' | 'speech'>('all')
+  const [fused, setFused] = useState<Array<{ id: string; timestamp: number; caption: string; path: string | null }>>([])
+  const [segFilter, setSegFilter] = useState<'all' | 'visual' | 'speech' | 'fused'>('all')
   const [editingSegId, setEditingSegId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState('')
   const [savingSegId, setSavingSegId] = useState<string | null>(null)
@@ -54,6 +55,7 @@ export default function VideoDetailPage() {
     if (!id || !video || (video.status !== 'analyzed' && video.status !== 'retranscribing')) return
     api.getVideoFrames(id).then(d => setFrames(d.frames)).catch(() => {})
     api.getTranscript(id).then(d => setTranscript(d.segments)).catch(() => {})
+    api.getFused(id).then(d => setFused(d.segments)).catch(() => {})
   }, [id, video?.status])
 
   const setThumbnail = async (framePath: string) => {
@@ -74,12 +76,12 @@ export default function VideoDetailPage() {
   // Poll while processing
   useEffect(() => {
     if (!video) return
-    if (video.status === 'processing' || video.status === 'transcribing') {
+    if (video.status === 'processing' || video.status === 'transcribing' || video.status === 'fusing') {
       pollRef.current = window.setInterval(async () => {
         const v = await api.getVideo(id!).catch(() => null)
         if (!v) return
         setVideo(v)
-        if (v.status !== 'processing' && v.status !== 'transcribing') clearInterval(pollRef.current!)
+        if (v.status !== 'processing' && v.status !== 'transcribing' && v.status !== 'fusing') clearInterval(pollRef.current!)
       }, 4000)
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
@@ -210,14 +212,14 @@ export default function VideoDetailPage() {
     }
   }
 
-  const handleSegSave = async (segId: string, type: 'visual' | 'speech') => {
+  const handleSegSave = async (segId: string, type: 'visual' | 'speech' | 'fused') => {
     if (!id) return
     setSavingSegId(segId)
     try {
       await api.updateFrameCaption(id, segId, editingText.trim())
       if (type === 'visual') {
         setFrames(prev => prev.map(f => f.id === segId ? { ...f, caption: editingText.trim() } : f))
-      } else {
+      } else if (type === 'speech') {
         setTranscript(prev => prev ? prev.map(t => t.id === segId ? { ...t, text: editingText.trim() } : t) : prev)
       }
       setEditingSegId(null)
@@ -226,8 +228,9 @@ export default function VideoDetailPage() {
   }
 
   const allSegs = [
-    ...frames.map(f => ({ id: f.id, timestamp: f.timestamp, caption: f.caption || '', type: 'visual' as const, frame_path: f.path })),
-    ...(transcript || []).map(t => ({ id: t.id, timestamp: t.timestamp, caption: t.text, type: 'speech' as const, frame_path: undefined as string | undefined }))
+    ...frames.map(f => ({ id: f.id, timestamp: f.timestamp, caption: f.caption || '', type: 'visual' as const, frame_path: f.path as string | undefined })),
+    ...(transcript || []).map(t => ({ id: t.id, timestamp: t.timestamp, caption: t.text, type: 'speech' as const, frame_path: undefined as string | undefined })),
+    ...fused.map(f => ({ id: f.id, timestamp: f.timestamp, caption: f.caption || '', type: 'fused' as const, frame_path: f.path || undefined }))
   ].sort((a, b) => a.timestamp - b.timestamp)
 
   if (loading) return <div className="page" style={{ display:'flex', alignItems:'center', gap:'0.75rem', justifyContent:'center', marginTop:'4rem', color:'var(--muted)' }}><span className="spinner" /> Loading…</div>
@@ -391,7 +394,7 @@ export default function VideoDetailPage() {
       <hr className="divider" />
 
       {/* Segments — unified visual + speech editor */}
-      {(video.status === 'analyzed' || video.status === 'retranscribing') && (frames.length > 0 || (transcript && transcript.length > 0)) && (
+      {(video.status === 'analyzed' || video.status === 'retranscribing') && (frames.length > 0 || (transcript && transcript.length > 0) || fused.length > 0) && (
         <div className="section">
           <div className="section-header">
             <h2>Segments
@@ -423,7 +426,9 @@ export default function VideoDetailPage() {
                   })() : video.status === 'retranscribing' ? <><RotateCcw size={12} /> Restart Audio</> : <><RotateCcw size={12} /> Audio</>}
                 </button>
               )}
-              {(['all', 'visual', 'speech'] as const).map(f => (
+              {(['all', 'visual', 'speech', 'fused'] as const)
+                .filter(f => f !== 'fused' || fused.length > 0)
+                .map(f => (
                 <button
                   key={f}
                   onClick={() => setSegFilter(f)}
@@ -436,7 +441,7 @@ export default function VideoDetailPage() {
                     borderRadius: 'var(--radius)',
                   }}
                 >
-                  {f === 'all' ? 'All' : f === 'visual' ? <><Film size={11} /> Visual</> : <><Mic size={11} /> Speech</>}
+                  {f === 'all' ? 'All' : f === 'visual' ? <><Film size={11} /> Visual</> : f === 'speech' ? <><Mic size={11} /> Speech</> : <><Sparkles size={11} /> Fused</>}
                 </button>
               ))}
             </div>
@@ -454,17 +459,24 @@ export default function VideoDetailPage() {
                     border: `1px solid ${editingSegId === seg.id ? 'var(--border)' : 'transparent'}`,
                   }}
                 >
-                  {seg.type === 'visual' && seg.frame_path ? (
-                    <img
-                      src={`/api/frames/${video.id}/${encodeURIComponent(seg.frame_path.split('/').pop()!)}`}
-                      alt=""
-                      style={{ width: 60, height: 40, objectFit: 'cover', borderRadius: 4, flexShrink: 0, marginTop: 2 }}
-                    />
+                  {(seg.type === 'visual' || seg.type === 'fused') && seg.frame_path ? (
+                    <div style={{ position: 'relative', flexShrink: 0, marginTop: 2 }}>
+                      <img
+                        src={`/api/frames/${video.id}/${encodeURIComponent(seg.frame_path.split('/').pop()!)}`}
+                        alt=""
+                        style={{ width: 60, height: 40, objectFit: 'cover', borderRadius: 4, display: 'block' }}
+                      />
+                      {seg.type === 'fused' && (
+                        <span style={{ position: 'absolute', top: 2, left: 2, background: 'rgba(0,0,0,0.6)', borderRadius: 3, padding: '1px 2px', lineHeight: 0, display: 'flex' }}>
+                          <Sparkles size={10} style={{ color: '#fff' }} />
+                        </span>
+                      )}
+                    </div>
                   ) : (
                     <div style={{
                       width: 60, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
                       background: 'var(--surface)', borderRadius: 4, flexShrink: 0, marginTop: 2,
-                    }}><Mic size={18} style={{ color: 'var(--muted)' }} /></div>
+                    }}>{seg.type === 'fused' ? <Sparkles size={18} style={{ color: 'var(--muted)' }} /> : <Mic size={18} style={{ color: 'var(--muted)' }} />}</div>
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ fontSize: '0.72rem', color: 'var(--accent)', fontVariantNumeric: 'tabular-nums', display: 'block', marginBottom: '0.2rem' }}>
@@ -495,9 +507,9 @@ export default function VideoDetailPage() {
                     ) : (
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.4rem' }}>
                         <p
-                          style={{ fontSize: '0.82rem', lineHeight: 1.5, margin: 0, flex: 1, color: seg.caption ? 'var(--text)' : 'var(--muted)', cursor: 'text', fontStyle: seg.caption ? 'normal' : 'italic' }}
-                          onClick={() => { setEditingSegId(seg.id); setEditingText(seg.caption) }}
-                          title="Click to edit"
+                          style={{ fontSize: '0.82rem', lineHeight: 1.5, margin: 0, flex: 1, color: seg.caption ? 'var(--text)' : 'var(--muted)', cursor: seg.type === 'fused' ? 'default' : 'text', fontStyle: seg.caption ? 'normal' : 'italic' }}
+                          onClick={seg.type === 'fused' ? undefined : () => { setEditingSegId(seg.id); setEditingText(seg.caption) }}
+                          title={seg.type === 'fused' ? 'Fused description (regenerated on re-analysis)' : 'Click to edit'}
                         >
                           {seg.caption || 'No caption'}
                         </p>

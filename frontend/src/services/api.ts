@@ -71,7 +71,7 @@ export interface Video {
   duration: number
   summary?: string
   tags: string[]
-  status: 'ready' | 'processing' | 'transcribing' | 'analyzed' | 'error' | 'retranscribing'
+  status: 'ready' | 'processing' | 'transcribing' | 'fusing' | 'analyzed' | 'error' | 'retranscribing'
   frame_count: number
   thumbnail_path: string | null
   context: string | null
@@ -79,6 +79,7 @@ export interface Video {
   has_transcript: boolean
   has_frames: boolean
   transcribe_progress?: number
+  fuse_progress?: number
 }
 
 export interface VideoFrame {
@@ -161,9 +162,8 @@ export const api = {
     threshold?: number,
     sources?: string,
     filters?: { media_types?: string; resolution?: string; date_from?: string; date_to?: string },
-    enhanced?: boolean,
   ): Promise<{ results: SearchResult[]; query: string }> => {
-    const res = await client.get('/search', { params: { q: query, limit, threshold, sources, enhanced, ...filters } })
+    const res = await client.get('/search', { params: { q: query, limit, threshold, sources, ...filters } })
     return res.data
   },
 
@@ -210,8 +210,8 @@ export const api = {
     await client.post(`/videos/${id}/unhide`)
   },
 
-  reprocessVideo: async (id: string, context?: string, resume?: boolean, visual: boolean = true, audio: boolean = true): Promise<{ status: string; video_id: string }> => {
-    const res = await client.post(`/reprocess/${id}`, { context: context ?? null, resume: resume ?? false, visual, audio })
+  reprocessVideo: async (id: string, context?: string, resume?: boolean, visual: boolean = true, audio: boolean = true, fuse: boolean = true): Promise<{ status: string; video_id: string }> => {
+    const res = await client.post(`/reprocess/${id}`, { context: context ?? null, resume: resume ?? false, visual, audio, fuse })
     return res.data
   },
 
@@ -232,6 +232,11 @@ export const api = {
 
   getTranscript: async (id: string): Promise<{ segments: Array<{ id: string; timestamp: number; text: string }>; count: number }> => {
     const res = await client.get(`/videos/${id}/transcript`)
+    return res.data
+  },
+
+  getFused: async (id: string): Promise<{ segments: Array<{ id: string; timestamp: number; caption: string; path: string | null }>; count: number }> => {
+    const res = await client.get(`/videos/${id}/fused`)
     return res.data
   },
 

@@ -24,10 +24,13 @@ class Transcriber:
     MIN_CHUNK_WORDS = 6
     MAX_CHUNK_WORDS = 30
 
-    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8"):
+    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8",
+                 beam_size: int = 1, condition_on_previous_text: bool = False):
         self._model_size = model_size
         self._device = device
         self._compute_type = compute_type
+        self._beam_size = beam_size
+        self._condition_on_previous_text = condition_on_previous_text
         self._model = None
 
     def _load_model(self):
@@ -74,10 +77,11 @@ class Transcriber:
 
             segments, info = model.transcribe(
                 audio_path,
-                beam_size=5,
+                beam_size=self._beam_size,
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 500},
                 word_timestamps=True,
+                condition_on_previous_text=self._condition_on_previous_text,
             )
 
             total = getattr(info, "duration", 0.0) or 0.0
@@ -146,8 +150,13 @@ class Transcriber:
 class TranscriptionService:
     """Service wrapper for Transcriber."""
 
-    def __init__(self, model_size: str = "base"):
-        self.transcriber = Transcriber(model_size=model_size)
+    def __init__(self, model_size: str = "base", beam_size: int = 1,
+                 condition_on_previous_text: bool = False):
+        self.transcriber = Transcriber(
+            model_size=model_size,
+            beam_size=beam_size,
+            condition_on_previous_text=condition_on_previous_text,
+        )
 
     def transcribe_video(self, video_path: str, progress_callback=None) -> List[TranscriptSegment]:
         return self.transcriber.transcribe(video_path, progress_callback=progress_callback)

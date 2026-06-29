@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, Video, AppSettings } from '../services/api'
 import { fmt } from '../utils'
-import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, VideoOff, ChevronDown, ChevronRight, Mic, RotateCcw } from 'lucide-react'
+import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, VideoOff, ChevronDown, ChevronRight, Mic, RotateCcw, Sparkles } from 'lucide-react'
 
 type ViewMode = 'card' | 'tree' | 'folder'
 
@@ -114,10 +114,14 @@ function transcribeEtaLabel(snap: ProgressSnapshot | undefined, progress: number
   return `~${Math.round(secs / 60)}m`
 }
 
-function StatusBadge({ status, frameCount, eta, transcribeProgress = 0 }: { status: Video['status']; frameCount: number; eta: string | null; transcribeProgress?: number }) {
+function StatusBadge({ status, frameCount, eta, transcribeProgress = 0, fuseProgress = 0 }: { status: Video['status']; frameCount: number; eta: string | null; transcribeProgress?: number; fuseProgress?: number }) {
   if (status === 'ready') return <span className="badge queued">Ready</span>
   if (status === 'analyzed') return <span className="badge analyzed"><span className="dot" />Analyzed</span>
   if (status === 'error') return <span className="badge error"><span className="dot" />Error</span>
+  if (status === 'fusing') {
+    const pct = Math.round((fuseProgress || 0) * 100)
+    return <span className="badge transcribing"><Sparkles size={11} />{pct > 0 ? `Fusing ${pct}%` : 'Fusing…'}</span>
+  }
   if (status === 'transcribing' || status === 'retranscribing') {
     const base = status === 'retranscribing' ? 'Audio' : 'Transcribing'
     const pct = Math.round((transcribeProgress || 0) * 100)
@@ -206,7 +210,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
               <VideoIcon size={12} style={{ color: 'var(--muted)', flexShrink: 0 }} />
               <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
               <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0 }}>{fmt(video.duration)}</span>
-              <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
+              <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} fuseProgress={video.fuse_progress} />
               {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}><Square size={12} /></button>}              {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}><Square size={12} /></button>}              <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.3rem', color: 'var(--muted)', flexShrink: 0 }}><ArrowRight size={14} /></button>
               <button className="icon-btn" title="Hide" onClick={e => handleRemove(e, video.id)} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)', flexShrink: 0 }}><X size={14} /></button>
             </div>
@@ -239,7 +243,7 @@ function TreeView(props: ViewProps) {
                   <VideoIcon size={12} style={{ color: 'var(--muted)', flexShrink: 0 }} />
                   <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
-                  <StatusBadge status={video.status} frameCount={video.frame_count} eta={(video.status === 'transcribing' || video.status === 'retranscribing') ? transcribeEtaLabel(props.snapshots.current[video.id], video.transcribe_progress ?? 0) : etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} transcribeProgress={video.transcribe_progress} />
+                  <StatusBadge status={video.status} frameCount={video.frame_count} eta={(video.status === 'transcribing' || video.status === 'retranscribing') ? transcribeEtaLabel(props.snapshots.current[video.id], video.transcribe_progress ?? 0) : etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} transcribeProgress={video.transcribe_progress} fuseProgress={video.fuse_progress} />
                   {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.3rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
                   <button className="icon-btn" title="Hide" onClick={e => props.handleRemove(e, video.id)} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)' }}><X size={14} /></button>
                 </div>
@@ -328,7 +332,7 @@ function FolderView(props: ViewProps) {
                   <span style={{ flex: 1 }} />
                   {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
                 </div>
-                <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
+                <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} fuseProgress={video.fuse_progress} />
               </div>
             </div>
           )
@@ -446,7 +450,7 @@ export default function VideosPage() {
     finally { setReimporting(false) }
   }
 
-  const processingCount = videos.filter(v => v.status === 'processing' || v.status === 'transcribing').length
+  const processingCount = videos.filter(v => v.status === 'processing' || v.status === 'transcribing' || v.status === 'fusing').length
   const retranscribingCount = videos.filter(v => v.status === 'retranscribing').length
   const navigate = useNavigate()
 
@@ -697,36 +701,54 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
   onClose: () => void
   onDone: () => void
 }) {
+  const selectedVideos = videos.filter(v => videoIds.includes(v.id))
+  const anyHasFrames = selectedVideos.some(v => v.has_frames)
+  const anyHasTranscript = selectedVideos.some(v => v.has_transcript)
+  // Each stage defaults on when some selected video is missing its output: a
+  // never-analyzed (or errored) video pre-checks Video+Audio; a frames-only
+  // "quick pass" video pre-checks just Audio (+Fuse); a fully-analyzed selection
+  // pre-checks everything (a deliberate redo).
+  const needsVideo = selectedVideos.some(v => v.status === 'ready' || v.status === 'error' || (v.status === 'analyzed' && !v.has_frames))
+  const needsAudio = selectedVideos.some(v => v.status === 'ready' || v.status === 'error' || (v.status === 'analyzed' && !v.has_transcript))
+  const allFullyAnalyzed = !needsVideo && !needsAudio
+
   const [context, setContext] = useState('')
   const [recents] = useState<string[]>(getRecentContexts)
   const [submitting, setSubmitting] = useState(false)
-  // What to analyze: both modalities (default), visual frames only, or audio only.
-  const [scope, setScope] = useState<'both' | 'visual' | 'audio'>('both')
+  // Three independent stages: caption frames (Video), transcribe (Audio), and the
+  // cross-modal fusion pass (Fuse). Fuse defaults on and auto-skips windows that
+  // lack a channel, matching the old implicit auto-fuse.
+  const [doVideo, setDoVideo] = useState(needsVideo || allFullyAnalyzed)
+  const [doAudio, setDoAudio] = useState(needsAudio || allFullyAnalyzed)
+  const [doFuse, setDoFuse] = useState(true)
 
-  const selectedVideos = videos.filter(v => videoIds.includes(v.id))
-  // Videos that already have analysis results (complete or partially-failed) can
-  // either be resumed (keep existing captions/transcript, only fill the gaps) or
-  // started over (wipe and re-analyze). Offer the choice only when at least one
-  // selected video has prior work; a never-analyzed 'ready' video has nothing to
-  // resume, so resume vs start-over is identical for it.
-  const resumableCount = selectedVideos.filter(v => v.status === 'analyzed' || v.status === 'error').length
-  const showResumeChoice = resumableCount > 0
+  // Resume only applies to the Video stage on content that already has frames: it
+  // gap-fills missing captions instead of wiping and re-captioning. Audio and Fuse
+  // always rebuild, so resume vs start-over is a Video-only concept.
+  const resumableCount = selectedVideos.filter(v => (v.status === 'analyzed' || v.status === 'error') && v.has_frames).length
+  const showResumeChoice = doVideo && resumableCount > 0
   const [resume, setResume] = useState(true)
-  // Only ask for context when there's something to caption fresh: a brand-new
-  // analysis, or an explicit "start over". A resume reuses each video's original
-  // stored context on the backend, so we don't prompt for it again. Audio-only
-  // runs never caption frames, so context is irrelevant there too.
-  const askContext = (!showResumeChoice || !resume) && scope !== 'audio'
-  // On a "start over" the backend already keeps each video's saved context when we
-  // send none — but the empty textarea hid that, so users couldn't tell it was kept
-  // (or deliberately keep it). When any selected video already has a context, offer
-  // to keep it (default on); unchecking reveals the box to write a new one that
-  // overwrites it.
+
+  // Fusion needs both channels present after this run. A video will have frames if
+  // it already does or we're (re)captioning, and a transcript likewise. Disable the
+  // Fuse stage when the selection won't end up with both.
+  const willHaveFrames = doVideo || anyHasFrames
+  const willHaveTranscript = doAudio || anyHasTranscript
+  const canFuse = willHaveFrames && willHaveTranscript
+  const fuseActive = doFuse && canFuse
+
+  // Ask for context only when captioning fresh frames: a Video stage that isn't a
+  // resume. Resume reuses each video's stored context; audio/fuse don't caption.
+  const askContext = doVideo && !(showResumeChoice && resume)
+  // When any selected video already has a context, offer to keep it (default on);
+  // unchecking reveals the box to write a new one that overwrites it.
   const existingContexts = selectedVideos.map(v => (v.context || '').trim()).filter(Boolean)
   const hasExistingContext = existingContexts.length > 0
   const [keepContext, setKeepContext] = useState(true)
   // The free-text box shows only when we're NOT keeping an existing context.
   const showContextInput = askContext && (!hasExistingContext || !keepContext)
+
+  const nothingSelected = !doVideo && !doAudio && !fuseActive
 
   const handleSubmit = async () => {
     setSubmitting(true)
@@ -735,9 +757,7 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
     // own saved context (correct even when selected videos have different ones).
     const ctx = showContextInput ? (context.trim() || undefined) : undefined
     if (showContextInput && context.trim()) saveContext(context.trim())
-    const visual = scope !== 'audio'
-    const audio = scope !== 'visual'
-    await Promise.all(videoIds.map(id => api.reprocessVideo(id, ctx, useResume, visual, audio).catch(() => {})))
+    await Promise.all(videoIds.map(id => api.reprocessVideo(id, ctx, useResume, doVideo, doAudio, fuseActive).catch(() => {})))
     onDone()
   }
 
@@ -758,21 +778,23 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
 
         <div>
           <label style={{ fontSize: '0.82rem', color: 'var(--muted)', display: 'block', marginBottom: '0.4rem' }}>
-            What to analyze
+            Stages to run
           </label>
           <div style={{ display: 'flex', gap: '0.4rem' }}>
             {([
-              { key: 'both', label: 'Both', icon: null, desc: 'Visual + audio' },
-              { key: 'visual', label: 'Video only', icon: <VideoIcon size={13} />, desc: 'Frame captions' },
-              { key: 'audio', label: 'Audio only', icon: <Mic size={13} />, desc: 'Transcript' },
-            ] as const).map(opt => (
+              { key: 'video', active: doVideo, toggle: () => setDoVideo(v => !v), icon: <VideoIcon size={13} />, label: 'Video', desc: 'Caption frames', disabled: false },
+              { key: 'audio', active: doAudio, toggle: () => setDoAudio(v => !v), icon: <Mic size={13} />, label: 'Audio', desc: 'Transcribe', disabled: false },
+              { key: 'fuse', active: fuseActive, toggle: () => setDoFuse(v => !v), icon: <Sparkles size={13} />, label: 'Fuse', desc: canFuse ? 'Merge both' : 'Needs both', disabled: !canFuse },
+            ] as const).map(s => (
               <button
-                key={opt.key}
-                onClick={() => setScope(opt.key)}
-                className={scope === opt.key ? '' : 'ghost'}
-                style={{ flex: 1, minWidth: 0, fontSize: '0.8rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.15rem', padding: '0.45rem 0.4rem', textAlign: 'center', whiteSpace: 'normal' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', fontWeight: 600 }}>{opt.icon}{opt.label}</span>
-                <span style={{ fontSize: '0.68rem', opacity: 0.8, fontWeight: 400 }}>{opt.desc}</span>
+                key={s.key}
+                onClick={s.toggle}
+                disabled={s.disabled}
+                className={s.active ? '' : 'ghost'}
+                title={s.key === 'fuse' && !canFuse ? 'Fusion needs both video captions and a transcript' : undefined}
+                style={{ flex: 1, minWidth: 0, fontSize: '0.8rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.15rem', padding: '0.45rem 0.4rem', textAlign: 'center', whiteSpace: 'normal', opacity: s.disabled ? 0.45 : 1, cursor: s.disabled ? 'not-allowed' : 'pointer' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', fontWeight: 600 }}>{s.icon}{s.label}</span>
+                <span style={{ fontSize: '0.68rem', opacity: 0.8, fontWeight: 400 }}>{s.desc}</span>
               </button>
             ))}
           </div>
@@ -857,9 +879,10 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
           </p>
         )}
 
-        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', alignItems: 'center', marginTop: '0.25rem' }}>
+          {nothingSelected && <span style={{ fontSize: '0.75rem', color: 'var(--muted)', marginRight: 'auto' }}>Select at least one stage</span>}
           <button className="ghost" onClick={onClose} disabled={submitting}>Cancel</button>
-          <button onClick={handleSubmit} disabled={submitting}>
+          <button onClick={handleSubmit} disabled={submitting || nothingSelected}>
             {submitting ? <><span className="spinner" style={{ width: 13, height: 13, marginRight: '0.4rem' }} />Starting…</> : (
               showResumeChoice && !resume
                 ? <><RotateCcw size={13} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} /> Start Over</>

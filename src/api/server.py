@@ -27,7 +27,8 @@ from ..search.segment_retriever import SegmentRetriever
 from ..search.metadata_filter import build_filters, video_matches, describe_metadata
 from ..summarize.video_summarizer import SummarizationService
 from ..transcribe.transcriber import TranscriptionService
-from ..llm_judge import JudgeService
+from ..fusion import FusionService
+from ..search.llm_rerank import LLMReranker
 
 # Stopwords stripped before computing the keyword-overlap boost in /search.
 _SEARCH_STOPWORDS = {
@@ -70,7 +71,7 @@ async def lifespan(_app: FastAPI):
     global _auto_import_task
     await db.init_db()
     await embed_service.ensure_collection()
-    stuck = [v for v in await db.get_all_videos() if v.status in ('processing', 'transcribing')]
+    stuck = [v for v in await db.get_all_videos() if v.status in ('processing', 'transcribing', 'fusing')]
     for v in stuck:
         await db.update_video(v.id, {'frame_count': 0})
         _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
@@ -90,6 +91,9 @@ async def lifespan(_app: FastAPI):
     # Correct has_frames/has_transcript for videos analyzed before the has_frames
     # column existed (its migration blanket-defaulted every row to 1).
     asyncio.create_task(_backfill_modality_flags())
+    # Populate the lexical (BM25/FTS5) index from existing Qdrant payloads so
+    # hybrid search works on a library indexed before this feature.
+    asyncio.create_task(_backfill_segment_fts())
     yield
 
 app = FastAPI(
@@ -189,6 +193,13 @@ def _effective_cfg() -> dict:
     base.update(override)
     base.setdefault("max_concurrent_jobs", 8)
     base.setdefault("transcription_concurrency", 2)
+    # Whisper decode tuning: greedy (beam 1) + no previous-text conditioning is the
+    # fast default; both are override-tunable from the Settings file.
+    base.setdefault("whisper_beam_size", settings.whisper_beam_size)
+    base.setdefault("whisper_condition_on_previous", settings.whisper_condition_on_previous)
+    # LLM compositional precision re-rank of the search shortlist (final precision
+    # stage). On by default; override-tunable to disable if LLM latency is unwanted.
+    base.setdefault("llm_rerank", True)
     # CPU thread cap for ffmpeg: 0 = auto (half cores), keeps host responsive.
     cores = os.cpu_count() or 4
     base["cpu_cores"] = cores
@@ -239,12 +250,20 @@ _analysis_semaphore = asyncio.Semaphore(int(_cfg.get("max_concurrent_jobs", 8)))
 _transcribe_semaphore = asyncio.Semaphore(max(1, int(_cfg.get("transcription_concurrency", 2))))
 
 # Services
-embed_service = EmbeddingService(_cfg["embed_url"], _cfg["qdrant_url"], model=_cfg["embed_model"])
+embed_service = EmbeddingService(_cfg["embed_url"], _cfg["qdrant_url"], model=_cfg["embed_model"], text_index=db)
 vlm_service = VLMService(_cfg["vlm_url"], model=_cfg["vlm_model"])
 summarizer_service = SummarizationService(_cfg["llm_url"], model=_cfg["llm_model"])
-# Enhanced-search LLM judge reuses the summarizer's text LLM endpoint.
-judge_service = JudgeService(_cfg["llm_url"], model=_cfg["llm_model"])
-transcription_service = TranscriptionService(model_size=_cfg["whisper_model"])
+# Fusion (3rd analysis pass) reuses the summarizer's text LLM endpoint.
+fusion_service = FusionService(_cfg["llm_url"], model=_cfg["llm_model"])
+# Compositional precision re-ranker (final search-precision stage). Reuses the
+# text LLM endpoint; gated on per search by `llm_rerank` config + query shape.
+llm_reranker = LLMReranker(_cfg["llm_url"], model=_cfg["llm_model"])
+_llm_rerank_on = bool(_cfg.get("llm_rerank", True))
+transcription_service = TranscriptionService(
+    model_size=_cfg["whisper_model"],
+    beam_size=int(_cfg.get("whisper_beam_size", 1)),
+    condition_on_previous_text=bool(_cfg.get("whisper_condition_on_previous", False)),
+)
 query_processor = QueryProcessor()
 segment_retriever = SegmentRetriever()
 
@@ -255,12 +274,18 @@ _reranker = None
 frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"], threads=int(_cfg.get("ffmpeg_threads", 0)))
 
 def _reinit_services(cfg: dict):
-    global embed_service, vlm_service, summarizer_service, judge_service, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
-    embed_service = EmbeddingService(cfg["embed_url"], cfg["qdrant_url"], model=cfg["embed_model"])
+    global embed_service, vlm_service, summarizer_service, fusion_service, llm_reranker, _llm_rerank_on, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
+    embed_service = EmbeddingService(cfg["embed_url"], cfg["qdrant_url"], model=cfg["embed_model"], text_index=db)
     vlm_service = VLMService(cfg["vlm_url"], model=cfg["vlm_model"])
     summarizer_service = SummarizationService(cfg["llm_url"], model=cfg["llm_model"])
-    judge_service = JudgeService(cfg["llm_url"], model=cfg["llm_model"])
-    transcription_service = TranscriptionService(model_size=cfg["whisper_model"])
+    fusion_service = FusionService(cfg["llm_url"], model=cfg["llm_model"])
+    llm_reranker = LLMReranker(cfg["llm_url"], model=cfg["llm_model"])
+    _llm_rerank_on = bool(cfg.get("llm_rerank", True))
+    transcription_service = TranscriptionService(
+        model_size=cfg["whisper_model"],
+        beam_size=int(cfg.get("whisper_beam_size", 1)),
+        condition_on_previous_text=bool(cfg.get("whisper_condition_on_previous", False)),
+    )
     frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]), threads=int(cfg.get("ffmpeg_threads", 0)))
     _analysis_semaphore = asyncio.Semaphore(int(cfg.get("max_concurrent_jobs", 8)))
     _transcribe_semaphore = asyncio.Semaphore(max(1, int(cfg.get("transcription_concurrency", 2))))
@@ -304,6 +329,7 @@ class VideoResponse(BaseModel):
     has_transcript: bool = False
     has_frames: bool = True
     transcribe_progress: float = 0.0
+    fuse_progress: float = 0.0
 
 
 class VideoUpdateRequest(BaseModel):
@@ -459,14 +485,14 @@ async def _rerank_segments(query, segments: list[dict]) -> list[dict]:
         return segments
 
 def _start_analysis(video_path: str, video_id: str, context: str = '', resume: bool = False,
-                    do_visual: bool = True, do_audio: bool = True) -> None:
+                    do_visual: bool = True, do_audio: bool = True, do_fuse: bool = True) -> None:
     """Cancel any existing task for this video, then start a fresh one."""
     existing = _active_tasks.get(video_id)
     if existing and not existing.done():
         existing.cancel()
     task = asyncio.create_task(process_video(
         video_path, video_id, context=context, resume=resume,
-        do_visual=do_visual, do_audio=do_audio,
+        do_visual=do_visual, do_audio=do_audio, do_fuse=do_fuse,
     ))
     _active_tasks[video_id] = task
 
@@ -487,17 +513,19 @@ def _make_transcribe_progress_cb(video_id: str, loop):
 
     return _cb
 
-    return _cb
 
-
-def _delete_video_points(video_id: str, is_transcript: Optional[bool] = None) -> None:
+def _delete_video_points(video_id: str, is_transcript: Optional[bool] = None,
+                         fused: Optional[bool] = None) -> None:
     """Delete a video's Qdrant points. ``is_transcript=None`` removes all of them;
-    True removes only transcript points; False removes only visual points."""
+    True removes only transcript points; False removes only visual points.
+    ``fused=True`` restricts the deletion to fused 3rd-pass points."""
     try:
         from qdrant_client.models import Filter, FieldCondition, MatchValue
         must = [FieldCondition(key="video_id", match=MatchValue(value=video_id))]
         if is_transcript is not None:
             must.append(FieldCondition(key="is_transcript", match=MatchValue(value=is_transcript)))
+        if fused is not None:
+            must.append(FieldCondition(key="fused", match=MatchValue(value=fused)))
         embed_service.qdrant_client.delete(
             collection_name=embed_service.collection_name,
             points_selector=Filter(must=must),
@@ -506,9 +534,21 @@ def _delete_video_points(video_id: str, is_transcript: Optional[bool] = None) ->
         pass
 
 
+async def _purge_points(video_id: str, is_transcript: Optional[bool] = None,
+                        fused: Optional[bool] = None) -> None:
+    """Delete a video's points from BOTH the dense (Qdrant) and lexical (FTS5)
+    indexes, keeping the two recall arms in sync. Same filter semantics as
+    _delete_video_points."""
+    _delete_video_points(video_id, is_transcript=is_transcript, fused=fused)
+    try:
+        await db.delete_segment_text(video_id, is_transcript=is_transcript, fused=fused)
+    except Exception as e:
+        print(f"[purge] lexical delete failed: {e}")
+
+
 # Background tasks
 async def process_video(video_path: str, video_id: str, context: str = '', resume: bool = False,
-                        do_visual: bool = True, do_audio: bool = True):
+                        do_visual: bool = True, do_audio: bool = True, do_fuse: bool = True):
     """Process a video: extract frames, caption, transcribe audio, and index.
 
     ``do_visual`` / ``do_audio`` select which modalities to analyze (default both).
@@ -516,7 +556,7 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
     modality is flagged on the video (has_frames / has_transcript) so the UI can
     show the appropriate "no video" / "no audio" indicator.
     """
-    if not do_visual and not do_audio:
+    if not do_visual and not do_audio and not do_fuse:
         do_visual = do_audio = True  # nothing selected: fall back to full analysis
     try:
         await db.update_video(video_id, {'status': 'processing'})
@@ -528,10 +568,10 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
                 if do_visual:
                     await db.update_video(video_id, {'frame_count': 0})
                     await db.delete_visual_frames_for_video(video_id)
-                    _delete_video_points(video_id, is_transcript=False)
+                    await _purge_points(video_id, is_transcript=False)
                 if do_audio:
                     await db.delete_transcript_frames_for_video(video_id)
-                    _delete_video_points(video_id, is_transcript=True)
+                    await _purge_points(video_id, is_transcript=True)
 
             # Collect what already exists (for resume gap-filling and skip logic)
             existing_db_frames = await db.get_frames_for_video(video_id)
@@ -599,6 +639,31 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
             elif do_audio:
                 print(f"Resume: skipping transcription for {video_id} (already indexed)")
 
+            # ---- Fusion: 3rd pass — fuse per-window visual + spoken evidence ----
+            # The VLM scored each frame in isolation and Whisper each utterance, so
+            # neither sees a moment split across channels. Here we group both into
+            # ~20s windows and let the LLM fuse each into one factual description,
+            # indexed alongside (never replacing) the raw points so cross-modal
+            # moments rank correctly. Rebuilt every run from the current frame set.
+            # Gated on do_fuse and only does work when both modalities have data
+            # (build_windows needs a (shown) AND a (spoken) line per window), so a
+            # fuse-only run works off the existing DB frames + transcript.
+            if do_fuse:
+                fusion_frames = await db.get_frames_for_video(video_id)
+                windows = fusion_service.build_windows(fusion_frames)
+                if windows:
+                    await db.update_video(video_id, {'status': 'fusing', 'fuse_progress': 0.0})
+                    await _purge_points(video_id, fused=True)   # clear any prior fused points
+                    for i, w in enumerate(windows):
+                        desc = await fusion_service.fuse(context, w["lines"])
+                        if desc:
+                            fid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_fused_{i}"))
+                            await embed_service.index_frame(
+                                video_id=video_id, frame_path=w["rep_fp"],
+                                timestamp=w["lo"], caption=desc, _point_id=fid, fused=True,
+                            )
+                        await db.update_video(video_id, {'fuse_progress': (i + 1) / len(windows)})
+
         # Derive the final modality flags from what's actually indexed, so the
         # "no video" / "no audio" badges always reflect reality.
         final_frames = await db.get_frames_for_video(video_id)
@@ -614,11 +679,13 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
         # Only clear the modalities this run was (re)building, so cancelling an
         # audio-only re-run doesn't discard the existing visual index.
         if do_visual and do_audio:
-            _delete_video_points(video_id, is_transcript=None)
+            await _purge_points(video_id, is_transcript=None)
         elif do_visual:
-            _delete_video_points(video_id, is_transcript=False)
+            await _purge_points(video_id, is_transcript=False)
         elif do_audio:
-            _delete_video_points(video_id, is_transcript=True)
+            await _purge_points(video_id, is_transcript=True)
+        elif do_fuse:
+            await _purge_points(video_id, fused=True)
         raise
     except Exception as e:
         import traceback
@@ -766,6 +833,41 @@ async def _backfill_modality_flags():
                 pass
     if fixed:
         print(f"[modality] corrected has_frames/has_transcript for {fixed} video(s)", flush=True)
+
+
+async def _backfill_segment_fts():
+    """Populate the lexical (BM25/FTS5) index from existing Qdrant payloads.
+
+    The hybrid-recall sparse arm needs one FTS row per point. New points are
+    mirrored live by index_frame, but a library indexed before this feature has
+    none — so on first startup we scroll every Qdrant point and bulk-insert its
+    caption. Cheap (no embedding/GPU) and idempotent: skipped once the index is
+    populated.
+    """
+    try:
+        if await db.count_segment_text() > 0:
+            return  # already built
+        loop = asyncio.get_running_loop()
+        points = await loop.run_in_executor(None, lambda: list(embed_service.scroll_all_points()))
+        rows = []
+        for p in points:
+            pl = p.get("payload") or {}
+            cap = pl.get("caption") or ""
+            rows.append({
+                "point_id": p["id"], "video_id": pl.get("video_id") or "",
+                "caption": cap,
+                "is_transcript": bool(pl.get("is_transcript")) or cap.startswith("[transcript]"),
+                "fused": bool(pl.get("fused")),
+                "frame_path": pl.get("frame_path") or "", "timestamp": pl.get("timestamp") or 0.0,
+            })
+        BATCH = 1000
+        total = 0
+        for i in range(0, len(rows), BATCH):
+            total += await db.index_segments_bulk(rows[i:i + BATCH])
+        if total:
+            print(f"[segment_fts] backfilled {total} point(s) into the lexical index", flush=True)
+    except Exception as e:
+        print(f"[segment_fts] backfill failed: {e}", flush=True)
 
 
 def _do_source_backfill():
@@ -1015,7 +1117,9 @@ async def import_library(file: UploadFile = File(...)):
         for mid in to_delete:
             await db.delete_video(mid)
             await loop.run_in_executor(None, embed_service.delete_video_points, mid)
+            await db.delete_segment_text(mid)
         await loop.run_in_executor(None, embed_service.delete_video_points, vid)
+        await db.delete_segment_text(vid)
 
         # Insert the imported records verbatim (ids preserved).
         row = _dict_to_row(vd, _VIDEO_COLS, _DATETIME_VIDEO_COLS)
@@ -1028,6 +1132,19 @@ async def import_library(file: UploadFile = File(...)):
         await db.create_frames(frame_rows)
 
         await loop.run_in_executor(None, embed_service.import_points, points_by_video.get(vid, []))
+        # Mirror the imported captions into the lexical index for hybrid recall.
+        _fts_rows = []
+        for _p in points_by_video.get(vid, []):
+            _pl = _p.get("payload") or {}
+            _cap = _pl.get("caption") or ""
+            _fts_rows.append({
+                "point_id": _p["id"], "video_id": _pl.get("video_id") or vid,
+                "caption": _cap,
+                "is_transcript": bool(_pl.get("is_transcript")) or _cap.startswith("[transcript]"),
+                "fused": bool(_pl.get("fused")),
+                "frame_path": _pl.get("frame_path") or "", "timestamp": _pl.get("timestamp") or 0.0,
+            })
+        await db.index_segments_bulk(_fts_rows)
 
         if include_images:
             for name in zf.namelist():
@@ -1363,7 +1480,6 @@ async def search_videos(
     resolution: str = "",
     date_from: str = "",
     date_to: str = "",
-    enhanced: bool = False,
 ):
     """Search for videos by natural language query, with optional metadata filters.
 
@@ -1435,6 +1551,48 @@ async def search_videos(
         w.lower() for w in re.findall(r'\b[A-Za-z0-9]{2,}\b', processed["search_terms"])
         if w.lower() not in _SEARCH_STOPWORDS and re.search(r'[A-Za-z]', w)
     ]
+
+    # --- Hybrid recall: fuse dense (bi-encoder) + sparse (BM25/FTS5) candidates ---
+    # A two-stage retrieve->rerank pipeline can only rerank what the first stage
+    # recalls, and a fixed dense top-k (limit*8) buries strongly-lexical matches as
+    # the library grows (e.g. a caption rich in the query's exact terms that the
+    # bi-encoder still ranks past position 80). Add a BM25 arm over the same
+    # captions and combine the two ranked lists with Reciprocal Rank Fusion, so a
+    # hit that ranks at the top of EITHER signal reaches the reranker. Purely
+    # additive: on any error or empty lexical result we keep the dense-only pool.
+    #
+    # The sparse arm's depth is NOT tied to the (small) display limit the way the
+    # dense arm is: BM25 over SQLite is cheap (no GPU/embedding), and the whole
+    # point of the lexical arm is to reach matches the dense top-k buries, so a
+    # shallow lexical pool would defeat it. Use a fixed floor; RRF's 1/(k+rank)
+    # keeps deep lexical hits from polluting the top while still letting the
+    # reranker (the real precision authority) judge them.
+    LEXICAL_RECALL = max(limit * 8, 200)
+    try:
+        lexical_hits = await db.search_segment_text(
+            key_terms, limit=LEXICAL_RECALL, source_intent=source_intent)
+    except Exception as e:
+        print(f"[search] lexical recall failed: {e}")
+        lexical_hits = []
+
+    if lexical_hits:
+        RRF_K = 60
+        dense_ranked = sorted(results, key=lambda r: r.get("score", 0.0), reverse=True)
+        fused_scores: dict = {}
+        hit_by_id: dict = {}
+        for ranked_list in (dense_ranked, lexical_hits):
+            for rank, r in enumerate(ranked_list):
+                hid = r.get("id")
+                if hid is None:
+                    continue
+                hit_by_id.setdefault(hid, r)
+                fused_scores[hid] = fused_scores.get(hid, 0.0) + 1.0 / (RRF_K + rank + 1)
+        results = []
+        for hid, score in fused_scores.items():
+            hit = hit_by_id[hid]
+            hit["score"] = score
+            results.append(hit)
+
     def _boost(caption: str) -> float:
         if not key_terms:
             return 1.0
@@ -1716,160 +1874,37 @@ async def search_videos(
                     # cap to "Mostly matches" regardless of reranker confidence.
                     s["score"] = min(s["score"], PARTIAL_CEIL)
 
-    # Enhanced search (opt-in). The cross-encoder above scored each caption in
-    # isolation, so it is blind to a moment split across channels and weak on
-    # relational queries ("a man talking TO a robot"). Here we take the shortlist
-    # of best moments, hand the LLM each WHOLE moment as text (every on-screen
-    # caption + the spoken transcript in its window) and let it judge, with both
-    # channels in view, whether the moment genuinely matches. The verdict replaces
-    # the reranker score for that moment. This reuses captions we already have —
-    # no frames are re-examined — and is capped to a small shortlist for latency.
-    if enhanced and all_segments and source_intent == 'mixed':
-        JUDGE_WINDOW = 20.0     # seconds of context handed to the judge per moment
-        MAX_MOMENTS = 14        # shortlist size (bounds latency / token budget)
-
-        # Distinctive subjects named in the query (library-rare, not generic verbs
-        # like "talking"). These tell us WHERE in each video to actually look — the
-        # human strategy: scan for the spots that show/say the rare thing (the
-        # robot), then read both channels there. The cross-encoder cannot do this:
-        # it ranks generic "a man talking" frames highest and buries the few real
-        # robot frames, so judging only the reranker's top windows would never see
-        # the robot. We seed candidate windows from where the anchor truly appears.
-        def _estem(w: str) -> str:
-            return w[:-1] if len(w) > 3 and w.endswith("s") else w
-
-        _enh_total = await db.count_frames()
-        _enh_cap = max(40, int(0.04 * _enh_total))
-        enh_anchors: list = []
-        for t in dict.fromkeys(_estem(x) for x in key_terms):
-            if t in _ANCHOR_STOPLIST or len(t) < 3:
-                continue
-            hits = await db.search_captions([t], limit=_enh_cap + 1)
-            if 1 <= len(hits) <= _enh_cap:
-                enh_anchors.append(t)
-
-        # Anchor-seeded frames: the actual on-screen/spoken occurrences of the rare
-        # subject, pulled straight from the DB (independent of semantic recall, so
-        # we find robot moments the embedding never surfaced).
-        anchor_frames: list = []
-        for t in enh_anchors:
-            for f in await db.search_captions([t], limit=_enh_cap):
-                anchor_frames.append((f.video_id, f.timestamp, f.frame_path or "", f.caption or ""))
-
-        ranked = sorted(all_segments, key=lambda s: -s["score"])
-        enh_vids = {s["video_id"] for s in ranked[:40]} | {af[0] for af in anchor_frames}
-        enh_tl: dict = {}
-        for _vid in enh_vids:
-            entries = []
-            for _f in await db.get_frames_for_video(_vid):
-                _cap = (_f.caption or "").strip()
-                if _cap:
-                    entries.append((_f.timestamp, bool(_f.frame_path), _cap, _f.frame_path or ""))
-            entries.sort()
-            enh_tl[_vid] = entries
-
-        # Build the candidate window list: anchor windows first (where the rare
-        # subject is), then the top reranker windows (to confirm/deny strong
-        # semantic hits). Collapse near-duplicate timestamps per video so the judge
-        # sees variety rather than six frames of one shot.
-        candidates: list = []
-        chosen: list = []   # (video_id, time) already represented
-        for vid, ts, fp, cap in sorted(anchor_frames, key=lambda x: (x[0], x[1])):
-            if any(v == vid and abs(ts - tt) <= JUDGE_WINDOW for v, tt in chosen):
-                continue
-            chosen.append((vid, ts))
-            candidates.append({"video_id": vid, "t": ts, "seed_fp": fp, "seed_cap": cap})
-        for s in ranked:
-            if s["score"] < 0.50:
-                break   # below this the reranker is actively rejecting — skip
-            vid, t = s["video_id"], s["start_time"]
-            if any(v == vid and abs(t - tt) <= JUDGE_WINDOW for v, tt in chosen):
-                continue
-            chosen.append((vid, t))
-            candidates.append({"video_id": vid, "t": t,
-                               "seed_fp": s.get("frame_path", ""), "seed_cap": s.get("caption", "")})
-
-        moments: list = []
-        for c in candidates:
-            if len(moments) >= MAX_MOMENTS:
-                break
-            vid, t = c["video_id"], c["t"]
-            lo, hi = t - JUDGE_WINDOW, t + JUDGE_WINDOW
-            lines = []
-            has_visual = False
-            seed_fp = c["seed_fp"]
-            tl = enh_tl.get(vid, [])
-            for ts, is_visual, cap, _fp in tl:
-                if lo <= ts <= hi:
-                    text = cap.replace("[transcript] ", "")
-                    kind = "shown" if is_visual else "spoken"
-                    lines.append(f"[{int(ts // 60):02d}:{int(ts % 60):02d}] ({kind}) {text}")
-                    has_visual = has_visual or is_visual
-            if not lines:
-                continue
-            # Spoken-only moment: no frame fell in the window. Borrow the nearest
-            # visual frame at-or-before t (same shot, since frames sit on scene cuts)
-            # so the judge gets visual context and the result shows a thumbnail
-            # instead of judging on words alone. Fall back to the first frame after.
-            if not has_visual:
-                prior = None
-                later = None
-                for ts, is_v, cap, fp in tl:
-                    if not is_v:
-                        continue
-                    if ts <= t:
-                        prior = (ts, cap, fp)
-                    elif later is None:
-                        later = (ts, cap, fp)
-                pick = prior or later
-                if pick:
-                    pts, pcap, pfp = pick
-                    lines.append(f"[{int(pts // 60):02d}:{int(pts % 60):02d}] (shown) {pcap}")
-                    if not seed_fp:
-                        seed_fp = pfp
-            meta = video_meta.get(vid)
-            name = meta["name"] if meta else vid
-            moments.append({
-                "video_id": vid, "lo": lo, "hi": hi, "t": t,
-                "seed_fp": seed_fp, "seed_cap": c["seed_cap"],
-                "label": f"{name} @ {int(t // 60)}:{int(t % 60):02d}",
-                "text": "\n".join(lines),
-            })
-
-        verdicts = await judge_service.judge_moments(q, moments)
-        # Enhanced is strictly ADDITIVE: a small local judge is good at confirming
-        # an obvious cross-modal match but unreliable at ruling things OUT (it will
-        # reject a real "AI used in museums" discussion just because no museum is
-        # literally on screen). So we only ever PROMOTE moments the judge is
-        # confident about and never demote a base result. Worst case Enhanced ==
-        # base; best case it surfaces a buried moment recall/rerank missed (the
-        # actual robot frame) and lifts genuine cross-modal hits.
-        PROMOTE = 0.62          # judge must be at least "likely a match" to act
-        best_conf: dict = {}
-        for idx, conf in verdicts.items():
-            if conf < PROMOTE:
-                continue        # unsure / negative -> leave base scoring untouched
-            m = moments[idx]
-            claimed = False
-            for s in all_segments:
-                if s["video_id"] == m["video_id"] and m["lo"] <= s["start_time"] <= m["hi"]:
-                    k = id(s)
-                    best_conf[k] = max(best_conf.get(k, 0.0), conf)
-                    claimed = True
-            # The judge confirmed a moment semantic recall never surfaced (the robot
-            # frame the embedding buried). Inject it so the user sees what they
-            # searched for.
-            if not claimed:
-                all_segments.append({
-                    "video_id": m["video_id"],
-                    "start_time": m["t"], "end_time": m["t"],
-                    "caption": m["seed_cap"], "score": conf,
-                    "frame_path": m["seed_fp"],
-                })
-        for s in all_segments:
-            k = id(s)
-            if k in best_conf and best_conf[k] > s["score"]:
-                s["score"] = best_conf[k]
+    # LLM compositional precision re-rank — the FINAL precision authority.
+    # The cross-encoder rewards token co-occurrence regardless of whether the
+    # query's attributes bind to the SAME object: for "mini pc with wooden accent"
+    # it scores a scene with an unrelated AI Mini PC (on a price tag) and separate
+    # "wooden desks" in the background as highly as the true "a black mini PC with
+    # a wooden base". No lexical/proximity rule fixes this (a false positive can
+    # have "Mac Mini" and "wooden table" in the same sentence, yet the wood is the
+    # table, not the computer). Only semantic reasoning distinguishes an attribute
+    # bound to the subject from background furniture, so we ask the text LLM to
+    # score the top shortlist for whether a SINGLE subject matches the WHOLE query,
+    # and blend that compositional confidence in. Bounded cost (one call over the
+    # top-K), gated to multi-term/compositional queries, and safe: a failed or
+    # silent judgment leaves the cross-encoder ranking unchanged.
+    if _llm_rerank_on and llm_reranker is not None and len(key_terms) >= 2 and all_segments:
+        all_segments.sort(key=lambda s: s["score"], reverse=True)
+        _shortlist = all_segments[:20]
+        _caps = [(s.get("caption") or "").replace("[transcript] ", "").strip()
+                 for s in _shortlist]
+        _llm_scores = await llm_reranker.score(rerank_query, _caps)
+        if _llm_scores:
+            # Additive blend centered on the LLM's 0.5 neutral point: a confirmed
+            # binding promotes (up to +0.375), a clear non-binding match demotes
+            # (down to -0.375), an unsure/silent judgment leaves the score as-is.
+            # The cross-encoder remains the baseline; the LLM only shifts it.
+            LLM_RERANK_WEIGHT = 0.75
+            for _s, _ls in zip(_shortlist, _llm_scores):
+                if _ls is None:
+                    continue
+                _s["score"] = max(0.0, min(1.0, _s["score"] + LLM_RERANK_WEIGHT * (_ls - 0.5)))
+            all_segments.sort(key=lambda s: s["score"], reverse=True)
+            print(f"LLM-rerank '{rerank_query}': top={[round(s['score'], 3) for s in all_segments[:8]]}")
 
     # Re-group by video for the response
     video_segs: dict = {}
@@ -2116,6 +2151,7 @@ def _video_to_response(v) -> VideoResponse:
         has_transcript=bool(getattr(v, 'has_transcript', 0)),
         has_frames=bool(getattr(v, 'has_frames', 1)),
         transcribe_progress=float(getattr(v, 'transcribe_progress', 0.0) or 0.0),
+        fuse_progress=float(getattr(v, 'fuse_progress', 0.0) or 0.0),
     )
 
 
@@ -2238,6 +2274,43 @@ async def get_video_transcript(video_id: str):
         for f in sorted(frames, key=lambda x: x.timestamp)
         if (f.caption or '').startswith('[transcript]')
     ]
+    return {"segments": segments, "video_id": video_id, "count": len(segments)}
+
+
+@app.get("/videos/{video_id}/fused", tags=["Analysis"])
+async def get_video_fused(video_id: str):
+    """Return the fused 3rd-pass window descriptions for a video.
+
+    Fused points live only in Qdrant (payload ``fused=True``), so this reads
+    them directly from the collection rather than the DB frame table.
+    """
+    video = await db.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    segments = []
+    try:
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        points, _ = embed_service.qdrant_client.scroll(
+            collection_name=embed_service.collection_name,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="video_id", match=MatchValue(value=video_id)),
+                FieldCondition(key="fused", match=MatchValue(value=True)),
+            ]),
+            limit=1000,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for p in points:
+            pl = p.payload or {}
+            segments.append({
+                "id": str(p.id),
+                "timestamp": pl.get("timestamp", 0.0),
+                "caption": pl.get("caption", ""),
+                "path": pl.get("frame_path") or None,
+            })
+        segments.sort(key=lambda s: s["timestamp"])
+    except Exception:
+        pass
     return {"segments": segments, "video_id": video_id, "count": len(segments)}
 
 
@@ -2372,6 +2445,7 @@ class AnalyzeRequest(BaseModel):
     resume: bool = False
     visual: bool = True   # caption video frames
     audio: bool = True    # transcribe audio
+    fuse: bool = True     # 3rd-pass cross-modal fusion (needs both modalities' data)
 
 ReprocessRequest = AnalyzeRequest  # backward-compat alias
 
@@ -2389,7 +2463,7 @@ async def _run_analyze(video_id: str, req: AnalyzeRequest) -> dict:
     await db.update_video(video_id, updates)
     context = req.context or getattr(video, 'context', '') or ''
     _start_analysis(video.path, video_id, context=context, resume=req.resume,
-                    do_visual=req.visual, do_audio=req.audio)
+                    do_visual=req.visual, do_audio=req.audio, do_fuse=req.fuse)
     return {"status": "processing", "video_id": video_id}
 
 

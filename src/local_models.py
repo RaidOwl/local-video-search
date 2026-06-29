@@ -15,10 +15,10 @@ and text summarization (LLM), so vlm_model == llm_model.
 TIER_MODELS: dict = {
     "ollama": {
         "qwen": {
-            "low":   {"model": "qwen2.5vl:3b",  "embed": "bge-m3"},
-            "mid":   {"model": "qwen2.5vl:7b",  "embed": "bge-m3"},
-            "high":  {"model": "qwen2.5vl:32b", "embed": "bge-m3"},
-            "ultra": {"model": "qwen2.5vl:72b", "embed": "bge-m3"},
+            "low":   {"model": "qwen3-vl:4b",   "embed": "bge-m3"},
+            "mid":   {"model": "qwen3-vl:8b",   "embed": "bge-m3"},
+            "high":  {"model": "qwen3-vl:32b",  "embed": "bge-m3"},
+            "ultra": {"model": "qwen3-vl:235b", "embed": "bge-m3"},
         },
         "gemma": {
             "low":   {"model": "gemma3:4b",  "embed": "bge-m3"},
@@ -30,15 +30,15 @@ TIER_MODELS: dict = {
     "vllm": {
         # FP8 quantizes only the LLM decoder; vision encoder stays BF16.
         # Practical VRAM needed (with --gpu-memory-utilization 0.75):
-        #   3B  → ~3 GB    low GPU
-        #   7B  → ~7 GB    mid GPU
-        #   32B → ~35 GB   high tier (≥40 GB)
-        #   72B → ~80 GB   ultra tier (≥128 GB, e.g. DGX Spark GB10)
+        #   4B        → ~4 GB    low GPU
+        #   8B        → ~9 GB    mid GPU
+        #   32B       → ~35 GB   high tier (≥40 GB)
+        #   235B-A22B → MoE, ultra tier (≥128 GB, e.g. DGX Spark GB10)
         "qwen": {
-            "low":   {"model": "Qwen/Qwen2.5-VL-3B-Instruct",  "embed": "BAAI/bge-m3"},
-            "mid":   {"model": "Qwen/Qwen2.5-VL-7B-Instruct",  "embed": "BAAI/bge-m3"},
-            "high":  {"model": "Qwen/Qwen2.5-VL-32B-Instruct", "embed": "BAAI/bge-m3"},
-            "ultra": {"model": "Qwen/Qwen2.5-VL-72B-Instruct", "embed": "BAAI/bge-m3"},
+            "low":   {"model": "Qwen/Qwen3-VL-4B-Instruct",        "embed": "BAAI/bge-m3"},
+            "mid":   {"model": "Qwen/Qwen3-VL-8B-Instruct",        "embed": "BAAI/bge-m3"},
+            "high":  {"model": "Qwen/Qwen3-VL-32B-Instruct",       "embed": "BAAI/bge-m3"},
+            "ultra": {"model": "Qwen/Qwen3-VL-235B-A22B-Instruct", "embed": "BAAI/bge-m3"},
         },
         "gemma": {
             "low":   {"model": "google/gemma-3-4b-it",  "embed": "BAAI/bge-m3"},

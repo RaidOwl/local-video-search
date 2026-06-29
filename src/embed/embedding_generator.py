@@ -59,12 +59,16 @@ class EmbeddingService:
         base_url: str,
         qdrant_url: str,
         collection_name: str = "video_frames",
-        model: str = "BAAI/bge-m3"
+        model: str = "BAAI/bge-m3",
+        text_index=None,
     ):
         self.generator = EmbeddingGenerator(base_url, model=model)
         self.qdrant_url = qdrant_url
         self.collection_name = collection_name
         self._qdrant_client = None
+        # Optional lexical (BM25/FTS5) mirror kept in sync with Qdrant so hybrid
+        # search has a sparse arm. Duck-typed Database; None disables the mirror.
+        self.text_index = text_index
     
     @property
     def qdrant_client(self):
@@ -136,6 +140,7 @@ class EmbeddingService:
         timestamp: float,
         caption: str = None,
         _point_id: str = None,
+        fused: bool = False,
     ):
         """Index a single frame with its embedding."""
         # Embed the caption text; fall back to frame path if no caption
@@ -157,6 +162,9 @@ class EmbeddingService:
             # Transcript segments are indexed with a "[transcript] " caption
             # prefix; tag them so search can filter by source server-side.
             "is_transcript": bool(caption and caption.startswith('[transcript]')),
+            # Fused 3rd-pass descriptions are tagged so they can be cleared and
+            # re-built independently of the raw visual/transcript points.
+            "fused": fused,
         }
 
         self.qdrant_client.upsert(
@@ -168,7 +176,32 @@ class EmbeddingService:
             )]
         )
 
+        # Mirror the caption into the lexical (BM25) index for hybrid recall.
+        if self.text_index is not None:
+            try:
+                await self.text_index.index_segment_text(
+                    point_id=point_id, video_id=video_id, caption=caption or "",
+                    is_transcript=payload["is_transcript"], fused=fused,
+                    frame_path=frame_path, timestamp=timestamp,
+                )
+            except Exception as e:
+                print(f"[index_frame] lexical index failed: {e}")
+
         return point_id
+
+    def scroll_all_points(self):
+        """Yield {id, payload} for every point (payloads only) for lexical backfill."""
+        offset = None
+        while True:
+            points, offset = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                with_payload=True, with_vectors=False,
+                limit=512, offset=offset,
+            )
+            for p in points:
+                yield {"id": p.id, "payload": p.payload or {}}
+            if offset is None:
+                break
     
     def export_points(self, video_id: str) -> List[dict]:
         """Scroll every Qdrant point for a video (with vectors) for library export."""

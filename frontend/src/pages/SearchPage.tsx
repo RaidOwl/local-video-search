@@ -9,7 +9,6 @@ const SS_RESULTS = 'vss_search_results'
 const SS_TIER = 'vss_search_tier'
 const SS_SEARCH_VIDEO = 'vss_search_video'
 const SS_SEARCH_AUDIO = 'vss_search_audio'
-const SS_ENHANCED = 'vss_search_enhanced'
 const SS_FILTERS = 'vss_search_filters'
 
 // Relevance is the reranker's raw score (0–1; ~0.50 = "the model rejects this").
@@ -61,7 +60,6 @@ export default function SearchPage() {
   })
   const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem(SS_SEARCH_VIDEO) !== '0')
   const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
-  const [enhanced, setEnhanced] = useState(() => sessionStorage.getItem(SS_ENHANCED) !== '0')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const navigate = useNavigate()
@@ -124,7 +122,6 @@ export default function SearchPage() {
   const clearFilters = () => updateFilters(emptyFilters)
 
   const sources = searchVideo && searchAudio ? 'both' : searchVideo ? 'video' : searchAudio ? 'audio' : 'both'
-  const enhancedAvailable = searchVideo && searchAudio
 
   const handleSearch = async (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -136,7 +133,7 @@ export default function SearchPage() {
         resolution: filters.resolution,
         date_from: filters.dateFrom,
         date_to: filters.dateTo,
-      }, enhanced && searchVideo && searchAudio)).results
+      })).results
       setResults(res)
       setResultQuery(query)
       sessionStorage.setItem(SS_QUERY, query)
@@ -230,20 +227,6 @@ export default function SearchPage() {
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', flexShrink: 0 }}>
             <input type="checkbox" checked={searchAudio} onChange={e => { setSearchAudio(e.target.checked); sessionStorage.setItem(SS_SEARCH_AUDIO, e.target.checked ? '1' : '0') }} />
             Audio
-          </label>
-
-          {/* Enhanced re-judges fused visual+spoken moments, so it only applies
-              when both channels are searched. Always render it in a fixed slot
-              (stable, keyless siblings) and just disable/dim it in single-channel
-              mode so toggling Video/Audio never remounts or reflows the row. */}
-          <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
-          <label
-            title={enhancedAvailable
-              ? "Have an AI read both what's shown and what's said in each candidate moment and re-judge the matches. More accurate for cross-modal queries, but slower."
-              : 'Enhanced search needs both Video and Audio selected.'}
-            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: enhancedAvailable ? 'pointer' : 'not-allowed', flexShrink: 0, opacity: enhancedAvailable ? 1 : 0.4 }}>
-            <input type="checkbox" disabled={!enhancedAvailable} checked={enhancedAvailable && enhanced} onChange={e => { setEnhanced(e.target.checked); sessionStorage.setItem(SS_ENHANCED, e.target.checked ? '1' : '0') }} />
-            Enhanced
           </label>
 
           <span style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
