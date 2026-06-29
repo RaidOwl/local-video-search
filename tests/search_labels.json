@@ -1,5 +1,5 @@
 {
-  "_comment": "Query -> expected video name(s). expect_top: must be #1. expect_in: must appear in results. enhanced toggles judge. Add ~12 you can eyeball-verify; keep only labels you are sure are correct.",
+  "_comment": "EXAMPLE labels tied to ONE specific video library (the maintainer's) — the video names below will NOT exist in your library, so REPLACE these cases with your own. Format: query -> expected video name(s). expect_top: that name must be the #1 result. expect_in: all listed names must appear in results. enhanced toggles cross-modal search. Add ~12 queries you can eyeball-verify; keep only labels you are sure are correct. The harness (eval_search.py) is generic and works with any labels file via --labels.",
   "cases": [
     {"q": "man talking to a hologram", "expect_in": ["ai"], "enhanced": true},
     {"q": "gold macbook", "expect_top": "newmacbook", "enhanced": true},

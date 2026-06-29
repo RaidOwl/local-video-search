@@ -5,10 +5,15 @@ Runs a set of labeled queries against a live API and reports, per query, where
 the expected video landed. This is the measuring stick so search changes are
 judged by numbers, not by eyeballing three queries.
 
+NOTE: this runner is GENERIC, but the shipped tests/search_labels.json is an
+EXAMPLE tied to one specific video library — its video names will not exist in
+yours. To use the harness on your own library, point --labels at a JSON file of
+your own queries + expected video names (same format, see below).
+
 Usage:
     python tests/eval_search.py                       # localhost:8000
     python tests/eval_search.py --base http://host:8000
-    python tests/eval_search.py --labels tests/search_labels.json
+    python tests/eval_search.py --labels my_labels.json   # your own library
 
 Each case in the labels file:
     {"q": "...", "expect_top": "name"}     # must be the #1 result
