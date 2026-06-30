@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { api, Video, AppSettings } from '../services/api'
 import { fmt } from '../utils'
@@ -750,6 +751,22 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
 
   const nothingSelected = !doVideo && !doAudio && !fuseActive
 
+  // Subtle, combination-aware note about what happens to the cross-modal fused
+  // segments for this stage/resume/fuse choice. Only meaningful for content that
+  // already has both channels (so fused segments plausibly exist).
+  const mightHaveFused = selectedVideos.some(v => v.status === 'analyzed' && v.has_frames && v.has_transcript)
+  const fuseNote: { warn: boolean; text: string } | null = (() => {
+    if (nothingSelected) return null
+    if (fuseActive) return { warn: false, text: 'Fused segments will be rebuilt from the latest captions and transcript.' }
+    if (!mightHaveFused) return null
+    // Fuse is available for this selection but turned off.
+    if (doVideo && (!showResumeChoice || !resume))
+      return { warn: true, text: 'Fuse is off — re-running Video from scratch will also delete the existing fused segments.' }
+    if (doVideo || doAudio)
+      return { warn: false, text: 'Fuse is off — existing fused segments are kept, but won’t reflect these changes until you re-fuse.' }
+    return null
+  })()
+
   const handleSubmit = async () => {
     setSubmitting(true)
     const useResume = showResumeChoice && resume
@@ -761,10 +778,10 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
     onDone()
   }
 
-  return (
+  return createPortal(
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '1.5rem', width: '100%', maxWidth: 480, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '1.5rem', width: '100%', maxWidth: 480, maxHeight: 'calc(100vh - 2rem)', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2 style={{ fontSize: '1.1rem' }}>Analyze {videoIds.length} video{videoIds.length !== 1 ? 's' : ''}</h2>
           <button className="icon-btn" onClick={onClose} style={{ lineHeight: 0 }}><X size={16} /></button>
@@ -879,6 +896,13 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
           </p>
         )}
 
+        {fuseNote && (
+          <p style={{ display: 'flex', alignItems: 'flex-start', gap: '0.4rem', fontSize: '0.76rem', lineHeight: 1.35, color: fuseNote.warn ? 'var(--warning)' : 'var(--muted)', margin: 0 }}>
+            <Sparkles size={13} style={{ flexShrink: 0, marginTop: '0.1rem', opacity: 0.85 }} />
+            <span>{fuseNote.text}</span>
+          </p>
+        )}
+
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', alignItems: 'center', marginTop: '0.25rem' }}>
           {nothingSelected && <span style={{ fontSize: '0.75rem', color: 'var(--muted)', marginRight: 'auto' }}>Select at least one stage</span>}
           <button className="ghost" onClick={onClose} disabled={submitting}>Cancel</button>
@@ -891,6 +915,7 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
