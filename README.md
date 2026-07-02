@@ -67,11 +67,11 @@ ollama serve          # keep this running in the background
 
 Then set in `.env`:
 ```env
-AI_BACKEND=ollama-native
+HARDWARE_TYPE=apple
 VRAM_TIER=mid         # or low / high depending on your unified memory
 ```
 
-Because Ollama runs on your host, **you pull the models yourself** — unlike the dockerized `ollama` backend, `ollama-native` has no auto-pull. Grab the embedding model plus the vision/LLM model for your tier (see the [model size tiers](#model-size-tiers) below):
+Because Ollama runs on your host, **you pull the models yourself** — unlike the dockerized Ollama backend, `ollama-native` has no auto-pull. Grab the embedding model plus the vision/LLM model for your tier (see the [model size tiers](#model-size-tiers) below):
 
 ```bash
 ollama pull bge-m3               # embeddings (all tiers)
@@ -83,13 +83,16 @@ Start the stack normally — no extra profile needed:
 docker compose up -d
 ```
 
-**Linux with NVIDIA GPU**
+**Linux with AMD GPU**
 
-Ollama can run inside Docker with full GPU passthrough:
+Ollama runs inside Docker with AMD GPU device passthrough:
 
 ```env
-AI_BACKEND=ollama
+HARDWARE_TYPE=amd
 VRAM_TIER=mid
+# Uncomment to pass GPU devices into the container:
+#GPU_DEV_KFD=/dev/kfd:/dev/kfd
+#GPU_DEV_DRI=/dev/dri:/dev/dri
 ```
 
 ```bash
@@ -98,7 +101,7 @@ docker compose up -d
 
 **CPU-only / no GPU**
 
-Set `VRAM_TIER=low` and `AI_BACKEND=ollama`. The 3B model will run on CPU — slow but functional.
+Set `VRAM_TIER=low` and `HARDWARE_TYPE=cpu`. The 3B model will run on CPU — slow but functional.
 
 ---
 
@@ -107,7 +110,7 @@ Set `VRAM_TIER=low` and `AI_BACKEND=ollama`. The 3B model will run on CPU — sl
 vLLM runs models in FP8 rather than Ollama's Q4 quantization, giving better output quality at the cost of needing more VRAM and a modern NVIDIA GPU (Hopper H100, Ada RTX 40xx, or Blackwell GB10/B200).
 
 ```env
-AI_BACKEND=vllm
+HARDWARE_TYPE=nvidia
 VRAM_TIER=mid              # 7B FP8 needs ~16 GB VRAM
 ```
 
@@ -115,7 +118,7 @@ VRAM_TIER=mid              # 7B FP8 needs ~16 GB VRAM
 docker compose up -d
 ```
 
-> **Note:** This project's bundled vLLM profile uses the official NVIDIA image. vLLM itself also supports AMD (ROCm) and other accelerators, but you'd need to swap `VLLM_IMAGE` for the matching build. For Apple Silicon, use `ollama-native` instead.
+> **Note:** This project's bundled vLLM profile uses the official NVIDIA image. vLLM itself also supports AMD (ROCm) and other accelerators, but you'd need to swap `VLLM_IMAGE` for the matching build. For Apple Silicon, use `HARDWARE_TYPE=apple` instead.
 
 ---
 
@@ -124,7 +127,7 @@ docker compose up -d
 Use this if you already have Ollama, vLLM, LiteLLM, or any OpenAI-compatible server running. Point each URL at your existing endpoints:
 
 ```env
-AI_BACKEND=custom
+HARDWARE_TYPE=custom
 
 # Embedding model (OpenAI /v1/embeddings compatible)
 EMBED_URL=http://10.0.0.30:8001
@@ -211,9 +214,9 @@ and this isn't needed.)
 docker compose up -d
 ```
 
-That's it for every backend. `AI_BACKEND` is the only switch you set — Docker
+That's it for every backend. `HARDWARE_TYPE` is the only switch you set — Docker
 starts the matching model server automatically (or none, for `custom` and
-`ollama-native`).
+`apple`).
 
 ### Step 4 — Open the UI
 
@@ -242,14 +245,15 @@ Results link directly to the timestamp in the video. Use the **Min relevance** s
 
 > On first launch the reranker model (`BAAI/bge-reranker-base`, ~1.1 GB) downloads automatically and is cached under `./data` so it persists across restarts. It runs on CPU inside the API container — no extra GPU required.
 
-## AI Backends
+## Hardware Types
 
-| Value | Description |
-|-------|-------------|
-| `custom` | Bring your own servers. Set `EMBED_URL`, `VLM_URL`, `LLM_URL` in `.env` |
-| `ollama` | Ollama runs in Docker. Good for NVIDIA Linux or CPU. |
-| `ollama-native` | Ollama runs on your host machine. **Required for Apple Silicon** — Docker VMs can't access Metal. Run `ollama serve` first. |
-| `vllm` | vLLM runs in Docker. Requires NVIDIA GPU (Hopper/Ada/Blackwell) + nvidia-container-toolkit. |
+| Value | AI Backend | Description |
+|-------|------------|-------------|
+| `nvidia` | vllm | vLLM runs in Docker. Requires NVIDIA GPU (Hopper/Ada/Blackwell) + nvidia-container-toolkit. |
+| `amd` | ollama | Ollama runs in Docker with AMD GPU passthrough. |
+| `apple` | ollama-native | Ollama runs on your host machine. **Required for Apple Silicon** — Docker VMs can't access Metal. Run `ollama serve` first. |
+| `cpu` | ollama | Ollama runs in Docker on CPU only. |
+| `custom` | custom | Bring your own servers. Set `EMBED_URL`, `VLM_URL`, `LLM_URL` in `.env` |
 
 ## API
 
@@ -287,7 +291,7 @@ All runtime settings can be managed in the **Settings** page of the UI, or via `
 |---------|-------------|
 | `FRAME_EXTRACTION_INTERVAL` | Seconds between extracted frames (default: 5) |
 | `EMBED_BATCH_SIZE` | Captions embedded per batch (default: 16) |
-| `AI_BACKEND` | AI provider selection (see above) |
+| `HARDWARE_TYPE` | Hardware platform selection (nvidia/amd/apple/cpu/custom) |
 | `VRAM_TIER` | Model size for local backends (low/mid/high/ultra) |
 | `VIDEO_DIR_1..5` | Up to 5 video library directories |
 

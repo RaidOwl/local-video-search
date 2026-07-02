@@ -1,6 +1,8 @@
 # Environment
 .env
 *.env.local
+.env.strixhalo
+.env.*
 
 # Python
 __pycache__/
@@ -37,3 +39,10 @@ data/models/
 
 # Docker
 .dockerignore
+
+# Hardware-specific compose overrides (GPU device paths, iGPU flags, etc.)
+docker-compose.*.yml
+!docker-compose.dev.yml
+
+# Local prototypes
+src/proto_fuse.py

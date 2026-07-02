@@ -1,7 +1,7 @@
 """
 Local model tier registry.
 
-Used when AI_BACKEND is ollama, ollama-native, or vllm.
+Used when HARDWARE_TYPE is nvidia, amd, apple, or cpu (i.e. not custom).
 Maps (backend_family, model_family, vram_tier) → model names + service URLs.
 
 In local mode a single multimodal model handles both vision captioning (VLM)

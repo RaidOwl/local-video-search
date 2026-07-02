@@ -232,13 +232,13 @@ def _backend_warning(cfg: dict) -> str | None:
     if backend == "vllm" and is_apple_silicon:
         return (
             "vLLM requires an NVIDIA GPU and does not support Apple Silicon. "
-            "Use AI_BACKEND=ollama-native instead — install Ollama on your Mac "
+            "Use HARDWARE_TYPE=apple instead — install Ollama on your Mac "
             "and it will use Metal automatically."
         )
     if backend == "ollama" and is_apple_silicon:
         return (
             "Ollama in Docker loses Metal acceleration on Apple Silicon. "
-            "Consider AI_BACKEND=ollama-native for full GPU performance."
+            "Use HARDWARE_TYPE=apple for full GPU performance."
         )
     return None
 
@@ -1351,7 +1351,7 @@ class SettingsUpdateRequest(BaseModel):
     auto_import_interval: Optional[int] = None
     auto_analyze: Optional[str] = None  # off | audio | video | both
     default_context: Optional[str] = None
-    # Note: ai_backend, vram_tier, model_family are .env-only — not overridable via UI
+    # Note: hardware_type, vram_tier, model_family are .env-only — not overridable via UI
 
 
 async def _sync_blacklist():

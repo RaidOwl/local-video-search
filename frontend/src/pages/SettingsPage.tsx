@@ -84,7 +84,7 @@ function BackendBanner({ form }: { form: AppSettings }) {
       )}
       {backend === 'custom' && (
         <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--muted)' }}>
-          Configure model endpoints below. Change <code>AI_BACKEND</code> in <code>.env</code> to switch to a local mode.
+          Configure model endpoints below. Change <code>HARDWARE_TYPE</code> in <code>.env</code> to switch to a local mode.
         </p>
       )}
     </div>

@@ -63,10 +63,19 @@ class Database:
     def __init__(self, database_url: str):
         self.engine = create_async_engine(database_url, echo=False)
         self.session_maker = async_sessionmaker(self.engine, class_=AsyncSession)
-    
+
     async def init_db(self):
         """Initialize the database tables."""
-        from sqlalchemy import text
+        from sqlalchemy import text, event
+        # Enable WAL journal mode for better concurrent read/write performance
+        # (prevents 'database is locked' errors during parallel scans + thumbnails).
+        if 'sqlite' in self.engine.dialect.name:
+            @event.listens_for(self.engine.sync_engine, 'connect')
+            def _set_sqlite_pragma(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute('PRAGMA journal_mode=WAL')
+                cursor.execute('PRAGMA busy_timeout=5000')
+                cursor.close()
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             # Migrate: add columns introduced after initial schema
@@ -77,8 +86,12 @@ class Database:
                         'recorded_at DATETIME', 'file_modified_at DATETIME', 'transcribe_progress REAL DEFAULT 0',
                         'fuse_progress REAL DEFAULT 0']:
                 col_name = col.split()[0]
+                # Use a savepoint (begin_nested) so that an ALTER failure on an
+                # existing column doesn't poison the outer transaction with a
+                # PendingRollbackError.
                 try:
-                    await conn.execute(text(f'ALTER TABLE videos ADD COLUMN {col}'))
+                    async with conn.begin_nested():
+                        await conn.execute(text(f'ALTER TABLE videos ADD COLUMN {col}'))
                 except Exception:
                     pass  # already exists
             # Lexical (BM25) full-text index mirroring every Qdrant point, used for

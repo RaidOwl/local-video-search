@@ -1,18 +1,17 @@
 # ── How to run ──────────────────────────────────────────────────────────────
 #
-#  Custom mode  (default, bring your own models):
-#    docker compose up -d
+#  1. Copy .env.example to .env
+#  2. Set HARDWARE_TYPE to your platform: nvidia | amd | apple | cpu | custom
+#  3. docker compose up -d
 #
-#  Ollama in Docker  (CPU or NVIDIA GPU on Linux):
-#    AI_BACKEND=ollama docker compose --profile ollama up -d
+#  HARDWARE_TYPE determines which AI backend is used:
+#    nvidia  → vLLM containers (NVIDIA GPU, requires nvidia-container-toolkit)
+#    amd     → Ollama container with GPU device passthrough
+#    apple   → Ollama on host with Metal (brew install ollama && ollama serve)
+#    cpu     → Ollama container on CPU
+#    custom  → Bring your own endpoints (set CUSTOM MODE in .env)
 #
-#  Ollama on host  (BEST for Apple Silicon — full Metal acceleration):
-#    brew install ollama && ollama serve   ← run on Mac host
-#    AI_BACKEND=ollama-native docker compose up -d
-#
-#  vLLM  (NVIDIA GPU required, needs nvidia-container-toolkit):
-#    AI_BACKEND=vllm docker compose --profile vllm up -d
-#
+#  COMPOSE_PROFILES=${HARDWARE_TYPE} in .env auto-starts the right containers.
 # ────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -35,8 +34,8 @@ services:
       dockerfile: docker/app/Dockerfile
     container_name: local-vss-api
     environment:
-      # Deployment mode (set in .env)
-      AI_BACKEND: ${AI_BACKEND:-custom}
+      # Deployment mode (derived from HARDWARE_TYPE in .env)
+      HARDWARE_TYPE: ${HARDWARE_TYPE:-custom}
       VRAM_TIER: ${VRAM_TIER:-mid}
       MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
       # Custom-mode endpoints (ignored in local modes — auto-configured).
@@ -97,31 +96,44 @@ services:
     restart: unless-stopped
 
   # ── Ollama profile ────────────────────────────────────────────────────────
-  # Start with: docker compose --profile ollama up -d
-  # Note: on Apple Silicon use AI_BACKEND=ollama-native instead (runs on host)
+  # Activated when HARDWARE_TYPE=amd or HARDWARE_TYPE=cpu
+  # (COMPOSE_PROFILES=${HARDWARE_TYPE} in .env handles this automatically)
+  # For Apple Silicon, use HARDWARE_TYPE=apple (Ollama runs on host w/ Metal)
 
   ollama:
     image: ollama/ollama:latest
     container_name: local-vss-ollama
-    profiles: [ollama]
+    profiles: [amd, cpu]
     ports:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ${MODELS_DIR:-./data/models}/ollama:/root/.ollama
-    # GPU support — remove the deploy block if running CPU-only
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # GPU support: HARDWARE_TYPE=amd passes /dev/kfd + /dev/dri; cpu uses none.
+    # AMD users uncomment GPU_DEV_KFD and GPU_DEV_DRI in .env.
+    environment:
+      HARDWARE_TYPE: ${HARDWARE_TYPE:-cpu}
+    devices:
+      # AMD GPU passthrough — defaults to /dev/null (harmless) on non-AMD hosts.
+      # AMD users uncomment GPU_DEV_KFD / GPU_DEV_DRI in .env.
+      - "${GPU_DEV_KFD:-/dev/null:/dev/null}"
+      - "${GPU_DEV_DRI:-/dev/null:/dev/null}"
+    security_opt:
+      - seccomp:unconfined
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ "$$HARDWARE_TYPE" = "amd" ]; then
+          export OLLAMA_IGPU_ENABLE=1
+          echo "==> AMD GPU: enabled OLLAMA_IGPU_ENABLE"
+        fi
+        exec ollama serve
     restart: unless-stopped
 
   ollama-init:
     image: ollama/ollama:latest
     container_name: local-vss-ollama-init
-    profiles: [ollama]
+    profiles: [amd, cpu]
     depends_on:
       - ollama
     environment:
@@ -159,14 +171,15 @@ services:
     restart: "no"
 
   # ── vLLM profile ──────────────────────────────────────────────────────────
-  # Start with: docker compose --profile vllm up -d
+  # Activated when HARDWARE_TYPE=nvidia
+  # (COMPOSE_PROFILES=${HARDWARE_TYPE} in .env handles this automatically)
   # Requires: NVIDIA GPU + nvidia-container-toolkit installed on host
   # One multimodal model handles both vision captioning and summarization.
 
   vllm-embed:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: local-vss-vllm-embed
-    profiles: [vllm]
+    profiles: [nvidia]
     command:
       - --model
       - ${EMBED_MODEL:-BAAI/bge-m3}
@@ -194,7 +207,7 @@ services:
   vllm-main:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: local-vss-vllm-main
-    profiles: [vllm]
+    profiles: [nvidia]
     # The VLM model is auto-selected from MODEL_FAMILY + VRAM_TIER, matching the
     # API's tier registry (src/local_models.py) so the container and the API
     # always agree on which model is loaded. Change the model by setting

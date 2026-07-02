@@ -3,10 +3,23 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # Deployment mode
-    ai_backend: str = "custom"   # custom | ollama | ollama-native | vllm
+    # Hardware platform — determines which AI backend is used
+    # nvidia → vllm | amd → ollama | apple → ollama-native | cpu → ollama | custom → custom
+    hardware_type: str = "custom"
     vram_tier: str = "mid"       # low | mid | high | ultra
     model_family: str = "qwen"   # qwen | gemma
+
+    @property
+    def ai_backend(self) -> str:
+        """Derive the AI backend from hardware_type."""
+        mapping = {
+            "nvidia": "vllm",
+            "amd": "ollama",
+            "apple": "ollama-native",
+            "cpu": "ollama",
+            "custom": "custom",
+        }
+        return mapping.get(self.hardware_type, "custom")
 
     # AI Service Endpoints (used in custom mode or as overrides)
     # Backend-agnostic: these may point at vLLM, Ollama, MLX, or a cloud API.
