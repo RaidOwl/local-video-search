@@ -31,6 +31,22 @@ export interface QdrantHealth {
   error?: string
 }
 
+export interface HardwareStatus {
+  platform: string
+  python: string
+  hardware_type: string
+  ai_backend: string
+  model_family: string
+  vram_tier: string
+  resolved_model: string
+  resolved_embed_model: string
+  embed_url: string
+  vlm_url: string
+  llm_url: string
+  gpus?: Array<{ name: string; memory: string }>
+  rocm_devices?: { kfd: boolean; dri: boolean }
+}
+
 export interface AppSettings {
   // Deployment mode (read-only from .env — not editable via UI)
   ai_backend: string
@@ -266,6 +282,11 @@ export const api = {
 
   updateSettings: async (s: Partial<AppSettings>): Promise<AppSettings> => {
     const res = await client.put('/settings', s)
+    return res.data
+  },
+
+  hardwareStatus: async (): Promise<HardwareStatus> => {
+    const res = await client.get('/status/hardware')
     return res.data
   },
 }

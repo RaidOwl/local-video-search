@@ -1187,6 +1187,53 @@ async def model_status():
     return {"services": list(results)}
 
 
+@app.get("/status/hardware", tags=["System"])
+async def hardware_status():
+    """Report detected hardware configuration and AI backend."""
+    cfg = _effective_cfg()
+    import platform, subprocess, json
+
+    hw_info = {
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "hardware_type": cfg.get("hardware_type", "custom"),
+        "ai_backend": cfg.get("ai_backend", "custom"),
+        "model_family": cfg.get("model_family", "qwen"),
+        "vram_tier": cfg.get("vram_tier", "mid"),
+        "resolved_model": cfg.get("llm_model"),
+        "resolved_embed_model": cfg.get("embed_model"),
+        "embed_url": cfg.get("embed_url"),
+        "vlm_url": cfg.get("vlm_url"),
+        "llm_url": cfg.get("llm_url"),
+    }
+
+    # GPU detection
+    try:
+        if cfg.get("hardware_type") == "nvidia":
+            result = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+                                  capture_output=True, text=True, timeout=3)
+            if result.returncode == 0:
+                gpus = []
+                for line in result.stdout.strip().split("\n"):
+                    name, mem = line.split(", ")
+                    gpus.append({"name": name.strip(), "memory": mem.strip()})
+                hw_info["gpus"] = gpus
+    except Exception:
+        hw_info["gpus"] = "nvidia-smi unavailable"
+
+    try:
+        if cfg.get("hardware_type") == "amd":
+            import os
+            hw_info["rocm_devices"] = {
+                "kfd": os.path.exists("/dev/kfd"),
+                "dri": os.path.exists("/dev/dri/renderD128"),
+            }
+    except Exception:
+        pass
+
+    return hw_info
+
+
 @app.get("/status/qdrant", tags=["System"])
 async def qdrant_health():
     """Check Qdrant health: reachability, collection state, and per-video embedding integrity."""
@@ -1629,10 +1676,10 @@ async def search_videos(
         if not video:
             continue
         for h in data["hits"]:
-            h["video_name"] = video.name
+            h["video_name"] = video.display_name or video.name
         segments = segment_retriever.group_segments(data["hits"], vid)
         video_meta[vid] = {
-            "name": video.name, "path": video.path, "duration": video.duration,
+            "name": video.name, "display_name": video.display_name, "path": video.path, "duration": video.duration,
         }
         for s in segments[:25]:
             all_segments.append({
@@ -1705,7 +1752,7 @@ async def search_videos(
             extra = await db.get_videos(missing_ids)
             video_objs.update(extra)
             for vid, v in extra.items():
-                video_meta[vid] = {"name": v.name, "path": v.path, "duration": v.duration}
+                video_meta[vid] = {"name": v.name, "display_name": v.display_name, "path": v.path, "duration": v.duration}
         for f in lexical:
             if f.video_id not in video_meta:
                 continue  # video row missing/deleted
@@ -1967,7 +2014,7 @@ async def search_videos(
         best_score = max(s["score"] for s in top_segments)
         final_results.append({
             "video_id": vid,
-            "name": meta["name"],
+            "name": meta["display_name"] or meta["name"],
             "path": meta["path"],
             "duration": meta["duration"],
             "score": best_score,
@@ -2108,7 +2155,7 @@ async def search_segments(video_id: str, q: str, limit: int = 20):
     # Get video info
     video = await db.get_video(video_id)
     for r in results:
-        r["video_name"] = video.name if video else ""
+        r["video_name"] = (video.display_name or video.name) if video else ""
     
     # Group into segments
     segments = segment_retriever.group_segments(results, video_id)

@@ -39,7 +39,34 @@ Transcription (Whisper) runs on CPU inside the API container — no extra GPU ne
 
 ## Quick Start
 
-### Step 1 — Clone the repo
+### 🚀 Smart Setup (Recommended)
+
+The easiest way to get started — auto-detects your hardware (NVIDIA/AMD/Apple/CPU), configures `.env`, validates prerequisites, and starts the stack:
+
+```bash
+git clone https://github.com/RaidOwl/local-video-search.git
+cd local-video-search
+./setup.sh          # Linux/macOS
+# or
+./setup.ps1         # Windows PowerShell
+```
+
+Then open **http://localhost:3000** — done!
+
+The script handles everything:
+- Detects GPU type and VRAM → sets optimal `VRAM_TIER`
+- Validates Docker Compose version for AMD ROCm (`>=2.24.0`)
+- Checks `nvidia-container-toolkit` for NVIDIA
+- Verifies `ollama serve` is running on Apple Silicon
+- Auto-pulls Ollama models on Mac
+- Writes `.env` with detected config (backs up existing)
+- Starts the stack with `docker compose up -d`
+
+---
+
+### Step 1 — Clone the repo (Manual)
+
+If you prefer manual setup:
 
 ```bash
 git clone https://github.com/RaidOwl/local-video-search.git
@@ -86,21 +113,19 @@ docker compose up -d
 
 **Linux with AMD GPU**
 
-vLLM runs inside Docker with AMD GPU (ROCm) device passthrough. The `docker-compose.rocm.yml` override file swaps the NVIDIA deploy block for AMD device passthrough (`/dev/kfd`, `/dev/dri`) and sets the ROCm vLLM image:
+vLLM runs inside Docker with AMD GPU (ROCm) device passthrough. The `docker-compose.rocm.yml` override file swaps the NVIDIA deploy block for AMD device passthrough (`/dev/kfd`, `/dev/dri`) and sets the ROCm vLLM image. Requires **Docker Compose >= 2.24.0** (the override uses the `!reset` merge tag to clear the NVIDIA device block — run `docker compose version` to check if device passthrough isn't working):
 
 ```env
 HARDWARE_TYPE=amd
 VRAM_TIER=mid
 COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
-# FP8 not supported on RDNA iGPUs — leave empty (runs BF16)
-VLLM_QUANTIZATION=
 ```
 
 ```bash
 docker compose up -d
 ```
 
-> **Note:** FP8 quantization requires MI300+ (CDNA). RDNA iGPUs like the Strix Halo (gfx1151) must run unquantized — leave `VLLM_QUANTIZATION` empty. The ROCm override sets `HSA_OVERRIDE_GFX_VERSION=11.5.1` automatically.
+> **Note:** FP8 quantization requires MI300+ (CDNA). RDNA iGPUs like the Strix Halo (gfx1151) must run unquantized — the ROCm override already defaults `VLLM_QUANTIZATION` to empty (BF16) for you, so no extra step is needed. The override also sets `HSA_OVERRIDE_GFX_VERSION=11.5.1` automatically.
 
 **CPU-only / no GPU**
 
@@ -123,14 +148,13 @@ VRAM_TIER=mid              # 8B FP8 needs ~16 GB VRAM
 HARDWARE_TYPE=amd
 VRAM_TIER=mid
 COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
-VLLM_QUANTIZATION=         # empty — FP8 not supported on RDNA iGPUs
 ```
 
 ```bash
 docker compose up -d
 ```
 
-> **Note:** The base compose uses the official NVIDIA vLLM image. For AMD, the `docker-compose.rocm.yml` override swaps in the ROCm build with device passthrough. FP8 requires MI300+ (CDNA); RDNA iGPUs run unquantized. For Apple Silicon, use `HARDWARE_TYPE=apple` instead.
+> **Note:** The base compose uses the official NVIDIA vLLM image. For AMD, the `docker-compose.rocm.yml` override swaps in the ROCm build with device passthrough (requires Docker Compose >= 2.24.0 for the `!reset` merge tag) and defaults quantization to unquantized, since FP8 requires MI300+ (CDNA) and RDNA iGPUs don't support it. For Apple Silicon, use `HARDWARE_TYPE=apple` instead.
 
 ---
 
@@ -234,7 +258,7 @@ starts the matching model server automatically (or none, for `custom` and
 
 Navigate to **http://localhost:3000**
 
-Go to **Settings** to verify your AI backend, configure Whisper transcription quality (Low / Medium / High), set the frame extraction interval, cap the CPU threads FFmpeg uses during analysis (defaults to half your cores so the host stays responsive), tune max concurrent jobs, and toggle auto-analyze on import.
+Go to **Settings** to verify your AI backend — the banner now shows detected hardware (GPU model, VRAM, ROCm device status), resolved model names, and service connectivity. Configure Whisper transcription quality (Low / Medium / High), set the frame extraction interval, cap the CPU threads FFmpeg uses during analysis (defaults to half your cores so the host stays responsive), tune max concurrent jobs, and toggle auto-analyze on import.
 
 ### Step 5 — Add & analyze videos
 

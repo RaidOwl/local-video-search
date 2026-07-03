@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { api, AppSettings, QdrantHealth, Video } from '../services/api'
-import { RotateCcw, Check, AlertTriangle, Download, Upload } from 'lucide-react'
+import { api, AppSettings, QdrantHealth, Video, HardwareStatus } from '../services/api'
+import { RotateCcw, Check, AlertTriangle, Download, Upload, Cpu, Monitor, Zap } from 'lucide-react'
 
 type ModelStatus = { name: string; url: string; ok: boolean; models: string[] }
 
@@ -44,7 +44,7 @@ const BACKEND_LABELS: Record<string, string> = {
   vllm: 'vLLM (Docker)',
 }
 
-function BackendBanner({ form }: { form: AppSettings }) {
+function BackendBanner({ form, hwStatus }: { form: AppSettings; hwStatus: HardwareStatus | null }) {
   const backend = form.ai_backend ?? 'custom'
   const isLocal = backend !== 'custom'
   const isWarning = !!form.backend_warning
@@ -53,11 +53,24 @@ function BackendBanner({ form }: { form: AppSettings }) {
   const color = isWarning ? 'var(--error)' : isNative ? 'var(--success)' : isLocal ? 'var(--accent)' : 'var(--muted)'
   const bg = isWarning ? 'rgba(239,68,68,0.08)' : isNative ? 'rgba(34,197,94,0.08)' : isLocal ? 'rgba(99,102,241,0.08)' : 'var(--surface)'
 
+  const getHwIcon = (type: string) => {
+    switch (type) {
+      case 'nvidia': return <Zap size={14} style={{ verticalAlign: 'middle' }} />
+      case 'amd': return <Monitor size={14} style={{ verticalAlign: 'middle' }} />
+      case 'apple': return <Monitor size={14} style={{ verticalAlign: 'middle' }} />
+      case 'cpu': return <Cpu size={14} style={{ verticalAlign: 'middle' }} />
+      default: return null
+    }
+  }
+
   return (
     <div style={{ border: `1px solid ${color}`, borderRadius: 'var(--radius)', padding: '0.85rem 1rem', marginBottom: '1.75rem', background: bg }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: isLocal ? '0.4rem' : 0 }}>
         <span style={{ color, fontWeight: 700, fontSize: '0.85rem' }}>
-          {isWarning && <AlertTriangle size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}{isNative && <Check size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}{BACKEND_LABELS[backend] ?? backend}
+          {isWarning && <AlertTriangle size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}
+          {isNative && <Check size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}
+          {getHwIcon(hwStatus?.hardware_type ?? '') && <span style={{ marginRight: 2 }}>{getHwIcon(hwStatus?.hardware_type ?? '')}</span>}
+          {BACKEND_LABELS[backend] ?? backend}
         </span>
         {isLocal && form._resolved_family && (
           <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
@@ -65,6 +78,23 @@ function BackendBanner({ form }: { form: AppSettings }) {
           </span>
         )}
       </div>
+
+      {/* Hardware detection details */}
+      {hwStatus && hwStatus.hardware_type !== 'custom' && (
+        <div style={{ fontSize: '0.75rem', color: 'var(--muted)', lineHeight: 1.7, marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center' }}>
+            <span><strong>Platform:</strong> {hwStatus.platform}</span>
+            {hwStatus.gpus && hwStatus.gpus.length > 0 && (
+              <span><strong>GPUs:</strong> {hwStatus.gpus.map(g => `${g.name} (${g.memory})`).join(', ')}</span>
+            )}
+            {hwStatus.rocm_devices && (
+              <span><strong>ROCm:</strong> KFD {hwStatus.rocm_devices.kfd ? '✓' : '✗'} | DRI {hwStatus.rocm_devices.dri ? '✓' : '✗'}</span>
+            )}
+            <span><strong>Tier:</strong> {hwStatus.vram_tier} ({hwStatus.ai_backend})</span>
+          </div>
+        </div>
+      )}
+
       {isWarning && (
         <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--error)', lineHeight: 1.5 }}>{form.backend_warning}</p>
       )}
@@ -101,6 +131,7 @@ export default function SettingsPage() {
   const [qdrantHealth, setQdrantHealth] = useState<QdrantHealth | null>(null)
   const [checkingQdrant, setCheckingQdrant] = useState(false)
   const [purgingQdrant, setPurgingQdrant] = useState(false)
+  const [hwStatus, setHwStatus] = useState<HardwareStatus | null>(null)
   const [blacklistInput, setBlacklistInput] = useState('')
   const [exportImages, setExportImages] = useState(true)
   const [importing, setImporting] = useState(false)
@@ -124,6 +155,7 @@ export default function SettingsPage() {
   useEffect(() => {
     api.getSettings().then(setForm).catch(() => {})
     api.modelStatus().then(d => setStatuses(d.services)).catch(() => setStatuses([]))
+    api.hardwareStatus().then(setHwStatus).catch(() => setHwStatus(null))
   }, [])
 
   const set = (key: keyof AppSettings, value: unknown) =>
@@ -182,7 +214,7 @@ export default function SettingsPage() {
           Changes take effect immediately without restart.
         </p>
 
-        <BackendBanner form={form} />
+        <BackendBanner form={form} hwStatus={hwStatus} />
 
         {/* AI Models — custom mode only */}
         {form.ai_backend === 'custom' && (
