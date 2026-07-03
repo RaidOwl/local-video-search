@@ -4,7 +4,7 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Hardware platform — determines which AI backend is used
-    # nvidia → vllm | amd → ollama | apple → ollama-native | cpu → ollama | custom → custom
+    # nvidia → vllm | amd → vllm | apple → ollama-native | cpu → ollama | custom → custom
     hardware_type: str = "custom"
     vram_tier: str = "mid"       # low | mid | high | ultra
     model_family: str = "qwen"   # qwen | gemma
@@ -14,7 +14,7 @@ class Settings(BaseSettings):
         """Derive the AI backend from hardware_type."""
         mapping = {
             "nvidia": "vllm",
-            "amd": "ollama",
+            "amd": "vllm",
             "apple": "ollama-native",
             "cpu": "ollama",
             "custom": "custom",

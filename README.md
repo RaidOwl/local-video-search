@@ -26,12 +26,13 @@ Requirements depend on the AI backend you choose:
 
 | Backend | GPU VRAM | Notes |
 |---------|----------|-------|
-| `ollama` (low / 3B) | ≥ 8 GB | CPU also works (slow) |
-| `ollama` (mid / 7B) | ≥ 10 GB | Recommended starting point |
+| `ollama` (low / 4B) | ≥ 8 GB | CPU also works (slow) |
+| `ollama` (mid / 8B) | ≥ 10 GB | Recommended starting point |
 | `ollama` (high / 32B) | ≥ 20 GB | Q4 quantized |
-| `vllm` (mid / 7B FP8) | ≥ 16 GB | NVIDIA Hopper / Ada / Blackwell |
+| `vllm` (mid / 8B FP8) | ≥ 16 GB | NVIDIA Hopper / Ada / Blackwell |
 | `vllm` (high / 32B FP8) | ≥ 40 GB | e.g. DGX Spark GB10 |
-| `vllm` (ultra / 72B FP8) | ≥ 128 GB | Multi-GPU server |
+| `vllm` (ultra / 235B FP8) | ≥ 128 GB | Multi-GPU server |
+| `vllm` (AMD ROCm) | ≥ 16 GB | AMD GPU with ROCm (e.g. Strix Halo) |
 | `custom` | varies | Point at any OpenAI-compatible server |
 
 Transcription (Whisper) runs on CPU inside the API container — no extra GPU needed.
@@ -75,7 +76,7 @@ Because Ollama runs on your host, **you pull the models yourself** — unlike th
 
 ```bash
 ollama pull bge-m3               # embeddings (all tiers)
-ollama pull qwen2.5vl:7b         # vision + summaries — mid/qwen (3b/7b/32b/72b per tier)
+ollama pull qwen3-vl:8b          # vision + summaries — mid/qwen (4b/8b/32b/235b per tier)
 ```
 
 Start the stack normally — no extra profile needed:
@@ -85,40 +86,51 @@ docker compose up -d
 
 **Linux with AMD GPU**
 
-Ollama runs inside Docker with AMD GPU device passthrough:
+vLLM runs inside Docker with AMD GPU (ROCm) device passthrough. The `docker-compose.rocm.yml` override file swaps the NVIDIA deploy block for AMD device passthrough (`/dev/kfd`, `/dev/dri`) and sets the ROCm vLLM image:
 
 ```env
 HARDWARE_TYPE=amd
 VRAM_TIER=mid
-# Uncomment to pass GPU devices into the container:
-#GPU_DEV_KFD=/dev/kfd:/dev/kfd
-#GPU_DEV_DRI=/dev/dri:/dev/dri
+COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
+# FP8 not supported on RDNA iGPUs — leave empty (runs BF16)
+VLLM_QUANTIZATION=
 ```
 
 ```bash
 docker compose up -d
 ```
+
+> **Note:** FP8 quantization requires MI300+ (CDNA). RDNA iGPUs like the Strix Halo (gfx1151) must run unquantized — leave `VLLM_QUANTIZATION` empty. The ROCm override sets `HSA_OVERRIDE_GFX_VERSION=11.5.1` automatically.
 
 **CPU-only / no GPU**
 
-Set `VRAM_TIER=low` and `HARDWARE_TYPE=cpu`. The 3B model will run on CPU — slow but functional.
+Set `VRAM_TIER=low` and `HARDWARE_TYPE=cpu`. The 4B model will run on CPU — slow but functional.
 
 ---
 
-#### vLLM (NVIDIA only, higher quality)
+#### vLLM (NVIDIA or AMD, higher quality)
 
-vLLM runs models in FP8 rather than Ollama's Q4 quantization, giving better output quality at the cost of needing more VRAM and a modern NVIDIA GPU (Hopper H100, Ada RTX 40xx, or Blackwell GB10/B200).
+vLLM runs models in FP8 rather than Ollama's Q4 quantization, giving better output quality at the cost of needing more VRAM and a modern GPU (NVIDIA Hopper H100, Ada RTX 40xx, Blackwell GB10/B200; or AMD with ROCm).
 
+**NVIDIA:**
 ```env
 HARDWARE_TYPE=nvidia
-VRAM_TIER=mid              # 7B FP8 needs ~16 GB VRAM
+VRAM_TIER=mid              # 8B FP8 needs ~16 GB VRAM
+```
+
+**AMD (ROCm):**
+```env
+HARDWARE_TYPE=amd
+VRAM_TIER=mid
+COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
+VLLM_QUANTIZATION=         # empty — FP8 not supported on RDNA iGPUs
 ```
 
 ```bash
 docker compose up -d
 ```
 
-> **Note:** This project's bundled vLLM profile uses the official NVIDIA image. vLLM itself also supports AMD (ROCm) and other accelerators, but you'd need to swap `VLLM_IMAGE` for the matching build. For Apple Silicon, use `HARDWARE_TYPE=apple` instead.
+> **Note:** The base compose uses the official NVIDIA vLLM image. For AMD, the `docker-compose.rocm.yml` override swaps in the ROCm build with device passthrough. FP8 requires MI300+ (CDNA); RDNA iGPUs run unquantized. For Apple Silicon, use `HARDWARE_TYPE=apple` instead.
 
 ---
 
@@ -150,14 +162,14 @@ docker compose up -d
 
 #### Model size tiers
 
-`VRAM_TIER` controls which model size is selected for local backends (`ollama`, `ollama-native`, `vllm`). `MODEL_FAMILY` selects the model family (`qwen` = Qwen2.5-VL, `gemma` = Gemma 3).
+`VRAM_TIER` controls which model size is selected for local backends (`ollama`, `ollama-native`, `vllm`). `MODEL_FAMILY` selects the model family (`qwen` = Qwen3-VL, `gemma` = Gemma 3).
 
 | Tier | Ollama (Q4) | vLLM (FP8) | Approx. VRAM |
 |------|-------------|------------|--------------|
-| `low` | 3B | 3B | ≥ 8 GB |
-| `mid` | 7B | 7B | ≥ 10–16 GB |
+| `low` | 4B | 4B | ≥ 8 GB |
+| `mid` | 8B | 8B | ≥ 10–16 GB |
 | `high` | 32B | 32B | ≥ 20–40 GB |
-| `ultra` | 72B | 72B | ≥ 128 GB |
+| `ultra` | 235B | 235B | ≥ 128 GB |
 
 > vLLM FP8 quantizes only the LLM decoder; the vision encoder stays BF16 (~8 GB extra). On Apple Silicon, VRAM is unified memory shared with the system — leave headroom.
 >
@@ -250,7 +262,7 @@ Results link directly to the timestamp in the video. Use the **Min relevance** s
 | Value | AI Backend | Description |
 |-------|------------|-------------|
 | `nvidia` | vllm | vLLM runs in Docker. Requires NVIDIA GPU (Hopper/Ada/Blackwell) + nvidia-container-toolkit. |
-| `amd` | ollama | Ollama runs in Docker with AMD GPU passthrough. |
+| `amd` | vllm | vLLM runs in Docker with AMD ROCm device passthrough. Set `COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml` in `.env`. |
 | `apple` | ollama-native | Ollama runs on your host machine. **Required for Apple Silicon** — Docker VMs can't access Metal. Run `ollama serve` first. |
 | `cpu` | ollama | Ollama runs in Docker on CPU only. |
 | `custom` | custom | Bring your own servers. Set `EMBED_URL`, `VLM_URL`, `LLM_URL` in `.env` |

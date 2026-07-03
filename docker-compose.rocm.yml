@@ -1,0 +1,48 @@
+# ROCm / AMD GPU override
+#
+# Use on AMD systems (e.g. Ryzen AI Max 395+ with Radeon 8060S iGPU).
+# Apply automatically by setting in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
+#   HARDWARE_TYPE=amd
+#   docker compose up -d
+#
+# Or apply manually:
+#   docker compose -f docker-compose.yml -f docker-compose.rocm.yml --profile amd up -d
+#
+# What this does:
+#   1. Resets NVIDIA deploy blocks from the base compose and replaces them
+#      with raw device passthrough (/dev/kfd, /dev/dri).
+#   2. Swaps the vLLM image for the ROCm build.
+#   3. Sets HIP_VISIBLE_DEVICES and HSA_OVERRIDE_GFX_VERSION for the iGPU.
+#   4. Adds seccomp:unconfined for ROCm/Vulkan GPU access inside the container.
+
+services:
+  vllm-embed:
+    image: ${VLLM_ROCM_IMAGE:-rocm/vllm:rocm7.13.0_gfx1151_ubuntu24.04_py3.13_pytorch_2.10.0_vllm_0.19.1}
+    deploy:
+      resources:
+        reservations:
+          devices: !reset []
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    environment:
+      HIP_VISIBLE_DEVICES: "0"
+      HSA_OVERRIDE_GFX_VERSION: "11.5.1"
+    security_opt:
+      - seccomp:unconfined
+
+  vllm-main:
+    image: ${VLLM_ROCM_IMAGE:-rocm/vllm:rocm7.13.0_gfx1151_ubuntu24.04_py3.13_pytorch_2.10.0_vllm_0.19.1}
+    deploy:
+      resources:
+        reservations:
+          devices: !reset []
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    environment:
+      HIP_VISIBLE_DEVICES: "0"
+      HSA_OVERRIDE_GFX_VERSION: "11.5.1"
+    security_opt:
+      - seccomp:unconfined
