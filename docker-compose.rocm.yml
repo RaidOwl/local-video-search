@@ -21,6 +21,15 @@
 #      quantization to unquantized (RDNA iGPUs don't support FP8).
 
 services:
+  local-vss-api:
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      FFMPEG_HWACCEL: ${FFMPEG_HWACCEL:-auto}
+
   vllm-embed:
     image: ${VLLM_ROCM_IMAGE:-rocm/vllm:rocm7.13.0_gfx1151_ubuntu24.04_py3.13_pytorch_2.10.0_vllm_0.19.1}
     # The ROCm image has no baked-in entrypoint (unlike vllm/vllm-openai) — it
