@@ -2,9 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install FFmpeg
+# Install FFmpeg + hardware acceleration libraries.
+# mesa-va-drivers enables VAAPI for AMD/Intel GPUs; libvulkan1 enables Vulkan decode.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    mesa-va-drivers \
+    libvulkan1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install dependencies

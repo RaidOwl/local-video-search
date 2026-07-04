@@ -72,6 +72,8 @@ export interface AppSettings {
   embed_batch_size: number
   max_concurrent_jobs: number
   ffmpeg_threads: number
+  ffmpeg_hwaccel: string
+  ffmpeg_hwaccel_resolved?: string
   cpu_cores?: number
   import_blacklist: string[]
   auto_import_interval: number

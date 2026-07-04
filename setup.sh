@@ -100,10 +100,27 @@ detect_hardware() {
     echo "$hw_type|$compose_files|$vram_tier|$model_family|${extra_env[*]}"
 }
 
+# ── Detect FFmpeg HW acceleration ────────────────────────────────────────────
+detect_ffmpeg_hwaccel() {
+    if ! command -v ffmpeg &>/dev/null; then
+        echo "off"
+        return
+    fi
+    local hwaccels
+    hwaccels=$(ffmpeg -hide_banner -hwaccels 2>/dev/null | tail -n +2 | tr -d ' ')
+    for candidate in cuda vaapi drm vulkan vdpau; do
+        if echo "$hwaccels" | grep -qi "^$candidate\$"; then
+            echo "$candidate"
+            return
+        fi
+    done
+    echo "off"
+}
+
 # ── Write .env ────────────────────────────────────────────────────────────────
 write_env() {
-    local hw_type="$1" compose_files="$2" vram_tier="$3" model_family="$4"
-    shift 4
+    local hw_type="$1" compose_files="$2" vram_tier="$3" model_family="$4" ffmpeg_hwaccel="$5"
+    shift 5
     local extra_env=("$@")
 
     cat > .env <<ENVEOF
@@ -128,6 +145,7 @@ VIDEO_DIR_1=/path/to/your/videos
 # ── PROCESSING ─────────────────────────────────────────────────────────────────
 FRAME_EXTRACTION_INTERVAL=5
 EMBED_BATCH_SIZE=16
+FFMPEG_HWACCEL=$ffmpeg_hwaccel
 
 # ── AUTOMATION (defaults; change in Settings UI after first run) ──────────────
 # AUTO_IMPORT_INTERVAL=0
@@ -144,7 +162,15 @@ ENVEOF
         [[ -n "$e" ]] && echo "# $e" >> .env
     done
 
-    ok "Written .env (HARDWARE_TYPE=$hw_type, VRAM_TIER=$vram_tier, MODEL_FAMILY=$model_family)"
+    local hw_label=""
+    case "$ffmpeg_hwaccel" in
+        cuda)   hw_label=" (cuda)" ;;
+        vaapi)  hw_label=" (vaapi)" ;;
+        drm)    hw_label=" (drm)" ;;
+        vulkan) hw_label=" (vulkan)" ;;
+        *)      hw_label="" ;;
+    esac
+    ok "Written .env (HARDWARE_TYPE=$hw_type, VRAM_TIER=$vram_tier, MODEL_FAMILY=$model_family, FFMPEG_HWACCEL=$ffmpeg_hwaccel$hw_label)"
 }
 
 # ── Validate video dirs ────────────────────────────────────────────────────────
@@ -212,12 +238,25 @@ main() {
         exit 1
     fi
 
-    # 2. Write .env
+    # 2. Detect FFmpeg hardware acceleration backend
+    log "Checking FFmpeg hardware acceleration..."
+    local ffmpeg_hwaccel
+    ffmpeg_hwaccel=$(detect_ffmpeg_hwaccel)
+    if [[ "$ffmpeg_hwaccel" != "off" ]]; then
+        ok "FFmpeg GPU decode available: $ffmpeg_hwaccel"
+        # Use auto so the container probes at runtime (ffmpeg -hwaccels inside
+        # the container may differ from the host, e.g. Docker Desktop on macOS).
+        ffmpeg_hwaccel="auto"
+    else
+        info "No FFmpeg GPU decode detected — using software decode"
+    fi
+
+    # 3. Write .env
     if [[ -f .env ]]; then
         warn ".env exists — backing up to .env.bak"
         cp .env .env.bak
     fi
-    write_env "$hw_type" "$compose_files" "$vram_tier" "$model_family" $extra_env
+    write_env "$hw_type" "$compose_files" "$vram_tier" "$model_family" "$ffmpeg_hwaccel" $extra_env
 
     # 3. Check video dirs
     check_video_dirs

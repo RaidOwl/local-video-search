@@ -472,6 +472,29 @@ export default function SettingsPage() {
               </div>
               <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>Caps cores used for frame extraction & scene detection. Defaults to half so the host stays responsive.</p>
             </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                FFmpeg hardware acceleration
+              </label>
+              <select value={form.ffmpeg_hwaccel}
+                onChange={e => set('ffmpeg_hwaccel', e.target.value)}
+                style={{ width: '100%', padding: '0.45rem 0.6rem', borderRadius: 'var(--radius)', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '0.82rem', cursor: 'pointer' }}>
+                <option value="off">Off (CPU only)</option>
+                <option value="auto">Auto-detect</option>
+                <option value="cuda">NVIDIA CUDA / NVDEC</option>
+                <option value="vaapi">VAAPI (AMD / Intel Linux)</option>
+                <option value="drm">DRM (Linux Kernel Mode)</option>
+                <option value="vulkan">Vulkan</option>
+              </select>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
+                {form.ffmpeg_hwaccel === 'auto' && form.ffmpeg_hwaccel_resolved
+                  ? <>Auto-detected: <strong>{form.ffmpeg_hwaccel_resolved}</strong> — GPU decode for scene detection & frame extraction.</>
+                  : form.ffmpeg_hwaccel === 'off'
+                    ? 'Software decode only. GPU acceleration can speed up scene detection on long videos.'
+                    : 'GPU-accelerated decode. Fallback to CPU if the codec is not supported by the accelerator.'}
+              </p>
+            </div>
           </div>
         </div>
 

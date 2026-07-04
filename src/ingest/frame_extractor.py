@@ -6,10 +6,114 @@ from typing import List, Optional, Tuple
 import asyncio
 
 
+# ── Hardware acceleration backends ──────────────────────────────────────────
+# Each tuple is (name, display_label, description).
+HWACCEL_OPTIONS: list[tuple[str, str, str]] = [
+    ("off",    "Off (CPU only)",         "Standard software decode — works everywhere."),
+    ("auto",   "Auto-detect",            "Pick the best available GPU decoder (recommended)."),
+    ("cuda",   "NVIDIA CUDA / NVDEC",    "NVIDIA GPUs — uses cuvid decoders. Fastest on DGX Spark / GB10."),
+    ("vaapi",  "VAAPI (AMD / Intel)",    "Linux VAAPI — for AMD GPUs (Radeon, RDNA, ROCm)."),
+    ("drm",    "DRM (Direct Rendering)", "Linux DRM — lightweight kernel-level decode."),
+    ("vulkan", "Vulkan",                 "Cross-platform GPU decode via Vulkan video."),
+]
+
+
+def _probe_hwaccel() -> str:
+    """Auto-detect the best available FFmpeg hardware acceleration backend.
+
+    Runs ``ffmpeg -hwaccels`` once and returns the name of the most suitable
+    backend, or ``"off"`` if none is found.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-hwaccels"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return "off"
+
+    available = {line.strip() for line in result.stdout.splitlines()
+                 if line.strip() and not line.startswith("Hardware")}
+
+    # Preference order: cuda > vaapi > drm > vulkan > vdpau
+    for candidate in ("cuda", "vaapi", "drm", "vulkan", "vdpau"):
+        if candidate in available:
+            return candidate
+    return "off"
+
+
+# Cache the probe result so we only pay the subprocess cost once.
+_HWACCEL_CACHE: Optional[str] = None
+
+
+def _resolve_hwaccel(hwaccel: str) -> str:
+    """Resolve ``auto`` to a concrete backend, cache, and return it."""
+    global _HWACCEL_CACHE
+    if hwaccel == "auto":
+        if _HWACCEL_CACHE is None:
+            _HWACCEL_CACHE = _probe_hwaccel()
+        return _HWACCEL_CACHE
+    return hwaccel
+
+
+def _hwaccel_decode_args(hwaccel: str) -> list[str]:
+    """Return the FFmpeg flags needed for GPU-accelerated decode.
+
+    Returns an empty list when acceleration is off/unavailable.
+    """
+    resolved = _resolve_hwaccel(hwaccel)
+    if resolved in ("off", "vdpau"):
+        return []
+
+    if resolved == "cuda":
+        return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+
+    if resolved == "vaapi":
+        # Find the first render node
+        dri_path = "/dev/dri"
+        render = None
+        if os.path.isdir(dri_path):
+            for entry in sorted(os.listdir(dri_path)):
+                if entry.startswith("renderD"):
+                    render = os.path.join(dri_path, entry)
+                    break
+        args = ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]
+        if render:
+            args.extend(["-vaapi_device", render])
+        return args
+
+    # drm, vulkan — straightforward hwaccel names
+    return ["-hwaccel", resolved, "-hwaccel_output_format", resolved]
+
+
+def _hwaccel_frame_filter(hwaccel: str, inner_filter: str) -> str:
+    """Wrap a filter string with hwdownload when GPU hardware frames are in use.
+
+    The ``select='gt(scene,...)'`` and ``scale`` filters operate on CPU memory,
+    so GPU-decoded frames must be transferred back to CPU first. This returns
+    the appropriate filter chain or the raw ``inner_filter`` when on CPU.
+    """
+    resolved = _resolve_hwaccel(hwaccel)
+    if resolved in ("off", "vdpau"):
+        return inner_filter
+
+    if resolved == "cuda":
+        # cuda -> hwdownload -> format(nv12) -> cpu filter
+        return f"hwdownload,format=nv12,{inner_filter}"
+
+    if resolved == "vaapi":
+        # vaapi frames are in vaapi pixel formats — download via hwdownload
+        # then feed into the CPU filter.
+        return f"hwdownload,format=nv12,{inner_filter}"
+
+    # drm, vulkan — same pattern
+    return f"hwdownload,format=nv12,{inner_filter}"
+
+
 class FrameExtractor:
     """Extract frames from videos using FFmpeg."""
 
-    def __init__(self, interval: int = 5, scene_threshold: float = 0.4, min_gap: float = 2.0, threads: int = 0):
+    def __init__(self, interval: int = 5, scene_threshold: float = 0.4, min_gap: float = 2.0, threads: int = 0, hwaccel: str = "off"):
         """
         Args:
             interval: Seconds between extracted grid frames (the coverage floor)
@@ -19,14 +123,25 @@ class FrameExtractor:
                 out near-duplicate grid/scene timestamps and bound captioning cost.
             threads: Max CPU threads FFmpeg may use per decode. 0 lets FFmpeg use all
                 cores; a positive cap keeps the host responsive during analysis.
+            hwaccel: Hardware acceleration backend. One of: off, auto, cuda, vaapi,
+                drm, vulkan. ``auto`` probes and picks the best available backend.
         """
         self.interval = interval
         self.scene_threshold = scene_threshold
         self.min_gap = min_gap
         self.threads = max(0, int(threads))
+        self.hwaccel = hwaccel
 
     def _threads_args(self) -> List[str]:
         return ['-threads', str(self.threads)] if self.threads > 0 else []
+
+    def _hwaccel_decode(self) -> List[str]:
+        """Return ``-hwaccel`` and related flags for GPU-accelerated decode."""
+        return _hwaccel_decode_args(self.hwaccel)
+
+    def _hwaccel_vf(self, inner_filter: str) -> str:
+        """Wrap a video filter with CUDA/VAAPI frames → CPU transfer."""
+        return _hwaccel_frame_filter(self.hwaccel, inner_filter)
 
     def extract_frames(
         self,
@@ -63,11 +178,12 @@ class FrameExtractor:
             cmd = [
                 'ffmpeg', '-y',
                 *self._threads_args(),
+                *self._hwaccel_decode(),
                 '-ss', str(timestamp),
                 '-i', str(video_path),
                 '-vframes', '1',
                 '-q:v', '2',
-                '-vf', 'scale=448:-1',
+                '-vf', self._hwaccel_vf('scale=448:-1'),
                 str(output_path)
             ]
 
@@ -106,12 +222,18 @@ class FrameExtractor:
     def _detect_scene_cuts(self, video_path: Path, duration: float) -> List[float]:
         """Return timestamps (s) of scene cuts via a single FFmpeg analysis pass.
 
-        Degrades gracefully: any failure/timeout returns an empty list, leaving the
-        regular grid as the sole source of frames (i.e. old behavior).
+        When ``hwaccel`` is enabled, GPU-accelerated decode is used to speed up
+        the full-stream decode, with frames transferred back to CPU for the scene
+        detection filter. Degrades gracefully: any failure/timeout returns an
+        empty list, leaving the regular grid as the sole source of frames.
         """
+        vf = self._hwaccel_vf(f"select='gt(scene,{self.scene_threshold})',showinfo")
         cmd = [
-            'ffmpeg', '-hide_banner', *self._threads_args(), '-i', str(video_path),
-            '-vf', f"select='gt(scene,{self.scene_threshold})',showinfo",
+            'ffmpeg', '-hide_banner',
+            *self._threads_args(),
+            *self._hwaccel_decode(),
+            '-i', str(video_path),
+            '-vf', vf,
             '-an', '-f', 'null', '-'
         ]
         try:
@@ -143,11 +265,12 @@ class FrameExtractor:
         cmd = [
             'ffmpeg', '-y',
             *self._threads_args(),
+            *self._hwaccel_decode(),
             '-ss', str(timestamp),
             '-i', str(video_path),
             '-vframes', '1',
             '-q:v', '2',
-            '-vf', 'scale=448:-1',
+            '-vf', self._hwaccel_vf('scale=448:-1'),
             output_path
         ]
         
@@ -179,11 +302,12 @@ class FrameExtractor:
 async def extract_frames_async(
     video_path: str,
     output_dir: str,
-    interval: int = 5
+    interval: int = 5,
+    hwaccel: str = "off",
 ) -> List[Tuple[str, float]]:
     """Async wrapper for frame extraction."""
     loop = asyncio.get_event_loop()
-    extractor = FrameExtractor(interval=interval)
+    extractor = FrameExtractor(interval=interval, hwaccel=hwaccel)
     return await loop.run_in_executor(
         None,
         extractor.extract_frames,

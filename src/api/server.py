@@ -193,6 +193,8 @@ def _effective_cfg() -> dict:
     base.update(override)
     base.setdefault("max_concurrent_jobs", 8)
     base.setdefault("transcription_concurrency", 2)
+    # FFmpeg hardware acceleration — "auto" probes the best backend on the host.
+    base.setdefault("ffmpeg_hwaccel", settings.ffmpeg_hwaccel)
     # Whisper decode tuning: greedy (beam 1) + no previous-text conditioning is the
     # fast default; both are override-tunable from the Settings file.
     base.setdefault("whisper_beam_size", settings.whisper_beam_size)
@@ -271,7 +273,11 @@ segment_retriever = SegmentRetriever()
 _reranker = None
 
 # Frame extractor
-frame_extractor = FrameExtractor(interval=_cfg["frame_extraction_interval"], threads=int(_cfg.get("ffmpeg_threads", 0)))
+frame_extractor = FrameExtractor(
+    interval=_cfg["frame_extraction_interval"],
+    threads=int(_cfg.get("ffmpeg_threads", 0)),
+    hwaccel=_cfg.get("ffmpeg_hwaccel", "off"),
+)
 
 def _reinit_services(cfg: dict):
     global embed_service, vlm_service, summarizer_service, fusion_service, llm_reranker, _llm_rerank_on, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
@@ -286,7 +292,11 @@ def _reinit_services(cfg: dict):
         beam_size=int(cfg.get("whisper_beam_size", 1)),
         condition_on_previous_text=bool(cfg.get("whisper_condition_on_previous", False)),
     )
-    frame_extractor = FrameExtractor(interval=int(cfg["frame_extraction_interval"]), threads=int(cfg.get("ffmpeg_threads", 0)))
+    frame_extractor = FrameExtractor(
+        interval=int(cfg["frame_extraction_interval"]),
+        threads=int(cfg.get("ffmpeg_threads", 0)),
+        hwaccel=cfg.get("ffmpeg_hwaccel", "off"),
+    )
     _analysis_semaphore = asyncio.Semaphore(int(cfg.get("max_concurrent_jobs", 8)))
     _transcribe_semaphore = asyncio.Semaphore(max(1, int(cfg.get("transcription_concurrency", 2))))
 
@@ -1375,9 +1385,12 @@ async def qdrant_purge_orphans():
 @app.get("/settings", tags=["System"])
 async def get_settings_endpoint():
     """Return current effective settings."""
+    from ..ingest.frame_extractor import _resolve_hwaccel
     cfg = _effective_cfg()
     warning = _backend_warning(cfg)
     video_dirs = [str(d) for d in VIDEO_SCAN_DIRS if d.exists() and any(d.iterdir())]
+    hw = cfg.get("ffmpeg_hwaccel", "off")
+    cfg["ffmpeg_hwaccel_resolved"] = _resolve_hwaccel(hw)
     return {**cfg, "backend_warning": warning, "video_dirs": video_dirs}
 
 
@@ -1394,6 +1407,7 @@ class SettingsUpdateRequest(BaseModel):
     embed_batch_size: Optional[int] = None
     max_concurrent_jobs: Optional[int] = None
     ffmpeg_threads: Optional[int] = None
+    ffmpeg_hwaccel: Optional[str] = None
     import_blacklist: Optional[List[str]] = None
     auto_import_interval: Optional[int] = None
     auto_analyze: Optional[str] = None  # off | audio | video | both

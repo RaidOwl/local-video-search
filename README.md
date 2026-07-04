@@ -9,7 +9,7 @@ A self-hosted video search and summarization system powered by local AI models. 
 - **Hybrid Retrieval + Precision Reranking** — Every search runs both a meaning (semantic) and a keyword (BM25) recall pass, then a local cross-encoder reranks the results so they respect fine details (e.g. "blonde woman" vs "blonde man"), with a relevance slider to tune strictness
 - **Cross-Modal Search** — When searching both sources, the system correlates what's shown and what's spoken in the same moment, and a fused per-moment description surfaces matches that neither track alone would catch; spoken-only hits borrow the nearest frame for visual context
 - **Compositional Precision** — Multi-word searches are checked by a local LLM so a query's attributes must describe the *same* object (e.g. "mini pc with wooden accent" won't match a separate mini PC and a separate wooden desk)
-- **Scene-Aware Frame Sampling** — Frames are sampled on a time grid *and* at detected scene cuts, so brief subjects between grid points still get captioned
+- **Scene-Aware Frame Sampling** — Frames are sampled on a time grid *and* at detected scene cuts (with optional GPU-accelerated decode for faster analysis), so brief subjects between grid points still get captioned
 - **Metadata Filters** — Optionally narrow any search by media type, minimum resolution, or creation date — or apply the filters alone to browse your library by those criteria
 - **Visual Frame Analysis** — Vision-language model (VLM) captions every frame during analysis
 - **Speech Transcription** — Whisper transcribes spoken audio; transcript segments are fully searchable and show surrounding spoken context
@@ -36,6 +36,8 @@ Requirements depend on the AI backend you choose:
 | `custom` | varies | Point at any OpenAI-compatible server |
 
 Transcription (Whisper) runs on CPU inside the API container — no extra GPU needed.
+
+Video decode (FFmpeg scene detection + frame extraction) can optionally use GPU acceleration when configured — see [FFmpeg Hardware Acceleration](#ffmpeg-hardware-acceleration).
 
 ## Quick Start
 
@@ -258,7 +260,7 @@ starts the matching model server automatically (or none, for `custom` and
 
 Navigate to **http://localhost:3000**
 
-Go to **Settings** to verify your AI backend — the banner now shows detected hardware (GPU model, VRAM, ROCm device status), resolved model names, and service connectivity. Configure Whisper transcription quality (Low / Medium / High), set the frame extraction interval, cap the CPU threads FFmpeg uses during analysis (defaults to half your cores so the host stays responsive), tune max concurrent jobs, and toggle auto-analyze on import.
+Go to **Settings** to verify your AI backend — the banner now shows detected hardware (GPU model, VRAM, ROCm device status), resolved model names, and service connectivity. Configure Whisper transcription quality (Low / Medium / High), set the frame extraction interval, cap the CPU threads FFmpeg uses during analysis (defaults to half your cores so the host stays responsive), tune max concurrent jobs, toggle auto-analyze on import, and choose a hardware acceleration backend for FFmpeg video decoding.
 
 ### Step 5 — Add & analyze videos
 
@@ -330,6 +332,57 @@ All runtime settings can be managed in the **Settings** page of the UI, or via `
 | `HARDWARE_TYPE` | Hardware platform selection (nvidia/amd/apple/cpu/custom) |
 | `VRAM_TIER` | Model size for local backends (low/mid/high/ultra) |
 | `VIDEO_DIR_1..5` | Up to 5 video library directories |
+| `FFMPEG_HWACCEL` | FFmpeg video decode acceleration: `off`, `auto`, `cuda`, `vaapi`, `drm`, or `vulkan` (default: `off`) |
+
+## FFmpeg Hardware Acceleration
+
+Video decoding is the most CPU-intensive step during analysis — every video must be fully decoded to detect scene cuts, then decoded again at each extraction timestamp. Hardware acceleration offloads this decode step to your GPU, dramatically speeding up analysis on long videos.
+
+### Supported backends
+
+| Backend | Platforms | Notes |
+|---------|-----------|-------|
+| `cuda` | NVIDIA GPUs (DGX Spark / GB10) | Uses NVDEC (`h264_cuvid`, `hevc_cuvid`, `av1_cuvid`). Requires `nvidia-container-toolkit` and `--gpus` on the API container. |
+| `vaapi` | AMD / Intel GPUs on Linux | Works with AMD Radeon (RDNA) and ROCm. Requires `mesa-va-drivers` in container (included in the default Docker image) and `/dev/dri` device passthrough on the API container. |
+| `drm` | Linux (kernel DRM) | Lightweight kernel-level decode. Available on most Linux systems with GPU drivers. |
+| `vulkan` | Cross-platform | GPU decode via Vulkan video APIs. |
+
+### How to enable
+
+1. **Set the mode** in `.env` or via the **Settings UI** → **Processing** → **FFmpeg hardware acceleration**:
+   - `auto` — auto-detects the best available backend (recommended)
+   - `cuda` / `vaapi` / `drm` / `vulkan` — pin a specific backend
+   - `off` — software decode only (default)
+
+2. **For containers, ensure GPU access** — the API container needs to see the GPU hardware:
+
+   **NVIDIA (spark3 / any DGX Spark / GB10):** Add GPU device access to the `local-vss-api` service in `docker-compose.override.yml`:
+   ```yaml
+   services:
+     local-vss-api:
+       deploy:
+         resources:
+           reservations:
+             devices:
+               - driver: nvidia
+                 count: 1
+                 capabilities: [gpu]
+   ```
+
+   **AMD ROCm (Strix Halo):** The `docker-compose.rocm.yml` override already passes `/dev/kfd` and `/dev/dri` to the vLLM containers. Add the same to `local-vss-api` in a `docker-compose.override.yml`:
+   ```yaml
+   services:
+     local-vss-api:
+       devices:
+         - /dev/kfd:/dev/kfd
+         - /dev/dri:/dev/dri
+       security_opt:
+         - seccomp:unconfined
+   ```
+
+3. **Verify** — open the **Settings** UI. With `auto`, it shows the resolved backend (e.g. `cuda` or `vaapi`). If auto-detect can't find a GPU decoder, it gracefully falls back to CPU.
+
+> **Note:** The scene detection filter (`select='gt(scene,...)'`) runs on CPU memory even when the decode is GPU-accelerated. Frames are decoded on the GPU then transferred to CPU for analysis — you still get the speedup from GPU decode, just not the full GPU-native pipeline (which scene detection can't use since it needs per-frame pixel comparison).
 
 ## Architecture
 
