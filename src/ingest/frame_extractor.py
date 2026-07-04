@@ -23,6 +23,11 @@ def _probe_hwaccel() -> str:
 
     Runs ``ffmpeg -hwaccels`` once and returns the name of the most suitable
     backend, or ``"off"`` if none is found.
+
+    The detection prefers backends backed by real hardware. `vaapi` is preferred
+    over `cuda` when an AMD GPU is present (/dev/dri/renderD* exists), because
+    some ffmpeg builds report ``cuda`` from compile-time support even without an
+    NVIDIA GPU — on AMD systems that would cause decode failures.
     """
     try:
         result = subprocess.run(
@@ -35,7 +40,14 @@ def _probe_hwaccel() -> str:
     available = {line.strip() for line in result.stdout.splitlines()
                  if line.strip() and not line.startswith("Hardware")}
 
-    # Preference order: cuda > vaapi > drm > vulkan > vdpau
+    # On AMD systems: prefer vaapi when the /dev/dri render node is present.
+    has_amd_device = os.path.isdir("/dev/dri") and any(
+        f.startswith("renderD") for f in os.listdir("/dev/dri")
+    )
+    if has_amd_device and "vaapi" in available:
+        return "vaapi"
+
+    # Preference order: cuda > vaapi (no AMD device) > drm > vulkan > vdpau
     for candidate in ("cuda", "vaapi", "drm", "vulkan", "vdpau"):
         if candidate in available:
             return candidate
