@@ -108,6 +108,22 @@ ollama pull bge-m3               # embeddings (all tiers)
 ollama pull qwen3-vl:8b          # vision + summaries — mid/qwen (4b/8b/32b/235b per tier)
 ```
 
+**Keep models loaded in memory** — by default Ollama unloads a model ~5 minutes
+after the last request. During video analysis, the VLM is called hundreds of
+times per video, so a short keep_alive causes constant reloads (each one tens
+of seconds). Start Ollama with a longer duration:
+
+```bash
+OLLAMA_KEEP_ALIVE=30m ollama serve
+```
+
+Or set it globally via the systemd override:
+
+```bash
+printf '[Service]\nEnvironment="OLLAMA_KEEP_ALIVE=30m"\n' | sudo tee /etc/systemd/system/ollama.service.d/keep_alive.conf
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+```
+
 Start the stack normally — no extra profile needed:
 ```bash
 docker compose up -d
