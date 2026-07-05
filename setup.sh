@@ -47,11 +47,12 @@ detect_hardware() {
             extra_env+=("REQUIRE_OLLAMA=1")
         else
             # Check/advise keep_alive — during analysis the VLM is called hundreds
-            # of times per video, so a 5-minute default causes constant reloads.
+            # of times per video, so the default 5m keep_alive causes constant reloads.
+            # Recommend indefinite (-1) to match vLLM behavior.
             if pgrep -f ollama >/dev/null 2>&1; then
                 env_line=$(tr '\0' '\n' < /proc/$(pgrep -f 'ollama serve' | head -1)/environ 2>/dev/null | grep OLLAMA_KEEP_ALIVE || true)
                 if [ -z "$env_line" ]; then
-                    info "Ollama keep_alive not set — models unload after ~5m idle. For analysis, set OLLAMA_KEEP_ALIVE=30m (run setup.sh with that env var, or edit the systemd override)"
+                    info "Ollama keep_alive not set — models unload after ~5m idle. For best analysis performance, set OLLAMA_KEEP_ALIVE=-1 (indefinite): edit the systemd override or run OLLAMA_KEEP_ALIVE=-1 ollama serve"
                 fi
             fi
         fi

@@ -111,18 +111,22 @@ ollama pull qwen3-vl:8b          # vision + summaries — mid/qwen (4b/8b/32b/23
 **Keep models loaded in memory** — by default Ollama unloads a model ~5 minutes
 after the last request. During video analysis, the VLM is called hundreds of
 times per video, so a short keep_alive causes constant reloads (each one tens
-of seconds). Start Ollama with a longer duration:
+of seconds). For the best experience, keep models loaded indefinitely (same
+behavior as vLLM). Start Ollama with:
 
 ```bash
-OLLAMA_KEEP_ALIVE=30m ollama serve
+OLLAMA_KEEP_ALIVE=-1 ollama serve
 ```
 
 Or set it globally via the systemd override:
 
 ```bash
-printf '[Service]\nEnvironment="OLLAMA_KEEP_ALIVE=30m"\n' | sudo tee /etc/systemd/system/ollama.service.d/keep_alive.conf
+printf '[Service]\nEnvironment="OLLAMA_KEEP_ALIVE=-1"\n' | sudo tee /etc/systemd/system/ollama.service.d/keep_alive.conf
 sudo systemctl daemon-reload && sudo systemctl restart ollama
 ```
+
+If you share your Mac's GPU with other tools and need VRAM freed when not
+using LVS, use a finite duration instead (e.g., `OLLAMA_KEEP_ALIVE=30m`).
 
 Start the stack normally — no extra profile needed:
 ```bash

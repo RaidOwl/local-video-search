@@ -110,7 +110,7 @@ services:
       # Keep model loaded in GPU memory so frame-by-frame captioning doesn't
       # reload it between every call. Default 30m — tune via .env for your
       # usage pattern (longer = faster analysis, more VRAM reserved).
-      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
     volumes:
       - ${MODELS_DIR:-./data/models}/ollama:/root/.ollama
     restart: unless-stopped
