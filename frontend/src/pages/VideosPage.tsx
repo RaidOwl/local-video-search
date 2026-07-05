@@ -7,6 +7,20 @@ import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, Lis
 
 type ViewMode = 'card' | 'tree' | 'folder'
 
+// A full analysis run (created via /analyze) passes through these phases in
+// order; 'processing' / 'transcribing' are legacy values kept for videos that
+// were mid-run when this pipeline was split into finer-grained statuses.
+const ANALYSIS_PHASE_STATUSES = new Set([
+  'queued', 'scene_detection', 'video_processing', 'audio_processing', 'fusing',
+  'processing', 'transcribing',
+])
+function isAnalysisActive(status: string): boolean {
+  return ANALYSIS_PHASE_STATUSES.has(status)
+}
+function isAudioPhase(status: string): boolean {
+  return status === 'audio_processing' || status === 'transcribing' || status === 'retranscribing'
+}
+
 interface FolderNode {
   name: string
   fullPath: string
@@ -121,14 +135,18 @@ function StatusBadge({ status, frameCount, eta, transcribeProgress = 0, fuseProg
   if (status === 'error') return <span className="badge error"><span className="dot" />Error</span>
   if (status === 'fusing') {
     const pct = Math.round((fuseProgress || 0) * 100)
-    return <span className="badge transcribing"><Sparkles size={11} />{pct > 0 ? `Fusing ${pct}%` : 'Fusing…'}</span>
+    return <span className="badge fusing"><Sparkles size={11} />{pct > 0 ? `Fusing ${pct}%` : 'Fusing…'}</span>
   }
-  if (status === 'transcribing' || status === 'retranscribing') {
-    const base = status === 'retranscribing' ? 'Audio' : 'Transcribing'
+  if (status === 'transcribing' || status === 'audio_processing' || status === 'retranscribing') {
+    const base = status === 'retranscribing' ? 'Audio' : 'Audio Processing'
     const pct = Math.round((transcribeProgress || 0) * 100)
     const label = pct > 0 ? `${base} ${pct}%` : `${base}…`
     return <span className="badge transcribing"><Mic size={11} />{label}{eta ? ` · ${eta}` : ''}</span>
   }
+  if (status === 'scene_detection') {
+    return <span className="badge scene-detection"><span className="dot" />Detecting Scenes</span>
+  }
+  if (status === 'queued') return <span className="badge queued">Queued</span>
   if (frameCount === 0) return <span className="badge queued">Queued</span>
   return (
     <span className="badge analyzing">
@@ -196,7 +214,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
         {node.videos.map(video => {
           const isSelected = selected.has(video.id)
           const totalFrames = Math.max(1, Math.floor(video.duration / frameInterval))
-          const eta = (video.status === 'transcribing' || video.status === 'retranscribing')
+          const eta = (isAudioPhase(video.status))
             ? transcribeEtaLabel(snapshots.current[video.id], video.transcribe_progress ?? 0)
             : etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
           return (
@@ -212,7 +230,7 @@ function TreeNode({ node, depth, selected, removing, snapshots, toggleSelect, ha
               <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
               <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flexShrink: 0 }}>{fmt(video.duration)}</span>
               <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} fuseProgress={video.fuse_progress} />
-              {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}><Square size={12} /></button>}              {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}><Square size={12} /></button>}              <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.3rem', color: 'var(--muted)', flexShrink: 0 }}><ArrowRight size={14} /></button>
+              {isAnalysisActive(video.status) && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}><Square size={12} /></button>}              {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)', flexShrink: 0 }}><Square size={12} /></button>}              <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.3rem', color: 'var(--muted)', flexShrink: 0 }}><ArrowRight size={14} /></button>
               <button className="icon-btn" title="Hide" onClick={e => handleRemove(e, video.id)} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)', flexShrink: 0 }}><X size={14} /></button>
             </div>
           )
@@ -244,8 +262,8 @@ function TreeView(props: ViewProps) {
                   <VideoIcon size={12} style={{ color: 'var(--muted)', flexShrink: 0 }} />
                   <span style={{ flex: 1, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{video.display_name || video.name}</span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
-                  <StatusBadge status={video.status} frameCount={video.frame_count} eta={(video.status === 'transcribing' || video.status === 'retranscribing') ? transcribeEtaLabel(props.snapshots.current[video.id], video.transcribe_progress ?? 0) : etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} transcribeProgress={video.transcribe_progress} fuseProgress={video.fuse_progress} />
-                  {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.3rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
+                  <StatusBadge status={video.status} frameCount={video.frame_count} eta={(isAudioPhase(video.status)) ? transcribeEtaLabel(props.snapshots.current[video.id], video.transcribe_progress ?? 0) : etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)} transcribeProgress={video.transcribe_progress} fuseProgress={video.fuse_progress} />
+                  {isAnalysisActive(video.status) && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.3rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
                   <button className="icon-btn" title="Hide" onClick={e => props.handleRemove(e, video.id)} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)' }}><X size={14} /></button>
                 </div>
               )
@@ -308,7 +326,7 @@ function FolderView(props: ViewProps) {
         {videos.map(video => {
           const isSelected = props.selected.has(video.id)
           const totalFrames = Math.max(1, Math.floor(video.duration / props.frameInterval))
-          const eta = (video.status === 'transcribing' || video.status === 'retranscribing')
+          const eta = (isAudioPhase(video.status))
             ? transcribeEtaLabel(props.snapshots.current[video.id], video.transcribe_progress ?? 0)
             : etaLabel(props.snapshots.current[video.id], video.frame_count, totalFrames)
           return (
@@ -331,7 +349,7 @@ function FolderView(props: ViewProps) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                   <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>{fmt(video.duration)}</span>
                   <span style={{ flex: 1 }} />
-                  {video.status === 'processing' && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
+                  {isAnalysisActive(video.status) && <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  {video.status === 'retranscribing' && <button className="icon-btn" title="Stop audio" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--error)' }}><Square size={12} /></button>}                  <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); props.navigate(`/videos/${video.id}`) }} style={{ padding: '0.1rem 0.2rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
                 </div>
                 <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} fuseProgress={video.fuse_progress} />
               </div>
@@ -379,18 +397,18 @@ export default function VideosPage() {
         for (const v of prev) {
           const next = data.find(d => d.id === v.id)
           if (!next) continue
-          const active = v.status === 'processing' || v.status === 'transcribing' || v.status === 'retranscribing'
+          const active = isAnalysisActive(v.status) || isAudioPhase(v.status)
           if (!active) continue
           let snap = snapshots.current[v.id]
           if (!snap) { snap = { frameCount: 0, ts: 0, tProgress: 0, tTs: 0 }; snapshots.current[v.id] = snap }
           // Frame-phase baseline: set on first observation using the *current*
           // frame count (not 0) so already-completed frames don't inflate rate.
-          if (v.status === 'processing' && next.frame_count > 0 && snap.ts === 0) {
+          if ((v.status === 'video_processing' || v.status === 'processing') && next.frame_count > 0 && snap.ts === 0) {
             snap.frameCount = next.frame_count; snap.ts = Date.now()
           }
           // Transcription baseline — tracked separately since it begins only
           // after frame analysis finishes.
-          if ((v.status === 'transcribing' || v.status === 'retranscribing') && (next.transcribe_progress ?? 0) > 0 && snap.tTs === 0) {
+          if ((isAudioPhase(v.status)) && (next.transcribe_progress ?? 0) > 0 && snap.tTs === 0) {
             snap.tProgress = next.transcribe_progress ?? 0; snap.tTs = Date.now()
           }
         }
@@ -451,7 +469,7 @@ export default function VideosPage() {
     finally { setReimporting(false) }
   }
 
-  const processingCount = videos.filter(v => v.status === 'processing' || v.status === 'transcribing' || v.status === 'fusing').length
+  const processingCount = videos.filter(v => isAnalysisActive(v.status)).length
   const retranscribingCount = videos.filter(v => v.status === 'retranscribing').length
   const navigate = useNavigate()
 
@@ -465,13 +483,17 @@ export default function VideosPage() {
     setSortDir(next); localStorage.setItem('vss_sort_dir', next)
   }
 
-  const STATUS_ORDER: Record<string, number> = { processing: 0, analyzed: 1, ready: 2, error: 3 }
+  const STATUS_ORDER: Record<string, number> = {
+    queued: 0, scene_detection: 0, video_processing: 0, audio_processing: 0, fusing: 0,
+    processing: 0, transcribing: 0, retranscribing: 0,
+    analyzed: 1, ready: 2, error: 3,
+  }
 
   const displayedVideos = [...videos]
     .filter(v => {
       if (statusFilter !== 'all') {
         const inProgress = statusFilter === 'processing'
-        if (inProgress ? (v.status !== 'processing' && v.status !== 'transcribing' && v.status !== 'retranscribing') : v.status !== statusFilter) return false
+        if (inProgress ? (!isAnalysisActive(v.status) && v.status !== 'retranscribing') : v.status !== statusFilter) return false
       }
       if (!filterText.trim()) return true
       const q = filterText.toLowerCase()
@@ -587,7 +609,7 @@ export default function VideosPage() {
           <div className="video-grid">
             {displayedVideos.map(video => {
               const totalFrames = Math.max(1, Math.floor(video.duration / frameInterval))
-              const eta = (video.status === 'transcribing' || video.status === 'retranscribing')
+              const eta = (isAudioPhase(video.status))
                 ? transcribeEtaLabel(snapshots.current[video.id], video.transcribe_progress ?? 0)
                 : etaLabel(snapshots.current[video.id], video.frame_count, totalFrames)
               const isSelected = selected.has(video.id)
@@ -624,7 +646,7 @@ export default function VideosPage() {
                         <span className="video-title" title={video.display_name || video.name}>{video.display_name || video.name}</span>
                       </div>
                       <div style={{ display: 'flex', gap: '0.1rem' }}>
-                        {video.status === 'processing' && (
+                        {isAnalysisActive(video.status) && (
                           <button className="icon-btn" title="Stop analysis" onClick={e => { e.stopPropagation(); api.cancelAnalysis(video.id).catch(() => {}) }} style={{ padding: '0.2rem 0.3rem', color: 'var(--error)' }}><Square size={12} /></button>
                         )}
                         <button className="icon-btn" title="View details" onClick={e => { e.stopPropagation(); navigate(`/videos/${video.id}`) }} style={{ padding: '0.2rem 0.4rem', color: 'var(--muted)' }}><ArrowRight size={14} /></button>
@@ -647,12 +669,12 @@ export default function VideosPage() {
                         <StatusBadge status={video.status} frameCount={video.frame_count} eta={eta} transcribeProgress={video.transcribe_progress} />
                       </div>
                     </div>
-                    {video.status === 'processing' && video.frame_count > 0 && (
+                    {(video.status === 'video_processing' || video.status === 'processing') && video.frame_count > 0 && (
                       <div className="progress-wrap" style={{ marginTop: 4 }}>
                         <div className="progress-bar" style={{ width: `${Math.min(100, (video.frame_count / totalFrames) * 85)}%` }} />
                       </div>
                     )}
-                    {(video.status === 'transcribing' || video.status === 'retranscribing') && (
+                    {(isAudioPhase(video.status)) && (
                       <div className="progress-wrap" style={{ marginTop: 4 }}>
                         <div className="progress-bar audio" style={{ width: `${Math.max(3, Math.min(100, (video.transcribe_progress || 0) * 100))}%` }} />
                       </div>

@@ -59,14 +59,18 @@ nav { border-bottom: 1px solid var(--border); background: rgba(12,14,20,0.92); b
 .nav-link.active { background: rgba(99,102,241,0.1); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); border-radius: 8px 8px 0 0; }
 .badge { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.6rem; border-radius: 99px; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.03em; white-space: nowrap; }
 .badge.queued { background: rgba(113,113,122,0.18); color: var(--muted); }
+.badge.scene-detection { background: rgba(245,158,11,0.14); color: #f59e0b; }
 .badge.analyzing { background: rgba(99,102,241,0.15); color: var(--accent-hover); }
 .badge.transcribing { background: rgba(20,184,166,0.16); color: #2dd4bf; }
+.badge.fusing { background: rgba(168,85,247,0.15); color: #c084fc; }
 .badge.analyzed { background: rgba(34,197,94,0.12); color: var(--success); }
 .badge.error { background: rgba(239,68,68,0.12); color: var(--error); }
 .warning { background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.35); border-radius: var(--radius); padding: 0.65rem 0.9rem; color: var(--warning); font-size: 0.85rem; }
 .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge.analyzing .dot { animation: pulse 1.2s ease-in-out infinite; }
+.badge.scene-detection .dot { animation: pulse 1.2s ease-in-out infinite; }
 .badge.transcribing svg { animation: pulse 1.2s ease-in-out infinite; }
+.badge.fusing svg { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 .tag { display: inline-flex; align-items: center; gap: 0.25rem; background: var(--surface2); border: 1px solid var(--border); border-radius: 99px; padding: 0.15rem 0.65rem; font-size: 0.78rem; color: var(--muted); }
 .tag button { background: none; padding: 0 0 0 2px; color: var(--muted); font-size: 1rem; min-width: 0; border-radius: 50%; line-height: 1; }

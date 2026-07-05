@@ -71,7 +71,7 @@ async def lifespan(_app: FastAPI):
     global _auto_import_task
     await db.init_db()
     await embed_service.ensure_collection()
-    stuck = [v for v in await db.get_all_videos() if v.status in ('processing', 'transcribing', 'fusing')]
+    stuck = [v for v in await db.get_all_videos() if v.status in ACTIVE_ANALYSIS_STATUSES]
     for v in stuck:
         await db.update_video(v.id, {'frame_count': 0})
         _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
@@ -250,6 +250,20 @@ _analysis_semaphore = asyncio.Semaphore(int(_cfg.get("max_concurrent_jobs", 8)))
 # transcriptions oversubscribe the CPU and slow each other down. Cap it
 # separately from vision so frame analysis can stay wide while audio stays narrow.
 _transcribe_semaphore = asyncio.Semaphore(max(1, int(_cfg.get("transcription_concurrency", 2))))
+
+# Fine-grained lifecycle statuses for the main analysis pipeline (process_video),
+# in the order a full (video + audio + fuse) run passes through them:
+#   queued           -> created, waiting on a free _analysis_semaphore slot
+#   scene_detection  -> ffmpeg scene-cut analysis + frame extraction (do_visual)
+#   video_processing -> per-frame VLM captioning (do_visual)
+#   audio_processing -> Whisper transcription (do_audio)
+#   fusing           -> cross-modal fusion pass (do_fuse)
+# 'retranscribing' (audio-only re-run via /retranscribe) is tracked separately.
+ACTIVE_ANALYSIS_STATUSES = ('queued', 'scene_detection', 'video_processing', 'audio_processing', 'fusing')
+# Subset representing "core" (pre-fusion) analysis — used to decide whether a
+# cancelled run should reset to 'error' (core incomplete) vs 'analyzed' (core
+# done, only the bonus fusion pass was interrupted).
+CORE_ANALYSIS_STATUSES = ('queued', 'scene_detection', 'video_processing', 'audio_processing')
 
 # Services
 embed_service = EmbeddingService(_cfg["embed_url"], _cfg["qdrant_url"], model=_cfg["embed_model"], text_index=db)
@@ -569,7 +583,7 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
     if not do_visual and not do_audio and not do_fuse:
         do_visual = do_audio = True  # nothing selected: fall back to full analysis
     try:
-        await db.update_video(video_id, {'status': 'processing'})
+        await db.update_video(video_id, {'status': 'queued'})
         async with _analysis_semaphore:
             loop = asyncio.get_running_loop()
             if not resume:
@@ -592,15 +606,32 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
             if do_visual:
                 frame_dir = FRAMES_DIR / video_id
                 frame_dir.mkdir(parents=True, exist_ok=True)
-                frames = await loop.run_in_executor(
-                    None, lambda: frame_extractor.extract_frames(
-                        video_path, str(frame_dir), prefix=f"frame_{video_id}"
+                existing_visual_frames = [
+                    (f.frame_path, f.timestamp) for f in existing_db_frames if f.frame_path
+                ]
+                if resume and existing_visual_frames:
+                    # Resuming a video that already has extracted frames: DB frame
+                    # rows are only ever written *after* extract_frames() has fully
+                    # returned (see the caption loop below), so their presence means
+                    # scene detection + extraction already ran to completion for
+                    # this timestamp set. Re-running it here would just re-decode
+                    # the whole video and re-derive the identical deterministic
+                    # timestamps, immediately skipped one-by-one via
+                    # existing_frame_ids below — pure waste. Reuse them instead so
+                    # resume only pays for the still-missing captions.
+                    frames = sorted(existing_visual_frames, key=lambda x: x[1])
+                else:
+                    await db.update_video(video_id, {'status': 'scene_detection'})
+                    frames = await loop.run_in_executor(
+                        None, lambda: frame_extractor.extract_frames(
+                            video_path, str(frame_dir), prefix=f"frame_{video_id}"
+                        )
                     )
-                )
                 if not frames and not do_audio:
                     # Visual-only run with no extractable frames is a hard failure.
                     await db.update_video(video_id, {'status': 'error'})
                     return
+                await db.update_video(video_id, {'status': 'video_processing'})
                 for i, (frame_path, timestamp) in enumerate(frames or []):
                     frame_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_frame_{i}"))
                     if frame_id in existing_frame_ids:
@@ -625,7 +656,7 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
 
             # ---- Audio: transcribe ----
             if do_audio and not (resume and has_existing_transcript):
-                await db.update_video(video_id, {'status': 'transcribing', 'transcribe_progress': 0.0})
+                await db.update_video(video_id, {'status': 'audio_processing', 'transcribe_progress': 0.0})
                 print(f"Transcribing audio for {video_id}...")
                 _progress_cb = _make_transcribe_progress_cb(video_id, loop)
                 async with _transcribe_semaphore:
@@ -2522,7 +2553,7 @@ async def _run_analyze(video_id: str, req: AnalyzeRequest) -> dict:
     video = await db.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-    updates: dict = {'status': 'processing'}
+    updates: dict = {'status': 'queued'}
     if not req.resume:
         updates['summary'] = None
     if req.context is not None:
@@ -2531,7 +2562,7 @@ async def _run_analyze(video_id: str, req: AnalyzeRequest) -> dict:
     context = req.context or getattr(video, 'context', '') or ''
     _start_analysis(video.path, video_id, context=context, resume=req.resume,
                     do_visual=req.visual, do_audio=req.audio, do_fuse=req.fuse)
-    return {"status": "processing", "video_id": video_id}
+    return {"status": "queued", "video_id": video_id}
 
 
 @app.post("/analyze/{video_id}", tags=["Analysis"])
@@ -2613,7 +2644,7 @@ async def retranscribe_video(video_id: str):
     video = await db.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-    if video.status == 'processing':
+    if video.status in ACTIVE_ANALYSIS_STATUSES:
         raise HTTPException(status_code=409, detail="Full analysis in progress — stop it first")
     # Cancel any existing (possibly orphaned) retranscription task
     existing = _active_tasks.pop(video_id, None)
@@ -2629,9 +2660,9 @@ async def retranscribe_video(video_id: str):
 async def cancel_analysis(video_id: str):
     """Cancel an in-progress analysis or retranscription for a video."""
     video = await db.get_video(video_id)
-    if not video or video.status not in ('processing', 'transcribing', 'retranscribing'):
+    if not video or video.status not in (*ACTIVE_ANALYSIS_STATUSES, 'retranscribing'):
         raise HTTPException(status_code=409, detail="No active analysis for this video")
-    reset_status = 'error' if video.status in ('processing', 'transcribing') else 'analyzed'
+    reset_status = 'error' if video.status in CORE_ANALYSIS_STATUSES else 'analyzed'
     task = _active_tasks.pop(video_id, None)
     if task and not task.done():
         task.cancel()

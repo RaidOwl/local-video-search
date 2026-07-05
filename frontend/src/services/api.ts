@@ -89,7 +89,10 @@ export interface Video {
   duration: number
   summary?: string
   tags: string[]
-  status: 'ready' | 'processing' | 'transcribing' | 'fusing' | 'analyzed' | 'error' | 'retranscribing'
+  status: 'ready' | 'queued' | 'scene_detection' | 'video_processing' | 'audio_processing' | 'fusing' | 'analyzed' | 'error' | 'retranscribing'
+    // Legacy statuses kept for backward-compat with rows written before this
+    // pipeline was split into finer-grained phases; frontend still renders them.
+    | 'processing' | 'transcribing'
   frame_count: number
   thumbnail_path: string | null
   context: string | null

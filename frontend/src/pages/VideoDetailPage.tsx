@@ -5,6 +5,20 @@ import { fmt } from '../utils'
 import { Pencil, Play, Square, RotateCcw, X, Download, Check, Mic, Film, Sparkles } from 'lucide-react'
 import { AnalyzeModal } from './VideosPage'
 
+// Any phase of a full analysis run (created via /analyze); 'processing' /
+// 'transcribing' are legacy values kept for videos mid-run when this pipeline
+// was split into finer-grained statuses.
+const ANALYSIS_PHASE_STATUSES = new Set([
+  'queued', 'scene_detection', 'video_processing', 'audio_processing', 'fusing',
+  'processing', 'transcribing',
+])
+function isAnalysisActive(status: string): boolean {
+  return ANALYSIS_PHASE_STATUSES.has(status)
+}
+function isAudioPhase(status: string): boolean {
+  return status === 'audio_processing' || status === 'transcribing'
+}
+
 export default function VideoDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
@@ -76,12 +90,12 @@ export default function VideoDetailPage() {
   // Poll while processing
   useEffect(() => {
     if (!video) return
-    if (video.status === 'processing' || video.status === 'transcribing' || video.status === 'fusing') {
+    if (isAnalysisActive(video.status)) {
       pollRef.current = window.setInterval(async () => {
         const v = await api.getVideo(id!).catch(() => null)
         if (!v) return
         setVideo(v)
-        if (v.status !== 'processing' && v.status !== 'transcribing' && v.status !== 'fusing') clearInterval(pollRef.current!)
+        if (!isAnalysisActive(v.status)) clearInterval(pollRef.current!)
       }, 4000)
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
@@ -273,20 +287,23 @@ export default function VideoDetailPage() {
               })()}</span>}
             </>}
             {video.status === 'ready' && <span className="badge queued">Ready</span>}
-            {video.status === 'processing' && video.frame_count === 0 && <span className="badge queued">Queued</span>}
-            {video.status === 'processing' && video.frame_count > 0 && <span className="badge analyzing"><span className="dot" />Analyzing…</span>}
-            {video.status === 'transcribing' && <span className="badge analyzing"><span className="dot" />Analyzing…</span>}
+            {video.status === 'queued' && <span className="badge queued">Queued</span>}
+            {video.status === 'scene_detection' && <span className="badge scene-detection"><span className="dot" />Detecting Scenes</span>}
+            {(video.status === 'video_processing' || video.status === 'processing') && video.frame_count === 0 && <span className="badge queued">Queued</span>}
+            {(video.status === 'video_processing' || video.status === 'processing') && video.frame_count > 0 && <span className="badge analyzing"><span className="dot" />Analyzing…</span>}
+            {(video.status === 'audio_processing' || video.status === 'transcribing') && <span className="badge transcribing"><Mic size={11} />Audio Processing…</span>}
+            {video.status === 'fusing' && <span className="badge fusing"><Sparkles size={11} />Fusing…</span>}
             {video.status === 'error' && <span className="badge error"><span className="dot" />Error</span>}
           </div>
         </div>
         <button
           className="ghost"
-          onClick={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? handleCancel : handleReprocess}
+          onClick={isAnalysisActive(video.status) || video.status === 'retranscribing' ? handleCancel : handleReprocess}
           disabled={cancelling}
-          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined, borderColor: (video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'var(--error)' : undefined }}
-          title={(video.status === 'processing' || video.status === 'transcribing' || video.status === 'retranscribing') ? 'Stop' : 'Re-run full analysis'}
+          style={{ fontSize: '0.82rem', whiteSpace: 'nowrap', marginTop: '0.25rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: (isAnalysisActive(video.status) || video.status === 'retranscribing') ? 'var(--error)' : undefined, borderColor: (isAnalysisActive(video.status) || video.status === 'retranscribing') ? 'var(--error)' : undefined }}
+          title={(isAnalysisActive(video.status) || video.status === 'retranscribing') ? 'Stop' : 'Re-run full analysis'}
         >
-          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13 }} />Stopping…</> : (video.status === 'processing' || video.status === 'transcribing') ? <><Square size={12} /> Stop</> : video.status === 'retranscribing' ? <><Square size={12} /> Stop Audio</> : (video.status === 'analyzed' || video.status === 'error') ? <><RotateCcw size={12} /> Re-analyze</> : <><Play size={12} /> Analyze</>}
+          {cancelling ? <><span className="spinner" style={{ width: 13, height: 13 }} />Stopping…</> : isAnalysisActive(video.status) ? <><Square size={12} /> Stop</> : video.status === 'retranscribing' ? <><Square size={12} /> Stop Audio</> : (video.status === 'analyzed' || video.status === 'error') ? <><RotateCcw size={12} /> Re-analyze</> : <><Play size={12} /> Analyze</>}
         </button>
       </div>
 
@@ -373,10 +390,14 @@ export default function VideoDetailPage() {
             </button>
           )}
         </div>
-        {(video.status === 'processing' || video.status === 'transcribing') && (
+        {isAnalysisActive(video.status) && (
           <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>
             <span className="spinner" style={{ marginRight: '0.5rem' }} />
-            {video.status === 'transcribing' ? 'Transcribing audio…' : `Video is still being analyzed (${video.frame_count} scenes so far)…`}
+            {video.status === 'queued' ? 'Queued…'
+              : video.status === 'scene_detection' ? 'Detecting scenes…'
+              : isAudioPhase(video.status) ? 'Processing audio…'
+              : video.status === 'fusing' ? 'Fusing…'
+              : `Video is still being analyzed (${video.frame_count} scenes so far)…`}
           </p>
         )}
         {video.status === 'analyzed' && !video.summary && !summarizing && (
@@ -538,11 +559,11 @@ export default function VideoDetailPage() {
         <div className="section-header"><h2>Search Within Video</h2></div>
         <form onSubmit={handleSearch} className="search-bar">
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. 'when does the AMD Strix Halo appear'" />
-          <button type="submit" disabled={searching || video.status === 'processing' || video.status === 'transcribing'}>
+          <button type="submit" disabled={searching || isAnalysisActive(video.status)}>
             {searching ? 'Searching…' : 'Search'}
           </button>
         </form>
-        {(video.status === 'processing' || video.status === 'transcribing') && (
+        {isAnalysisActive(video.status) && (
           <p style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>Search available once analysis is complete.</p>
         )}
         {segments.length > 0 && (
