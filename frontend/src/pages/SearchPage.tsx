@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, SearchResult } from '../services/api'
 import { fmt } from '../utils'
-import { Mic, Film, SlidersHorizontal } from 'lucide-react'
+import { Mic, Film, SlidersHorizontal, Pencil } from 'lucide-react'
 
 const SS_QUERY = 'vss_search_query'
 const SS_RESULTS = 'vss_search_results'
@@ -62,6 +62,10 @@ export default function SearchPage() {
   const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
+  const [refining, setRefining] = useState(false)
+  const [refineQuery, setRefineQuery] = useState('')
+  const [refineLoading, setRefineLoading] = useState(false)
+  const refineInputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 
   // Rotate the example placeholder so users learn the concise phrasing pattern.
@@ -141,6 +145,27 @@ export default function SearchPage() {
       sessionStorage.setItem(SS_TIER, String(tierIdx))
     } catch { /* ignore */ }
     finally { setLoading(false) }
+  }
+
+  const handleRefine = async () => {
+    if (!refineQuery.trim()) return
+    const combined = `${resultQuery} ${refineQuery.trim()}`
+    setRefineLoading(true)
+    try {
+      const res = (await api.search(combined, undefined, REL_TIERS[tierIdx].min, sources, {
+        media_types: filters.mediaTypes.join(','),
+        resolution: filters.resolution,
+        date_from: filters.dateFrom,
+        date_to: filters.dateTo,
+      })).results
+      setResults(res)
+      setResultQuery(combined)
+      sessionStorage.setItem(SS_QUERY, combined)
+      sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
+      setRefineQuery('')
+      setRefining(false)
+    } catch { /* ignore */ }
+    finally { setRefineLoading(false) }
   }
 
   return (
@@ -318,9 +343,61 @@ export default function SearchPage() {
 
         {results.length > 0 && (
           <div style={{ marginTop: '1.5rem' }}>
-            <p style={{ color: 'var(--muted)', fontSize: '0.82rem', marginBottom: '1rem' }}>
-              {results.length} video{results.length !== 1 ? 's' : ''} matched
-            </p>
+            {/* Results + refine header row */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', marginBottom: '1rem' }}>
+              <p style={{ color: 'var(--muted)', fontSize: '0.82rem', margin: 0 }}>
+                {results.length} video{results.length !== 1 ? 's' : ''} matched
+              </p>
+              <button
+                type="button"
+                onClick={() => setRefining(s => !s)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.3rem',
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  border: '1px solid var(--border)', borderRadius: 6,
+                  padding: '0.2rem 0.5rem', cursor: 'pointer', fontSize: '0.78rem', boxShadow: 'none',
+                }}
+                title="Add more context to refine the current results"
+              >
+                <Pencil size={13} />
+                Refine
+              </button>
+            </div>
+
+            {/* Refine search inline — appears below the header when toggled */}
+            {refining && (
+              <form
+                onSubmit={e => { e.preventDefault(); handleRefine() }}
+                style={{
+                  display: 'flex', gap: '0.5rem', marginBottom: '1.2rem',
+                  background: 'var(--surface)', border: '1px solid var(--accent)',
+                  borderRadius: 'var(--radius)', padding: '0.6rem 0.75rem',
+                  boxShadow: '0 0 0 2px rgba(99,102,241,0.15)',
+                }}
+              >
+                <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
+                  <input
+                    ref={refineInputRef}
+                    value={refineQuery}
+                    onChange={e => setRefineQuery(e.target.value)}
+                    placeholder="Add more context to refine results…"
+                    style={{ fontSize: '0.88rem', padding: '0.5rem 0.75rem', flex: 1 }}
+                    autoFocus
+                  />
+                  {refineQuery && (
+                    <button type="button" onClick={() => setRefineQuery('')}
+                      style={{ position: 'absolute', right: '0.4rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '1rem', padding: '0.2rem', lineHeight: 1, opacity: 0.6, boxShadow: 'none' }}
+                    >×</button>
+                  )}
+                </div>
+                <button type="submit" disabled={refineLoading || !refineQuery.trim()}
+                  style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}>
+                  {refineLoading ? <span className="spinner" /> : 'Refine'}
+                </button>
+              </form>
+            )}
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               {results.map(r => (
                 <div key={r.video_id} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', background: 'var(--surface)', boxShadow: '0 1px 3px rgba(0,0,0,0.3), 0 2px 8px rgba(0,0,0,0.15)' }}>
