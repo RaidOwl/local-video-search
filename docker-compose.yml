@@ -175,14 +175,29 @@ services:
     # would default to vLLM's built-in 90%, which fails whenever the two
     # containers share a single GPU (the common case on unified-memory /
     # single-GPU hosts) because vllm-main has already reserved its share.
-    command:
-      - ${EMBED_MODEL:-BAAI/bge-m3}
-      - --port
-      - "8001"
-      - --host
-      - "0.0.0.0"
-      - --gpu-memory-utilization
-      - "${VLLM_EMBED_GPU_MEMORY_UTIL:-0.1}"
+    # On a small discrete GPU (≤32 GB, e.g. an 8 GB "low"-tier card) the
+    # default 0.1 fraction can be too small to even fit bge-m3's ~2 GB
+    # weights — bump the floor on those cards. See vllm-main's entrypoint
+    # for the same detection logic and its rationale.
+    environment:
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      EMBED_GPU_MEMORY_UTIL: ${VLLM_EMBED_GPU_MEMORY_UTIL:-auto}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ "$$EMBED_GPU_MEMORY_UTIL" = "auto" ]; then
+          TOTAL_VRAM_MIB="$$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)"
+          if [ -n "$$TOTAL_VRAM_MIB" ] && [ "$$TOTAL_VRAM_MIB" -le 16384 ] 2>/dev/null; then
+            EMBED_GPU_MEMORY_UTIL="0.25"
+          else
+            EMBED_GPU_MEMORY_UTIL="0.1"
+          fi
+        fi
+        exec vllm serve "$$EMBED_MODEL" \
+          --port 8001 \
+          --host 0.0.0.0 \
+          --gpu-memory-utilization "$$EMBED_GPU_MEMORY_UTIL"
     # No host port binding needed — the API reaches this via Docker's internal
     # network (http://vllm-embed:8001). Uncomment to expose for external access:
     # ports:
@@ -239,7 +254,22 @@ services:
         # Auto-scale the GPU memory cap to the tier when not pinned explicitly,
         # so a small model on a large (e.g. unified-memory) box doesn't reserve
         # the whole pool just for KV cache. Override with VLLM_GPU_MEMORY_UTIL.
-        if [ "$$GPU_MEMORY_UTIL" = "auto" ]; then
+        #
+        # The tier percentages below assume a large/unified memory pool (e.g.
+        # 128 GB Strix Halo, GB10, multi-GPU servers) where a small fraction
+        # is still plenty. On a genuinely small discrete GPU (≤32 GB — the
+        # common single-card NVIDIA case: RTX PRO 4000, RTX 4090, RTX 3090,
+        # etc.) those fractions leave too little room for KV cache once the
+        # model weights are loaded (e.g. mid tier's 0.35 * 24 GB = 8.4 GB,
+        # which doesn't even cover an 8B model's ~10 GB FP8 weights). Detect
+        # the real VRAM size (NVIDIA only — nvidia-smi is unavailable on
+        # ROCm, so this is a no-op there and falls through to the tier table)
+        # and use a verified-safe fixed fraction for small discrete cards
+        # instead.
+        TOTAL_VRAM_MIB="$$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)"
+        if [ "$$GPU_MEMORY_UTIL" = "auto" ] && [ -n "$$TOTAL_VRAM_MIB" ] && [ "$$TOTAL_VRAM_MIB" -le 32768 ] 2>/dev/null; then
+          GPU_MEMORY_UTIL="0.75"
+        elif [ "$$GPU_MEMORY_UTIL" = "auto" ]; then
           case "$$VRAM_TIER" in
             low)   GPU_MEMORY_UTIL="0.25" ;;
             high)  GPU_MEMORY_UTIL="0.60" ;;
