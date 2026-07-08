@@ -1,0 +1,24 @@
+# Keeps the build context small and fast — without this, `docker compose
+# build` sends the entire repo (including the 10s of GB in data/: model
+# weights, qdrant storage, extracted frames, the sqlite DB) to the Docker
+# daemon on every build, which can turn a ~1 minute build into an hour+ on
+# constrained hosts.
+data/
+docs/
+tests/
+frontend/
+.git/
+.github/
+*.md
+.env
+.env.*
+!.env.example
+docker-compose*.yml
+Dockerfile
+.dockerignore
+.gitignore
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/

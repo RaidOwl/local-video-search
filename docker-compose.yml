@@ -106,11 +106,6 @@ services:
     profiles: [cpu]
     ports:
       - "${OLLAMA_PORT:-11434}:11434"
-    environment:
-      # Keep model loaded in GPU memory so frame-by-frame captioning doesn't
-      # reload it between every call. Default 30m — tune via .env for your
-      # usage pattern (longer = faster analysis, more VRAM reserved).
-      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
     volumes:
       - ${MODELS_DIR:-./data/models}/ollama:/root/.ollama
     restart: unless-stopped
@@ -166,23 +161,26 @@ services:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: local-vss-vllm-embed
     profiles: [nvidia, amd]
-    # --task embed is required on the NVIDIA image (bge-m3 needs an explicit
-    # task hint there). ROCm builds don't support this flag — the ROCm override
-    # (docker-compose.rocm.yml) replaces this command without it.
+    # The model is passed positionally (not via --model) and without an
+    # explicit --task flag — both are required for compatibility across vLLM
+    # versions. Newer vLLM releases (>=0.10) removed --task (embedding is now
+    # auto-detected from the model architecture) and only warn (not error) on
+    # --model, while older releases (matching the pinned ROCm build) still
+    # need --task on the NVIDIA image. Passing the model positionally and
+    # skipping --task works on both old and new releases, avoiding a version
+    # pin here. If EMBED_MODEL is ever changed to a non-embedding-only
+    # architecture, verify it still auto-detects as an embedding task.
     # --gpu-memory-utilization is capped low: bge-m3 is small (~2 GB) and this
     # container shares the device with vllm-main. Without an explicit cap it
     # would default to vLLM's built-in 90%, which fails whenever the two
     # containers share a single GPU (the common case on unified-memory /
     # single-GPU hosts) because vllm-main has already reserved its share.
     command:
-      - --model
       - ${EMBED_MODEL:-BAAI/bge-m3}
       - --port
       - "8001"
       - --host
       - "0.0.0.0"
-      - --task
-      - embed
       - --gpu-memory-utilization
       - "${VLLM_EMBED_GPU_MEMORY_UTIL:-0.1}"
     # No host port binding needed — the API reaches this via Docker's internal
@@ -326,47 +324,3 @@ services:
         rm -rf /models/ollama/models && echo "  done"
         echo "All model weights removed. They will re-download on next startup."
     restart: "no"
-
-# ── Hardware validation service (runs once at startup) ─────────────────────────
-# Validates Docker Compose version for AMD ROCm override and nvidia-container-toolkit
-  hw-validate:
-    image: alpine:latest
-    container_name: local-vss-hw-validate
-    profiles: [nvidia, amd]
-    entrypoint: [sh, -c]
-    command:
-      - |
-        set -e
-        echo "=== Hardware Validation ==="
-        # Check Docker Compose version for AMD !reset support
-        if [ "${HARDWARE_TYPE}" = "amd" ]; then
-          compose_ver=$(docker compose version --short 2>/dev/null | sed 's/v//')
-          major=$(echo "$compose_ver" | cut -d. -f1)
-          minor=$(echo "$compose_ver" | cut -d. -f2)
-          if [ "$major" -lt 2 ] || [ "$major" -eq 2 -a "$minor" -lt 24 ]; then
-            echo "⚠ WARNING: Docker Compose $compose_ver < 2.24.0 — ROCm device passthrough may not work"
-            echo "   Upgrade: https://docs.docker.com/compose/install/"
-          else
-            echo "✓ Docker Compose $compose_ver OK for ROCm override"
-          fi
-          # Check device nodes
-          for dev in /dev/kfd /dev/dri/renderD128; do
-            if [ -e "$dev" ]; then echo "✓ $dev exists"; else echo "⚠ $dev NOT FOUND — GPU passthrough may fail"; fi
-          done
-        fi
-        # Check NVIDIA toolkit
-        if [ "${HARDWARE_TYPE}" = "nvidia" ]; then
-          if docker info --format '{{.Runtimes}}' 2>/dev/null | grep -q nvidia; then
-            echo "✓ NVIDIA Container Toolkit configured"
-          else
-            echo "⚠ NVIDIA Container Toolkit NOT configured — GPU will not be accessible"
-            echo "   Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-          fi
-          nvidia-smi -L 2>/dev/null && echo "✓ nvidia-smi works" || echo "⚠ nvidia-smi failed"
-        fi
-        echo "=== Validation complete ==="
-    restart: "no"
-    depends_on:
-      - qdrant
-    environment:
-      HARDWARE_TYPE: ${HARDWARE_TYPE:-custom}

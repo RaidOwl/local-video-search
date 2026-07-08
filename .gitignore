@@ -37,13 +37,9 @@ data/models/
 # macOS
 .DS_Store
 
-# Docker
-.dockerignore
-
 # Hardware-specific compose overrides (GPU device paths, iGPU flags, etc.)
 docker-compose.*.yml
 !docker-compose.dev.yml
-!docker-compose.rocm.yml
 
 # Local prototypes
 src/proto_fuse.py
