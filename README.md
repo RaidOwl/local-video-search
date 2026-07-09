@@ -149,6 +149,32 @@ docker compose up -d
 
 > **Note:** FP8 quantization requires MI300+ (CDNA). RDNA iGPUs like the Strix Halo (gfx1151) must run unquantized — the ROCm override already defaults `VLLM_QUANTIZATION` to empty (BF16) for you, so no extra step is needed. The override also sets `HSA_OVERRIDE_GFX_VERSION=11.5.1` automatically.
 
+**Windows**
+
+Ollama runs natively on Windows with GPU acceleration (NVIDIA CUDA or AMD ROCm via DirectML):
+
+```powershell
+# Install Ollama from https://ollama.com/download/windows
+ollama serve          # runs as a Windows service by default — no extra step
+```
+
+Then set in `.env`:
+```env
+HARDWARE_TYPE=cpu    # Windows: Ollama runs in Docker; GPU-aware but uses Docker's GPU stack
+VRAM_TIER=low        # CPU-recommended tier
+```
+
+If you have an **NVIDIA GPU** with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on Windows via WSL2:
+```env
+HARDWARE_TYPE=nvidia
+VRAM_TIER=mid
+```
+
+Use `./setup.ps1` for automatic detection, or follow the manual steps above. Windows routes through `docker compose` identically — simply run:
+```powershell
+docker compose up -d
+```
+
 **CPU-only / no GPU**
 
 Set `VRAM_TIER=low` and `HARDWARE_TYPE=cpu`. The 4B model will run on CPU — slow but functional.
@@ -435,6 +461,8 @@ local-video-search/
 │   ├── summarize/     # LLM summarization
 │   ├── transcribe/    # faster-whisper speech-to-text
 │   ├── config.py      # Environment + settings management
+│   ├── fusion.py      # Cross-modal description fusion
+│   ├── local_models.py# Model tier registry (family × VRAM)
 │   └── database.py    # SQLAlchemy models (Video, Frame)
 ├── frontend/
 │   ├── src/
@@ -445,8 +473,14 @@ local-video-search/
 │   └── Dockerfile
 ├── docker/
 │   └── app/Dockerfile  # Python API container
+├── docs/
+│   └── QUERY-MECHANICS.md  # How search works (end-user guide)
+├── setup.sh            # Smart setup — Linux/macOS
+├── setup.ps1           # Smart setup — Windows
 ├── docker-compose.yml  # Full stack orchestration
+├── docker-compose.rocm.yml  # AMD ROCm GPU override
 ├── .env.example        # All configuration options with documentation
+├── LICENSE             # MIT License
 └── requirements.txt    # Python dependencies
 ```
 

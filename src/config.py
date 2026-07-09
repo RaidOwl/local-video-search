@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     ffmpeg_threads: int = 0       # max CPU threads ffmpeg may use; 0 = auto (half cores)
     ffmpeg_hwaccel: str = "off"   # ffmpeg HW accel: off | auto | cuda | vaapi | drm | vulkan
 
+    # Server
+    api_host: str = "0.0.0.0"     # bind address (used by python -m src.main)
+    api_port: int = 8000          # listen port (used by python -m src.main)
+    debug: bool = False           # enable hot-reload for development
+
     # Automation (defaults; the Settings UI override file takes precedence at runtime)
     auto_import_interval: int = 0      # minutes between library scans; 0 = scan on startup only
     auto_analyze: str = "off"          # off | audio | video | both

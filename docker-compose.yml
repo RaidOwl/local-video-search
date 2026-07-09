@@ -19,7 +19,7 @@ services:
   # ── Core ──────────────────────────────────────────────────────────────────
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.13.6
     container_name: local-vss-qdrant
     ports:
       - "${QDRANT_PORT:-6333}:6333"
