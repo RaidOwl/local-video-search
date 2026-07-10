@@ -149,7 +149,9 @@ COMPOSE_FILE=$compose_files
 COMPOSE_PROFILES=\${HARDWARE_TYPE}
 
 # ── STORAGE — SET YOUR VIDEO DIRECTORIES ──────────────────────────────────────
-VIDEO_DIR_1=/path/to/your/videos
+# Uncomment and set at least one video directory. If none are set (all commented
+# out), an empty placeholder mounts and you configure paths via the UI + import.
+# VIDEO_DIR_1=/path/to/your/videos
 # VIDEO_DIR_2=
 # VIDEO_DIR_3=
 
