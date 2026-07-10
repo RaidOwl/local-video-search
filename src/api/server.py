@@ -391,6 +391,22 @@ def _load_reranker():
             print("Loading reranker model (BAAI/bge-reranker-base, ~1.1 GB)...")
             _reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
             print("Reranker ready.")
+        except ImportError:
+            print("sentence-transformers not installed, attempting auto-install...")
+            import subprocess, sys
+            try:
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "-q",
+                     "-r", "/app/requirements-reranker.txt"],
+                    timeout=180,
+                )
+                from sentence_transformers import CrossEncoder
+                print("Loading reranker model (BAAI/bge-reranker-base, ~1.1 GB)...")
+                _reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
+                print("Reranker ready.")
+            except Exception as e2:
+                print(f"Reranker: auto-install failed: {e2}")
+                return None
         except Exception as e:
             print(f"Reranker: failed to load: {e}")
             return None

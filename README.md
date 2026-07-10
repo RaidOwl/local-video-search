@@ -35,6 +35,8 @@ Requirements depend on the AI backend you choose:
 | `vllm` (AMD ROCm) | ≥ 16 GB | AMD GPU with ROCm (e.g. Strix Halo) |
 | `custom` | varies | Point at any OpenAI-compatible server |
 
+> **Disk space:** The API image is ~3.3 GB to download. Model weights (Ollama + reranker) add another ~9 GB. Docker Desktop's VM filesystem can grow to 60 GB+ over time. Make sure you have **≥20 GB free** on your boot disk. Use `MODELS_DIR` in `.env` to relocate model downloads to a larger volume, and point `QDRANT_STORAGE_PATH` at a data drive for vector collections.
+
 Transcription (Whisper) runs on CPU inside the API container — no extra GPU needed.
 
 Video decode (FFmpeg scene detection + frame extraction) can optionally use GPU acceleration when configured — see [FFmpeg Hardware Acceleration](#ffmpeg-hardware-acceleration).

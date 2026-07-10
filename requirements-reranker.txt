@@ -1,0 +1,3 @@
+# Optional — only needed if the cross-encoder reranker is not installed in the base image.
+# This brings in PyTorch (~700 MB) for BAAI/bge-reranker-base.
+sentence-transformers==3.3.1
