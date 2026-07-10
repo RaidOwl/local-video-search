@@ -295,8 +295,10 @@ main() {
         exit 1
     }
 
-    # 6. Start
-    log "Starting stack (this may take a few minutes on first run)..."
+    # 6. Pull images (shows progress) then start
+    log "Pulling Docker images (this may take a few minutes on first run)..."
+    COMPOSE_FILE="$compose_files" docker compose pull 2>&1 || warn "Pull failed — trying to start anyway (may need a retry)"
+    log "Starting stack..."
     COMPOSE_FILE="$compose_files" docker compose up -d
 
     echo
