@@ -50,7 +50,12 @@ detect_hardware() {
             # of times per video, so the default 5m keep_alive causes constant reloads.
             # Recommend indefinite (-1) to match vLLM behavior.
             if pgrep -f ollama >/dev/null 2>&1; then
-                env_line=$(tr '\0' '\n' < /proc/$(pgrep -f 'ollama serve' | head -1)/environ 2>/dev/null | grep OLLAMA_KEEP_ALIVE || true)
+                # /proc/.../environ is Linux-only (not available on macOS)
+                env_line=""
+                if [[ "$(uname -s)" == "Linux" ]]; then
+                    pid=$(pgrep -f 'ollama serve' | head -1)
+                    env_line=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep OLLAMA_KEEP_ALIVE || true)
+                fi
                 if [ -z "$env_line" ]; then
                     info "Ollama keep_alive not set — models unload after ~5m idle. For best analysis performance, set OLLAMA_KEEP_ALIVE=-1 (indefinite): edit the systemd override or run OLLAMA_KEEP_ALIVE=-1 ollama serve"
                 fi
@@ -107,7 +112,7 @@ detect_hardware() {
         fi
     fi
 
-    echo "$hw_type|$compose_files|$vram_tier|$model_family|${extra_env[*]}"
+    echo "$hw_type|$compose_files|$vram_tier|$model_family|${extra_env[*]-}"
 }
 
 # ── Detect FFmpeg HW acceleration ────────────────────────────────────────────
@@ -266,14 +271,15 @@ main() {
         warn ".env exists — backing up to .env.bak"
         cp .env .env.bak
     fi
-    write_env "$hw_type" "$compose_files" "$vram_tier" "$model_family" "$ffmpeg_hwaccel" $extra_env
+    # shellcheck disable=SC2086
+    write_env "$hw_type" "$compose_files" "$vram_tier" "$model_family" "$ffmpeg_hwaccel" ${extra_env[@]+"${extra_env[@]}"}
 
     # 3. Check video dirs
     check_video_dirs
 
     # 4. Apple Silicon: pull models
     if [[ "$hw_type" == "apple" ]]; then
-        if [[ "${extra_env[*]}" =~ REQUIRE_OLLAMA ]]; then
+        if [[ "${extra_env[*]-}" =~ REQUIRE_OLLAMA ]]; then
             warn "Install/start Ollama first, then re-run setup.sh"
         else
             pull_apple_models "$vram_tier" "$model_family"
