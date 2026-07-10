@@ -306,10 +306,13 @@ main() {
     info "Settings:  http://localhost:3000/settings"
     echo
     info "Next steps:"
-    echo "  1. Open http://localhost:3000"
-    echo "  2. Go to Settings → verify AI backend shows '$hw_type'"
-    echo "  3. Videos → Import → select videos → Analyze"
-    echo "  4. Search!"
+    echo "  1. Add your video directories to .env:"
+    echo "       echo 'VIDEO_DIR_1=/path/to/your/videos' >> .env"
+    echo "       docker compose up -d   # remounts without restarting"
+    echo "  2. Open http://localhost:3000"
+    echo "  3. Go to Settings → verify AI backend shows '$hw_type'"
+    echo "  4. Videos → Import → select videos → Analyze"
+    echo "  5. Search!"
     echo
     if [[ "$hw_type" == "apple" ]]; then
         info "Note: Ollama runs on host (not in Docker). Keep 'ollama serve' running."
