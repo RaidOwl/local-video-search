@@ -12,11 +12,11 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-log()   { echo -e "${BLUE}[setup]${NC} $*"; }
-ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
-err()   { echo -e "${RED}[✗]${NC} $*"; }
-info()  { echo -e "${CYAN}[i]${NC} $*"; }
+log()   { echo -e "${BLUE}[setup]${NC} $*" >&2; }
+ok()    { echo -e "${GREEN}[✓]${NC} $*" >&2; }
+warn()  { echo -e "${YELLOW}[!]${NC} $*" >&2; }
+err()   { echo -e "${RED}[✗]${NC} $*" >&2; }
+info()  { echo -e "${CYAN}[i]${NC} $*" >&2; }
 
 # ── Detect hardware ───────────────────────────────────────────────────────────
 detect_hardware() {
