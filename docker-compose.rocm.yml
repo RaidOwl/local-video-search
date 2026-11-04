@@ -1,27 +1,31 @@
-# ROCm / AMD GPU override
+# AMD GPU (ROCm) override. Use with:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml   (setup.sh sets this)
+# Requires Docker Compose >= 2.24.0 for the !reset merge tag.
 #
-# Use on AMD systems (e.g. Ryzen AI Max 395+ with Radeon 8060S iGPU).
-# Apply automatically by setting in .env:
-#   COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
-#   HARDWARE_TYPE=amd
-#   docker compose up -d
-#
-# Or apply manually:
-#   docker compose -f docker-compose.yml -f docker-compose.rocm.yml --profile amd up -d
-#
-# What this does:
-#   1. Resets NVIDIA deploy blocks from the base compose and replaces them
-#      with raw device passthrough (/dev/kfd, /dev/dri). Requires the `!reset`
-#      merge tag, only supported by Docker Compose >= 2.24.0 — run
-#      `docker compose version` to check if device passthrough isn't working.
-#   2. Swaps the vLLM image for the ROCm build.
-#   3. Sets HIP_VISIBLE_DEVICES and HSA_OVERRIDE_GFX_VERSION for the iGPU.
-#   4. Adds seccomp:unconfined for ROCm/Vulkan GPU access inside the container.
-#   5. Drops --task embed (unsupported on ROCm builds) and defaults
-#      quantization to unquantized (RDNA iGPUs don't support FP8).
+# VLLM_ROCM_IMAGE must match your GPU family (setup.sh picks it from the GPU's
+# gfx target):
+#   RDNA 3 / 3.5 / 4 (Radeon RX 7000/9000, Radeon AI PRO, Strix Halo / Point)
+#     rocm/vllm:rocm7.14.1_rdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0
+#   CDNA 3+ (Instinct MI300 / MI325 / MI350)
+#     rocm/vllm:rocm7.14.1_cdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0
+# Quantization is chosen per GPU by docker/vllm/serve.py (fp8 on MI300+, BF16 on
+# RDNA, which has no FP8 support in vLLM).
+
+x-amd-gpu: &amd-gpu
+  image: ${VLLM_ROCM_IMAGE:-rocm/vllm:rocm7.14.1_rdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0}
+  deploy:
+    resources:
+      reservations:
+        devices: !reset []
+  devices:
+    - /dev/kfd:/dev/kfd
+    - /dev/dri:/dev/dri
+  security_opt:
+    - seccomp:unconfined
 
 services:
   local-vss-api:
+    # GPU video decode (VAAPI) for frame extraction
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
@@ -31,48 +35,7 @@ services:
       FFMPEG_HWACCEL: ${FFMPEG_HWACCEL:-auto}
 
   vllm-embed:
-    image: ${VLLM_ROCM_IMAGE:-rocm/vllm:rocm7.13.0_gfx1151_ubuntu24.04_py3.13_pytorch_2.10.0_vllm_0.19.1}
-    # The ROCm image has no baked-in entrypoint (unlike vllm/vllm-openai) — it
-    # must be set explicitly or `command:` below gets exec'd as the entrypoint.
-    entrypoint: [python3, -m, vllm.entrypoints.openai.api_server]
-    # ROCm vLLM doesn't support --task embed — replaces the base command
-    # (which needs it on NVIDIA) without that flag.
-    command:
-      - --model
-      - ${EMBED_MODEL:-BAAI/bge-m3}
-      - --port
-      - "8001"
-      - --host
-      - "0.0.0.0"
-      - --gpu-memory-utilization
-      - "${VLLM_EMBED_GPU_MEMORY_UTIL:-0.1}"
-    deploy:
-      resources:
-        reservations:
-          devices: !reset []
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    environment:
-      HIP_VISIBLE_DEVICES: "0"
-      HSA_OVERRIDE_GFX_VERSION: "11.5.1"
-    security_opt:
-      - seccomp:unconfined
+    <<: *amd-gpu
 
   vllm-main:
-    image: ${VLLM_ROCM_IMAGE:-rocm/vllm:rocm7.13.0_gfx1151_ubuntu24.04_py3.13_pytorch_2.10.0_vllm_0.19.1}
-    deploy:
-      resources:
-        reservations:
-          devices: !reset []
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    environment:
-      HIP_VISIBLE_DEVICES: "0"
-      HSA_OVERRIDE_GFX_VERSION: "11.5.1"
-      # RDNA iGPUs don't support FP8 — default to unquantized (BF16) here so
-      # AMD users don't have to remember to blank VLLM_QUANTIZATION themselves.
-      QUANTIZATION: ${VLLM_QUANTIZATION:-}
-    security_opt:
-      - seccomp:unconfined
+    <<: *amd-gpu

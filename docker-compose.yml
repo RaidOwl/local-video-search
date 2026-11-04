@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
   local-vss-api:
-    image: raidowl/local-vss-api:latest
+    image: ghcr.io/raidowl/local-vss-api:${LVS_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: docker/app/Dockerfile
@@ -66,6 +66,10 @@ services:
       - ./data:/data
     ports:
       - "${API_PORT:-8000}:8000"
+    # Lets HARDWARE_TYPE=apple/native reach Ollama on the host on Linux too
+    # (Docker Desktop defines host.docker.internal itself).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       qdrant:
         condition: service_started
@@ -83,7 +87,7 @@ services:
     restart: unless-stopped
 
   local-vss-frontend:
-    image: raidowl/local-vss-frontend:latest
+    image: ghcr.io/raidowl/local-vss-frontend:${LVS_IMAGE_TAG:-latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -157,53 +161,35 @@ services:
   # AMD requires: ROCm + docker-compose.rocm.yml override (see .env.example)
   # One multimodal model handles both vision captioning and summarization.
 
+  # Both services start through docker/vllm/serve.py, which picks the model,
+  # quantization (fp8 where the GPU supports it) and memory budget from the GPU
+  # it actually sees, on NVIDIA and AMD alike. Memory is budgeted in GB from what
+  # is FREE at startup, so a shared or unified-memory GPU (DGX Spark, Strix Halo)
+  # never crash-loops on "free memory is less than desired".
+  # vllm-main waits for vllm-embed to finish loading before sizing itself.
+  # Overrides: VLLM_GPU_MEMORY_GB (budget), VLLM_GPU_MEMORY_UTIL (raw fraction),
+  # VLLM_QUANTIZATION (auto | fp8 | none = BF16).
   vllm-embed:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: local-vss-vllm-embed
     profiles: [nvidia, amd]
-    # The model is passed positionally (not via --model) and without an
-    # explicit --task flag — both are required for compatibility across vLLM
-    # versions. Newer vLLM releases (>=0.10) removed --task (embedding is now
-    # auto-detected from the model architecture) and only warn (not error) on
-    # --model, while older releases (matching the pinned ROCm build) still
-    # need --task on the NVIDIA image. Passing the model positionally and
-    # skipping --task works on both old and new releases, avoiding a version
-    # pin here. If EMBED_MODEL is ever changed to a non-embedding-only
-    # architecture, verify it still auto-detects as an embedding task.
-    # --gpu-memory-utilization is capped low: bge-m3 is small (~2 GB) and this
-    # container shares the device with vllm-main. Without an explicit cap it
-    # would default to vLLM's built-in 90%, which fails whenever the two
-    # containers share a single GPU (the common case on unified-memory /
-    # single-GPU hosts) because vllm-main has already reserved its share.
-    # On a small discrete GPU (≤32 GB, e.g. an 8 GB "low"-tier card) the
-    # default 0.1 fraction can be too small to even fit bge-m3's ~2 GB
-    # weights — bump the floor on those cards. See vllm-main's entrypoint
-    # for the same detection logic and its rationale.
     environment:
       EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
-      EMBED_GPU_MEMORY_UTIL: ${VLLM_EMBED_GPU_MEMORY_UTIL:-auto}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        if [ "$$EMBED_GPU_MEMORY_UTIL" = "auto" ]; then
-          TOTAL_VRAM_MIB="$$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)"
-          if [ -n "$$TOTAL_VRAM_MIB" ] && [ "$$TOTAL_VRAM_MIB" -le 16384 ] 2>/dev/null; then
-            EMBED_GPU_MEMORY_UTIL="0.25"
-          else
-            EMBED_GPU_MEMORY_UTIL="0.1"
-          fi
-        fi
-        exec vllm serve "$$EMBED_MODEL" \
-          --port 8001 \
-          --host 0.0.0.0 \
-          --gpu-memory-utilization "$$EMBED_GPU_MEMORY_UTIL"
+      GPU_MEMORY_UTIL: ${VLLM_EMBED_GPU_MEMORY_UTIL:-auto}
+    entrypoint: [python3, /opt/lvs/serve.py, embed]
     # No host port binding needed — the API reaches this via Docker's internal
     # network (http://vllm-embed:8001). Uncomment to expose for external access:
     # ports:
     #   - "${VLLM_EMBED_PORT:-8001}:8001"
     volumes:
       - ${MODELS_DIR:-./data/models}/huggingface:/root/.cache/huggingface
+      - ./docker/vllm/serve.py:/opt/lvs/serve.py:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 1800s
     deploy:
       resources:
         reservations:
@@ -217,87 +203,30 @@ services:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     container_name: local-vss-vllm-main
     profiles: [nvidia, amd]
-    # The VLM model is auto-selected from MODEL_FAMILY + VRAM_TIER, matching the
-    # API's tier registry (src/local_models.py) so the container and the API
-    # always agree on which model is loaded. Change the model by setting
-    # VRAM_TIER (low | mid | high | ultra) in .env — no separate model var.
+    # The VLM is auto-selected from MODEL_FAMILY + VRAM_TIER, matching the API's
+    # tier registry (src/local_models.py). Change it via VRAM_TIER in .env.
     environment:
       MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
       VRAM_TIER: ${VRAM_TIER:-mid}
       # Non-VLLM_-prefixed names so vLLM doesn't flag them as unknown env vars
       MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-16384}
-      QUANTIZATION: ${VLLM_QUANTIZATION:-fp8}
-      # "auto" lets the entrypoint scale the memory cap to VRAM_TIER so a small
-      # model on a large (unified-memory) box doesn't reserve the whole pool.
+      QUANTIZATION: ${VLLM_QUANTIZATION:-auto}
       GPU_MEMORY_UTIL: ${VLLM_GPU_MEMORY_UTIL:-auto}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        # Resolve the VLM model (HF repo IDs) from MODEL_FAMILY + VRAM_TIER.
-        # Keep these mappings in sync with TIER_MODELS in src/local_models.py.
-        if [ "$$MODEL_FAMILY" = "gemma" ]; then
-          case "$$VRAM_TIER" in
-            low)   MAIN_MODEL="google/gemma-3-4b-it"  ;;
-            high)  MAIN_MODEL="google/gemma-3-12b-it" ;;
-            ultra) MAIN_MODEL="google/gemma-3-27b-it" ;;
-            *)     MAIN_MODEL="google/gemma-3-12b-it" ;;
-          esac
-        else
-          case "$$VRAM_TIER" in
-            low)   MAIN_MODEL="Qwen/Qwen3-VL-4B-Instruct"        ;;
-            high)  MAIN_MODEL="Qwen/Qwen3-VL-32B-Instruct"       ;;
-            ultra) MAIN_MODEL="Qwen/Qwen3-VL-235B-A22B-Instruct" ;;
-            *)     MAIN_MODEL="Qwen/Qwen3-VL-8B-Instruct"        ;;
-          esac
-        fi
-        # Auto-scale the GPU memory cap to the tier when not pinned explicitly,
-        # so a small model on a large (e.g. unified-memory) box doesn't reserve
-        # the whole pool just for KV cache. Override with VLLM_GPU_MEMORY_UTIL.
-        #
-        # The tier percentages below assume a large/unified memory pool (e.g.
-        # 128 GB Strix Halo, GB10, multi-GPU servers) where a small fraction
-        # is still plenty. On a genuinely small discrete GPU (≤32 GB — the
-        # common single-card NVIDIA case: RTX PRO 4000, RTX 4090, RTX 3090,
-        # etc.) those fractions leave too little room for KV cache once the
-        # model weights are loaded (e.g. mid tier's 0.35 * 24 GB = 8.4 GB,
-        # which doesn't even cover an 8B model's ~10 GB FP8 weights). Detect
-        # the real VRAM size (NVIDIA only — nvidia-smi is unavailable on
-        # ROCm, so this is a no-op there and falls through to the tier table)
-        # and use a verified-safe fixed fraction for small discrete cards
-        # instead.
-        TOTAL_VRAM_MIB="$$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)"
-        if [ "$$GPU_MEMORY_UTIL" = "auto" ] && [ -n "$$TOTAL_VRAM_MIB" ] && [ "$$TOTAL_VRAM_MIB" -le 32768 ] 2>/dev/null; then
-          GPU_MEMORY_UTIL="0.75"
-        elif [ "$$GPU_MEMORY_UTIL" = "auto" ]; then
-          case "$$VRAM_TIER" in
-            low)   GPU_MEMORY_UTIL="0.25" ;;
-            high)  GPU_MEMORY_UTIL="0.60" ;;
-            ultra) GPU_MEMORY_UTIL="0.92" ;;
-            *)     GPU_MEMORY_UTIL="0.35" ;;
-          esac
-        fi
-        # Build quantization args conditionally — some ROCm builds don't support
-        # FP8 (RDNA iGPUs), and --quantization with an empty value errors out.
-        QUANT_ARGS=""
-        if [ -n "$$QUANTIZATION" ]; then
-          QUANT_ARGS="--quantization $$QUANTIZATION"
-        fi
-        echo "==> Starting vLLM (family=$$MODEL_FAMILY tier=$$VRAM_TIER) model=$$MAIN_MODEL gpu_mem_util=$$GPU_MEMORY_UTIL quant=$${QUANTIZATION:-none}"
-        exec python3 -m vllm.entrypoints.openai.api_server \
-          --model "$$MAIN_MODEL" \
-          --port 8002 \
-          --host 0.0.0.0 \
-          --max-model-len "$$MAX_MODEL_LEN" \
-          $$QUANT_ARGS \
-          --gpu-memory-utilization "$$GPU_MEMORY_UTIL" \
-          --enforce-eager
+      GPU_MEMORY_GB: ${VLLM_GPU_MEMORY_GB:-}
+    entrypoint: [python3, /opt/lvs/serve.py, main]
     # No host port binding needed — the API reaches this via Docker's internal
     # network (http://vllm-main:8002). Uncomment to expose for external access:
     # ports:
     #   - "${VLLM_MAIN_PORT:-8002}:8002"
     volumes:
       - ${MODELS_DIR:-./data/models}/huggingface:/root/.cache/huggingface
+      - ./docker/vllm/serve.py:/opt/lvs/serve.py:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 3600s
     deploy:
       resources:
         reservations:

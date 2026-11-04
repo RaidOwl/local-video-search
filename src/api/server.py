@@ -65,6 +65,32 @@ _ANCHOR_STOPLIST = {
     'someone', 'somebody', 'thing', 'things', 'something', 'stuff',
 }
 
+# Named score heuristics in the search pipeline that can be switched off for
+# ablation (measuring whether each one still earns its keep). Disable via the
+# SEARCH_DISABLE env var and/or the /search `disable` param, both comma-separated.
+SEARCH_HEURISTICS = (
+    'boost',          # pre-rerank keyword-overlap boost (affects RERANK_CAP trim)
+    'broad_keyword',  # multi-term literal recall + relevance-floor bypass
+    'distinctive',    # rare-term recall + reranker/floor bypass
+    'degenerate',     # drop transcript chunks under 3 words
+    'templated',      # also rerank short visual queries as "a video of X"
+    'short_damp',     # damp reranker logits for captions under 4 content words
+    'anchor',         # cross-modal anchor cap/boost (Both mode)
+    'llm',            # LLM compositional rerank of the top 20
+)
+
+
+def _disabled_heuristics(param: str = "") -> set[str]:
+    raw = f"{os.environ.get('SEARCH_DISABLE', '')},{param or ''}"
+    names = {n.strip().lower() for n in raw.split(',') if n.strip()}
+    unknown = names - set(SEARCH_HEURISTICS)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown heuristic(s) {sorted(unknown)}; valid: {list(SEARCH_HEURISTICS)}",
+        )
+    return names
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -285,6 +311,7 @@ segment_retriever = SegmentRetriever()
 
 # Cross-encoder re-ranker — warmed at startup, always applied for ranking precision
 _reranker = None
+_reranker_import_failed = False
 
 # Frame extractor
 frame_extractor = FrameExtractor(
@@ -384,29 +411,20 @@ def _load_reranker():
     Returns the model, or None if loading fails.  Weights are cached in
     /data/hf_cache so they survive container rebuilds.
     """
-    global _reranker
-    if _reranker is None:
+    global _reranker, _reranker_import_failed
+    if _reranker is None and not _reranker_import_failed:
         try:
             from sentence_transformers import CrossEncoder
+        except ImportError as e:
+            # Not retried: without the package every search would hit this again.
+            _reranker_import_failed = True
+            print(f"Reranker unavailable (sentence-transformers not installed: {e}); "
+                  "search falls back to retrieval scores.")
+            return None
+        try:
             print("Loading reranker model (BAAI/bge-reranker-base, ~1.1 GB)...")
             _reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
             print("Reranker ready.")
-        except ImportError:
-            print("sentence-transformers not installed, attempting auto-install...")
-            import subprocess, sys
-            try:
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", "-q",
-                     "-r", "/app/requirements-reranker.txt"],
-                    timeout=180,
-                )
-                from sentence_transformers import CrossEncoder
-                print("Loading reranker model (BAAI/bge-reranker-base, ~1.1 GB)...")
-                _reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
-                print("Reranker ready.")
-            except Exception as e2:
-                print(f"Reranker: auto-install failed: {e2}")
-                return None
         except Exception as e:
             print(f"Reranker: failed to load: {e}")
             return None
@@ -435,7 +453,7 @@ async def _warm_reranker() -> None:
         print(f"Reranker warmup failed: {e}")
 
 
-async def _rerank_segments(query, segments: list[dict]) -> list[dict]:
+async def _rerank_segments(query, segments: list[dict], damp_short: bool = True) -> list[dict]:
     """Re-rank candidate segments with a local cross-encoder and assign each an
     absolute relevance score.
 
@@ -499,7 +517,7 @@ async def _rerank_segments(query, segments: list[dict]) -> list[dict]:
         def _content_words(text: str) -> int:
             return len([w for w in _re.findall(r"[A-Za-z0-9']+", text) if len(w) > 1])
         for i, cap in enumerate(captions):
-            if best_raw[i] > 0:
+            if damp_short and best_raw[i] > 0:
                 n = _content_words(cap)
                 if n < 4:
                     best_raw[i] *= min(1.0, 0.4 + 0.15 * n)
@@ -586,6 +604,54 @@ async def _purge_points(video_id: str, is_transcript: Optional[bool] = None,
         print(f"[purge] lexical delete failed: {e}")
 
 
+async def _ai_services_ready(need_vlm: bool) -> list[str]:
+    """Return the names of required AI endpoints that aren't answering yet."""
+    import httpx
+    cfg = _effective_cfg()
+    targets = [("embeddings", cfg["embed_url"])]
+    if need_vlm:
+        targets.append(("vision model", cfg["vlm_url"]))
+    down = []
+    async with httpx.AsyncClient(timeout=4.0) as client:
+        for name, url in targets:
+            try:
+                r = await client.get(f"{url.rstrip('/')}/v1/models")
+                if r.status_code != 200:
+                    down.append(name)
+            except Exception:
+                down.append(name)
+    return down
+
+
+async def _wait_for_ai_services(video_id: str, need_vlm: bool) -> bool:
+    """Hold a queued analysis until its model endpoints answer.
+
+    On first start the bundled vLLM/Ollama containers spend many minutes
+    downloading and loading models; a video analyzed in that window used to fail
+    after a few seconds of retries. Keep it 'queued' instead, and only mark it as
+    an error if the services are still down after AI_WAIT_MINUTES.
+    """
+    timeout_s = int(os.environ.get("AI_WAIT_MINUTES", "60")) * 60
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    announced = False
+    while True:
+        down = await _ai_services_ready(need_vlm)
+        if not down:
+            if announced:
+                print(f"[analysis] {video_id}: AI services ready, starting", flush=True)
+            return True
+        if asyncio.get_running_loop().time() >= deadline:
+            msg = f"AI services not reachable after {timeout_s // 60} min: {', '.join(down)}"
+            print(f"[analysis] {video_id}: {msg}", flush=True)
+            await db.update_video(video_id, {'status': 'error'})
+            return False
+        if not announced:
+            print(f"[analysis] {video_id}: waiting for {', '.join(down)} to come up "
+                  f"(models may still be downloading)", flush=True)
+            announced = True
+        await asyncio.sleep(10)
+
+
 # Background tasks
 async def process_video(video_path: str, video_id: str, context: str = '', resume: bool = False,
                         do_visual: bool = True, do_audio: bool = True, do_fuse: bool = True):
@@ -601,6 +667,8 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
     try:
         await db.update_video(video_id, {'status': 'queued'})
         async with _analysis_semaphore:
+            if not await _wait_for_ai_services(video_id, need_vlm=do_visual or do_fuse):
+                return
             loop = asyncio.get_running_loop()
             if not resume:
                 # Start over: clear ONLY the modalities we're about to redo, so an
@@ -902,8 +970,8 @@ async def _backfill_segment_fts():
     populated.
     """
     try:
-        if await db.count_segment_text() > 0:
-            return  # already built
+        if await db.count_segment_text() > 0 or not _collection_exists():
+            return  # already built, or fresh install with nothing indexed yet
         loop = asyncio.get_running_loop()
         points = await loop.run_in_executor(None, lambda: list(embed_service.scroll_all_points()))
         rows = []
@@ -959,8 +1027,18 @@ def _do_source_backfill():
     )
 
 
+def _collection_exists() -> bool:
+    try:
+        names = {c.name for c in embed_service.qdrant_client.get_collections().collections}
+        return embed_service.collection_name in names
+    except Exception:
+        return False
+
+
 async def _backfill_source_flags():
     """Run the one-time is_transcript backfill off the event loop."""
+    if not _collection_exists():
+        return  # fresh install: nothing indexed yet
     try:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _do_source_backfill)
@@ -1588,6 +1666,7 @@ async def search_videos(
     resolution: str = "",
     date_from: str = "",
     date_to: str = "",
+    disable: str = "",
 ):
     """Search for videos by natural language query, with optional metadata filters.
 
@@ -1598,7 +1677,12 @@ async def search_videos(
     The optional ``media_types`` / ``resolution`` / ``date_from`` / ``date_to``
     parameters are explicit, user-supplied filters (from the search filter popup)
     applied as a hard AND over the results. They are never inferred from ``q``.
+
+    ``disable`` is a debug/eval knob: a comma-separated subset of
+    ``SEARCH_HEURISTICS`` to switch off for this request (added to any set in the
+    ``SEARCH_DISABLE`` env var).
     """
+    off = _disabled_heuristics(disable)
     filters = build_filters(media_types, resolution, date_from, date_to)
 
     # Filters-only (no text query): browse the library by metadata, newest first.
@@ -1715,8 +1799,9 @@ async def search_videos(
         )
         return 1.0 + (MAX_BOOST - 1.0) * hits / len(key_terms)
 
-    for r in results:
-        r["score"] = r["score"] * _boost(r.get("caption", ""))
+    if 'boost' not in off:
+        for r in results:
+            r["score"] = r["score"] * _boost(r.get("caption", ""))
 
     # Group by video, collecting all raw hits
     video_hits: dict = {}
@@ -1765,7 +1850,8 @@ async def search_videos(
     # to search concisely and then penalize them for it. Single-word literal matches
     # stay gated to the loosest tier so stricter tiers remain semantically clean.
     multi_literal = len(key_terms) >= 2
-    broad_keyword = bool(key_terms) and (threshold <= 0.50 or multi_literal)
+    broad_keyword = ('broad_keyword' not in off and bool(key_terms)
+                     and (threshold <= 0.50 or multi_literal))
 
     # Distinctive-term lexical recall. The cross-encoder reranker is blind to a
     # clearly-relevant transcript when the query's real anchor word is absent from
@@ -1777,7 +1863,7 @@ async def search_videos(
     # only a handful of frames by definition, so this never floods the results.
     distinctive_terms: list[str] = []
     distinctive_frames: list = []
-    if key_terms:
+    if key_terms and 'distinctive' not in off:
         _rare_cap = max(6, int(0.003 * await db.count_frames()))
         for t in key_terms:
             if len(t) < 4:
@@ -1849,7 +1935,8 @@ async def search_videos(
         text = (seg.get("caption") or "").replace("[transcript]", "", 1)
         return len(text.split()) < 3
 
-    all_segments = [s for s in all_segments if not _degenerate(s)]
+    if 'degenerate' not in off:
+        all_segments = [s for s in all_segments if not _degenerate(s)]
 
     # Cap the cross-encoder workload: reranking is the latency bottleneck (CPU on
     # some deployments). Keep the strongest recall candidates so a broad keyword
@@ -1877,7 +1964,7 @@ async def search_videos(
     # templated 0.51). We skip this for longer/already-descriptive queries (they
     # rerank well naturally) and for speech/mixed (it hurts transcript matches).
     rerank_queries = [rerank_query]
-    if source_intent == 'visual':
+    if source_intent == 'visual' and 'templated' not in off:
         _content = [
             w for w in re.findall(r'\b[a-zA-Z]+\b', rerank_query.lower())
             if w not in _SEARCH_STOPWORDS
@@ -1885,14 +1972,8 @@ async def search_videos(
         if 1 <= len(_content) <= 2:
             rerank_queries.append(f"a video of {rerank_query.strip()}")
 
-    # Co-temporal cross-modal fusion (Both mode only). A single moment's meaning
-    # is split across channels: the visual caption says WHAT IS SHOWN, the
-    # transcript says WHAT IS SAID. A query like "an interview about AI in
-    # museums" needs both, yet each caption holds only half, so neither clears the
-    # reranker on its own. Enrich each candidate's RERANK TEXT (never its displayed
-    # caption) with the OTHER modality's words from the same time window, so the
-    # cross-encoder judges the whole moment instead of just one half of it.
-    all_segments = await _rerank_segments(rerank_queries, all_segments)
+    all_segments = await _rerank_segments(
+        rerank_queries, all_segments, damp_short='short_damp' not in off)
 
     # Cross-modal anchoring (Both mode). A concise query's RARE word is its real
     # intent: "an interview about ai in museums" is really "find where MUSEUM is
@@ -1907,7 +1988,7 @@ async def search_videos(
     # is confirmed by cross-reference (high confidence — "fairly sure this is it");
     # a moment missing them is held to the loosest tier so it only surfaces when
     # the user explicitly asks for "Nearly everything".
-    if source_intent == 'mixed' and all_segments and key_terms:
+    if source_intent == 'mixed' and all_segments and key_terms and 'anchor' not in off:
         AGREE_WINDOW = 30.0    # seconds within which evidence must line up
 
         def _stem(w: str) -> str:
@@ -1995,7 +2076,8 @@ async def search_videos(
     # and blend that compositional confidence in. Bounded cost (one call over the
     # top-K), gated to multi-term/compositional queries, and safe: a failed or
     # silent judgment leaves the cross-encoder ranking unchanged.
-    if _llm_rerank_on and llm_reranker is not None and len(key_terms) >= 2 and all_segments:
+    if (_llm_rerank_on and 'llm' not in off and llm_reranker is not None
+            and len(key_terms) >= 2 and all_segments):
         all_segments.sort(key=lambda s: s["score"], reverse=True)
         _shortlist = all_segments[:20]
         _caps = [(s.get("caption") or "").replace("[transcript] ", "").strip()

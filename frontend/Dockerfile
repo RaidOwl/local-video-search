@@ -1,4 +1,5 @@
-FROM node:20-alpine AS builder
+# Static output is architecture-independent, so build natively (no QEMU).
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 WORKDIR /app
 

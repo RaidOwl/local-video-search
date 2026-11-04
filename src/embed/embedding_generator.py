@@ -66,6 +66,7 @@ class EmbeddingService:
         self.qdrant_url = qdrant_url
         self.collection_name = collection_name
         self._qdrant_client = None
+        self._collection_ready = False
         # Optional lexical (BM25/FTS5) mirror kept in sync with Qdrant so hybrid
         # search has a sparse arm. Duck-typed Database; None disables the mirror.
         self.text_index = text_index
@@ -133,6 +134,21 @@ class EmbeddingService:
                 f"changed — re-analyze your library (or clear the collection) to rebuild at {vector_size} dim."
             )
     
+    async def _ensure_collection_for(self, vector_size: int) -> None:
+        """Create the collection on first write if startup couldn't size it.
+
+        With the bundled vLLM backend the API starts long before the embedder has
+        downloaded its model, so the startup probe in ensure_collection() fails
+        and the collection doesn't exist yet when the first video is analyzed.
+        """
+        if self._collection_ready:
+            return
+        existing = {c.name for c in self.qdrant_client.get_collections().collections}
+        if self.collection_name not in existing:
+            await self.ensure_collection(vector_size=vector_size)
+            print(f"[ensure_collection] created '{self.collection_name}' ({vector_size}-dim) on first write")
+        self._collection_ready = True
+
     async def index_frame(
         self,
         video_id: str,
@@ -152,6 +168,7 @@ class EmbeddingService:
 
         from qdrant_client.models import PointStruct
 
+        await self._ensure_collection_for(len(embedding))
         point_id = _point_id or str(uuid.uuid5(uuid.NAMESPACE_URL, f"{video_id}_{timestamp}"))
 
         payload = {
@@ -276,13 +293,19 @@ class EmbeddingService:
             must.append(FieldCondition(key="is_transcript", match=MatchValue(value=True)))
         filter_condition = Filter(must=must) if must else None
 
-        results = self.qdrant_client.search(
-            collection_name=self.collection_name,
-            query_vector=embedding,
-            query_filter=filter_condition,
-            limit=limit,
-            score_threshold=score_threshold
-        )
+        try:
+            results = self.qdrant_client.search(
+                collection_name=self.collection_name,
+                query_vector=embedding,
+                query_filter=filter_condition,
+                limit=limit,
+                score_threshold=score_threshold
+            )
+        except Exception as e:
+            # Fresh install: nothing analyzed yet, so the collection doesn't exist.
+            if getattr(e, "status_code", None) == 404 or "not found" in str(e).lower():
+                return []
+            raise
 
         hits = [
             {

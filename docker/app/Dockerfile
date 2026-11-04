@@ -10,9 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvulkan1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install dependencies
+# Copy requirements and install dependencies. The reranker runs on CPU, so torch
+# comes from the CPU-only index (amd64 + arm64) instead of the CUDA build.
+ARG TORCH_VERSION=2.12.1
 COPY requirements.txt requirements-reranker.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" \
+    && pip install --no-cache-dir -r requirements.txt -r requirements-reranker.txt
 
 # Copy application code
 COPY src/ ./src/

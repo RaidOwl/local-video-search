@@ -1,3 +1,5 @@
-# Optional — only needed if the cross-encoder reranker is not installed in the base image.
-# This brings in PyTorch (~700 MB) for BAAI/bge-reranker-base.
+# Cross-encoder reranker (BAAI/bge-reranker-base), installed into the API image.
+# torch itself is installed separately from the CPU-only wheel index in
+# docker/app/Dockerfile; the default PyPI wheel bundles CUDA and adds ~3 GB.
 sentence-transformers==3.3.1
+transformers==4.57.6

@@ -17,6 +17,31 @@ function Write-Warn { param($msg) Write-Host "[!] $msg" -ForegroundColor Yellow 
 function Write-Err { param($msg) Write-Host "[✗] $msg" -ForegroundColor Red }
 
 # ── Detect hardware ───────────────────────────────────────────────────────────
+# 64-bit dedicated VRAM of display adapters matching $Pattern, from the registry.
+# (Win32_VideoController.AdapterRAM is 32-bit and tops out at 4 GB.)
+function Get-AdapterVramGB {
+    param([string]$Pattern)
+    $best = 0
+    $keys = Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}' -ErrorAction SilentlyContinue
+    foreach ($k in $keys) {
+        $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+        if (-not $p -or $p.DriverDesc -notmatch $Pattern) { continue }
+        $bytes = $p.'HardwareInformation.qwMemorySize'
+        if ($bytes) {
+            $gb = [int][math]::Round([double]$bytes / 1GB)
+            if ($gb -gt $best) { $best = $gb }
+        }
+    }
+    return $best
+}
+
+function Test-HostOllama {
+    try {
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 http://localhost:11434/api/tags | Out-Null
+        return $true
+    } catch { return $false }
+}
+
 function Get-HardwareConfig {
     $hwType = ""
     $composeFiles = "docker-compose.yml"
@@ -24,60 +49,66 @@ function Get-HardwareConfig {
     $modelFamily = "qwen"
     $extraEnv = @()
 
-    if ($IsWindows) {
-        # NVIDIA GPU?
-        try {
-            $nvidia = Get-CimInstance -ClassName Win32_VideoController | Where-Object { $_.Name -like "*NVIDIA*" }
-            if ($nvidia) {
-                $vramMB = [math]::Floor($nvidia.AdapterRAM / 1MB)
-                $vramGB = [math]::Floor($vramMB / 1024)
-                Write-Log "Detected NVIDIA GPU: $($nvidia.Name) (${vramGB}GB VRAM)"
+    # $IsWindows only exists in PowerShell 6+; Windows PowerShell 5.1 sets $env:OS.
+    $onWindows = $IsWindows -or ($env:OS -eq 'Windows_NT')
 
-                # Check nvidia-container-toolkit (via docker info)
-                $dockerInfo = docker info --format '{{.Runtimes}}' 2>$null
-                if ($dockerInfo -notlike '*nvidia*') {
-                    Write-Warn "NVIDIA Container Toolkit not configured. Run in Admin PowerShell:"
-                    Write-Warn "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-                    Write-Warn "  (See https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)"
-                    $extraEnv += "REQUIRE_NVIDIA_TOOLKIT=1"
-                }
+    if ($onWindows) {
+        $adapters = @(Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue)
 
-                $hwType = "nvidia"
-                if ($vramGB -ge 80) { $vramTier = "ultra" }
-                elseif ($vramGB -ge 40) { $vramTier = "high" }
-                elseif ($vramGB -ge 16) { $vramTier = "mid" }
-                else { $vramTier = "low" }
+        # NVIDIA GPU: vLLM in Docker (Docker Desktop's WSL2 backend passes the GPU through).
+        $nvidia = $adapters | Where-Object { $_.Name -like "*NVIDIA*" } | Select-Object -First 1
+        if ($nvidia) {
+            $vramGB = 0
+            $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+            if ($smi) {
+                $mb = (& nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null | Select-Object -First 1)
+                if ("$mb".Trim() -match '^\d+$') { $vramGB = [int][math]::Round([int]"$mb".Trim() / 1024) }
             }
-        } catch { }
+            if (-not $vramGB) { $vramGB = Get-AdapterVramGB 'NVIDIA' }
+            Write-Log "Detected NVIDIA GPU: $($nvidia.Name) (${vramGB}GB VRAM)"
 
-        # AMD GPU (check for ROCm-capable)
-        if (-not $hwType) {
-            try {
-                $amd = Get-CimInstance -ClassName Win32_VideoController | Where-Object { $_.Name -like "*AMD*" -or $_.Name -like "*Radeon*" }
-                if ($amd) {
-                    Write-Log "Detected AMD GPU: $($amd.Name)"
-                    Write-Warn "AMD ROCm on Windows is experimental. Consider WSL2 + Linux backend."
-                    $hwType = "amd"
-                    $composeFiles = "docker-compose.yml:docker-compose.rocm.yml"
-                    # Estimate from system RAM
-                    $memGB = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-                    if ($memGB -ge 128) { $vramTier = "ultra" }
-                    elseif ($memGB -ge 64) { $vramTier = "high" }
-                    elseif ($memGB -ge 32) { $vramTier = "mid" }
-                    else { $vramTier = "low" }
+            $dockerInfo = docker info 2>$null | Out-String
+            if ($dockerInfo -notmatch 'nvidia') {
+                Write-Warn "Docker doesn't report NVIDIA GPU support. Use Docker Desktop with the WSL2 backend"
+                Write-Warn "and a current NVIDIA driver (GPU support is built in), then re-run setup."
+                $extraEnv += "REQUIRE_NVIDIA_TOOLKIT=1"
+            }
+
+            # Same thresholds as setup.sh pick_vllm_tier (FP8 on RTX 30-series and newer).
+            if ($vramGB -ge 51) { $vramTier = "high" }
+            elseif ($vramGB -ge 24) { $vramTier = "mid" }
+            else { $vramTier = "low" }
+            if ($vramGB -lt 12) {
+                Write-Warn "${vramGB}GB VRAM is tight for vLLM. Native Ollama is lighter: install it from"
+                Write-Warn "https://ollama.com/download and set HARDWARE_TYPE=native in .env."
+            }
+            $hwType = "nvidia"
+        }
+        else {
+            # AMD / Intel GPUs: Docker Desktop has no ROCm passthrough, so run Ollama natively
+            # on Windows (it uses the GPU directly) and point the containers at it.
+            $gpu = $adapters | Where-Object { $_.Name -match 'AMD|Radeon|Intel\(R\) Arc' } | Select-Object -First 1
+            if ($gpu) {
+                $vramGB = Get-AdapterVramGB 'AMD|Radeon|Arc'
+                Write-Log "Detected GPU: $($gpu.Name) (${vramGB}GB VRAM) — using native Ollama on the host"
+                $hwType = "native"
+                if ($vramGB -ge 24) { $vramTier = "high" }
+                elseif ($vramGB -ge 10) { $vramTier = "mid" }
+                else { $vramTier = "low" }
+                if (-not (Test-HostOllama)) {
+                    Write-Warn "Ollama isn't running. Install it from https://ollama.com/download, then re-run setup."
+                    $extraEnv += "REQUIRE_OLLAMA=1"
                 }
-            } catch { }
+            }
         }
 
-        # CPU fallback
         if (-not $hwType) {
-            Write-Log "No supported GPU detected — using CPU mode"
+            Write-Log "No supported GPU detected — using CPU mode (Ollama in Docker; analysis will be slow)"
             $hwType = "cpu"
             $vramTier = "low"
         }
     }
     elseif ($IsMacOS) {
-        # Handled by setup.sh on macOS
         Write-Warn "On macOS, use ./setup.sh instead"
         exit 1
     }
@@ -156,10 +187,10 @@ function Check-VideoDirs {
         $dir = Get-Content .env | Where-Object { $_ -like "$var=*" } | ForEach-Object { ($_ -split '=',2)[1] }
         if ($dir -and $dir -ne "C:\path\to\your\videos" -and $dir -ne "/path/to/your\videos") {
             if (Test-Path $dir) {
-                Write-Ok "$var: $dir (exists)"
+                Write-Ok "${var}: $dir (exists)"
                 $found = $true
             } else {
-                Write-Warn "$var: $dir (NOT FOUND — create it or update .env)"
+                Write-Warn "${var}: $dir (NOT FOUND — create it or update .env)"
             }
         }
     }
@@ -188,13 +219,25 @@ if ($ffmpegHwaccel -eq "auto") {
     Write-Log "No FFmpeg GPU decode detected — using software decode"
 }
 
-if (Test-Path .env -and -not $Force) {
+if ((Test-Path .env) -and -not $Force) {
     Write-Warn ".env exists — backing up to .env.bak"
     Copy-Item .env .env.bak -Force
 }
 
 Write-EnvFile $hwType $composeFiles $vramTier $modelFamily $extraEnv $ffmpegHwaccel
 Check-VideoDirs
+
+# Ollama on the host: pull the embedding + vision models for the selected tier.
+if ($hwType -eq "native" -and (Get-Command ollama -ErrorAction SilentlyContinue) -and (Test-HostOllama)) {
+    $mainModel = @{ low = "qwen3-vl:4b"; mid = "qwen3-vl:8b"; high = "qwen3-vl:32b"; ultra = "qwen3-vl:235b" }[$vramTier]
+    if ($modelFamily -eq "gemma") {
+        $mainModel = @{ low = "gemma3:4b"; mid = "gemma3:12b"; high = "gemma3:27b"; ultra = "gemma3:27b" }[$vramTier]
+    }
+    Write-Log "Pulling Ollama models (bge-m3, $mainModel)..."
+    & ollama pull bge-m3
+    & ollama pull $mainModel
+    Write-Ok "Models ready"
+}
 
 Write-Log "Validating Docker Compose config..."
 $env:COMPOSE_FILE = $composeFiles
@@ -208,6 +251,9 @@ Write-Host ""
 Write-Ok "Stack started!"
 Write-Host "Frontend:  http://localhost:3000" -ForegroundColor Cyan
 Write-Host "API docs:  http://localhost:8000/docs" -ForegroundColor Cyan
+if ($hwType -eq "nvidia") {
+    Write-Host "First start downloads the AI models (~20 GB). Follow progress with: docker compose logs -f vllm-main" -ForegroundColor Cyan
+}
 Write-Host "Settings:  http://localhost:3000/settings" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan

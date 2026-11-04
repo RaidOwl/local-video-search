@@ -24,18 +24,20 @@ A self-hosted video search and summarization system powered by local AI models. 
 
 Requirements depend on the AI backend you choose:
 
-| Backend | GPU VRAM | Notes |
-|---------|----------|-------|
-| `ollama` (low / 4B) | ≥ 8 GB | CPU also works (slow) |
-| `ollama` (mid / 8B) | ≥ 10 GB | Recommended starting point |
-| `ollama` (high / 32B) | ≥ 20 GB | Q4 quantized |
-| `vllm` (mid / 8B FP8) | ≥ 16 GB | NVIDIA Hopper / Ada / Blackwell |
-| `vllm` (high / 32B FP8) | ≥ 40 GB | e.g. DGX Spark GB10 |
-| `vllm` (ultra / 235B FP8) | ≥ 128 GB | Multi-GPU server |
-| `vllm` (AMD ROCm) | ≥ 16 GB | AMD GPU with ROCm (e.g. Strix Halo) |
-| `custom` | varies | Point at any OpenAI-compatible server |
+| Platform | `HARDWARE_TYPE` | Backend | GPU memory (mid / 8B tier) |
+|----------|-----------------|---------|----------------------------|
+| NVIDIA GPU, Linux or Windows (WSL2) | `nvidia` | vLLM, FP8 on Ampere+ | ≥ 24 GB (≥ 12 GB for the 4B tier) |
+| NVIDIA DGX Spark / GB10 (ARM64) | `nvidia` | vLLM, FP8 | unified memory |
+| AMD RDNA 3+ / Strix Halo, Linux | `amd` | vLLM on ROCm, BF16 | ≥ 32 GB (≥ 16 GB for 4B) |
+| AMD Instinct MI300+, Linux | `amd` | vLLM on ROCm, FP8 | ≥ 24 GB |
+| Apple Silicon | `apple` | Ollama on the host (Metal) | ≥ 16 GB unified |
+| Intel Arc, AMD on Windows, other GPUs | `native` | Ollama on the host (Vulkan/ROCm/CUDA) | ≥ 10 GB |
+| No GPU | `cpu` | Ollama in Docker | — (slow) |
+| Your own servers | `custom` | any OpenAI-compatible API | — |
 
-> **Disk space:** The API image is ~3.3 GB to download. Model weights (Ollama + reranker) add another ~9 GB. Docker Desktop's VM filesystem can grow to 60 GB+ over time. Make sure you have **≥20 GB free** on your boot disk. Use `MODELS_DIR` in `.env` to relocate model downloads to a larger volume, and point `QDRANT_STORAGE_PATH` at a data drive for vector collections.
+`./setup.sh` / `./setup.ps1` detect all of this and pick the largest [model tier](#model-size-tiers) that fits. Images are published for both **amd64 and arm64**.
+
+> **Disk space:** The API image is ~0.7 GB to download. Model weights add another ~9 GB (Ollama) to ~20 GB (vLLM mid tier). Docker Desktop's VM filesystem can grow to 60 GB+ over time. Make sure you have **≥20 GB free** on your boot disk. Use `MODELS_DIR` in `.env` to relocate model downloads to a larger volume, and point `QDRANT_STORAGE_PATH` at a data drive for vector collections.
 
 Transcription (Whisper) runs on CPU inside the API container — no extra GPU needed.
 
@@ -45,26 +47,27 @@ Video decode (FFmpeg scene detection + frame extraction) can optionally use GPU 
 
 ### 🚀 Smart Setup (Recommended)
 
-The easiest way to get started — auto-detects your hardware (NVIDIA/AMD/Apple/CPU), configures `.env`, validates prerequisites, and starts the stack:
+The easiest way to get started — auto-detects your hardware (NVIDIA/AMD/Apple/Intel/CPU), configures `.env`, validates prerequisites, and starts the stack:
 
 ```bash
 git clone https://github.com/RaidOwl/local-video-search.git
 cd local-video-search
 ./setup.sh          # Linux/macOS
 # or
-./setup.ps1         # Windows PowerShell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1   # Windows
 ```
 
 Then open **http://localhost:3000** — done!
 
 The script handles everything:
-- Detects GPU type and VRAM → sets optimal `VRAM_TIER`
-- Validates Docker Compose version for AMD ROCm (`>=2.24.0`)
+- Detects GPU type and memory (discrete, or unified like DGX Spark / Strix Halo) → picks a `VRAM_TIER` that fits
+- Picks the right vLLM image for AMD (RDNA vs. Instinct) and validates Docker Compose `>=2.24.0`
 - Checks `nvidia-container-toolkit` for NVIDIA
-- Verifies `ollama serve` is running on Apple Silicon
-- Auto-pulls Ollama models on Mac
-- Writes `.env` with detected config (backs up existing)
+- Uses Ollama on the host for Apple Silicon and for GPUs vLLM can't drive (Intel Arc, AMD on Windows), and pulls its models
+- Writes `.env` with detected config, keeping your existing settings (video dirs, ports, paths)
 - Starts the stack with `docker compose up -d`
+
+On first start the vLLM backends download their models (~20 GB for the mid tier); follow along with `docker compose logs -f vllm-main`. You can queue videos for analysis right away — they wait until the models are ready.
 
 ---
 
@@ -149,30 +152,43 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
 docker compose up -d
 ```
 
-> **Note:** FP8 quantization requires MI300+ (CDNA). RDNA iGPUs like the Strix Halo (gfx1151) must run unquantized — the ROCm override already defaults `VLLM_QUANTIZATION` to empty (BF16) for you, so no extra step is needed. The override also sets `HSA_OVERRIDE_GFX_VERSION=11.5.1` automatically.
+> **Note:** Supported AMD GPUs are RDNA 3 / 3.5 / 4 (Radeon RX 7000/9000, Radeon AI PRO, Strix Halo / Point) and Instinct MI300+. `VLLM_ROCM_IMAGE` must match the family — `setup.sh` sets it from your GPU's gfx target (`..._rdna_...` is the default; use `..._cdna_...` for Instinct). Quantization is automatic: FP8 on MI300+, BF16 on RDNA (no FP8 support there). For older AMD GPUs, use `HARDWARE_TYPE=native` with Ollama.
 
-**Windows**
+**Linux with Intel Arc (or any GPU vLLM can't use)**
 
-Ollama runs natively on Windows with GPU acceleration (NVIDIA CUDA or AMD ROCm via DirectML):
+Run [Ollama](https://ollama.com/download) on the host — it drives Intel Arc through Vulkan — and point the containers at it:
 
-```powershell
-# Install Ollama from https://ollama.com/download/windows
-ollama serve          # runs as a Windows service by default — no extra step
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\nEnvironment="OLLAMA_VULKAN=1"\n' | sudo tee /etc/systemd/system/ollama.service.d/lvs.conf
+sudo systemctl daemon-reload && sudo systemctl restart ollama
 ```
 
-Then set in `.env`:
 ```env
-HARDWARE_TYPE=cpu    # Windows: Ollama runs in Docker; GPU-aware but uses Docker's GPU stack
-VRAM_TIER=low        # CPU-recommended tier
-```
-
-If you have an **NVIDIA GPU** with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on Windows via WSL2:
-```env
-HARDWARE_TYPE=nvidia
+HARDWARE_TYPE=native
 VRAM_TIER=mid
 ```
 
-Use `./setup.ps1` for automatic detection, or follow the manual steps above. Windows routes through `docker compose` identically — simply run:
+`OLLAMA_HOST=0.0.0.0` is required on Linux: the containers reach Ollama over the Docker bridge, not loopback. `setup.sh` detects a running host Ollama, uses it automatically, and pulls the models.
+
+**Windows**
+
+Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) with the WSL2 backend. Run `powershell -ExecutionPolicy Bypass -File .\setup.ps1` for automatic detection, or set `.env` yourself:
+
+- **NVIDIA GPU** — vLLM runs in Docker; Docker Desktop's WSL2 backend passes the GPU through (needs a current NVIDIA driver):
+  ```env
+  HARDWARE_TYPE=nvidia
+  VRAM_TIER=mid        # low for cards under 24 GB
+  ```
+- **AMD or Intel GPU** — Docker Desktop has no ROCm passthrough, so run [Ollama for Windows](https://ollama.com/download/windows) natively (it uses the GPU directly) and point the containers at it:
+  ```env
+  HARDWARE_TYPE=native
+  VRAM_TIER=mid
+  ```
+  Then pull the models (`setup.ps1` does this for you): `ollama pull bge-m3` and `ollama pull qwen3-vl:8b`.
+
+Then start it the same way as everywhere else:
 ```powershell
 docker compose up -d
 ```
@@ -185,12 +201,12 @@ Set `VRAM_TIER=low` and `HARDWARE_TYPE=cpu`. The 4B model will run on CPU — sl
 
 #### vLLM (NVIDIA or AMD, higher quality)
 
-vLLM runs models in FP8 rather than Ollama's Q4 quantization, giving better output quality at the cost of needing more VRAM and a modern GPU (NVIDIA Hopper H100, Ada RTX 40xx, Blackwell GB10/B200; or AMD with ROCm).
+vLLM runs models in FP8 (or BF16) rather than Ollama's Q4 quantization, giving better output quality at the cost of needing more GPU memory (NVIDIA Ampere or newer, incl. DGX Spark GB10; or AMD RDNA 3+ / MI300+ with ROCm).
 
 **NVIDIA:**
 ```env
 HARDWARE_TYPE=nvidia
-VRAM_TIER=mid              # 8B FP8 needs ~16 GB VRAM
+VRAM_TIER=mid              # 8B FP8 needs ~24 GB incl. the embedder and KV cache
 ```
 
 **AMD (ROCm):**
@@ -204,7 +220,7 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
 docker compose up -d
 ```
 
-> **Note:** The base compose uses the official NVIDIA vLLM image. For AMD, the `docker-compose.rocm.yml` override swaps in the ROCm build with device passthrough (requires Docker Compose >= 2.24.0 for the `!reset` merge tag) and defaults quantization to unquantized, since FP8 requires MI300+ (CDNA) and RDNA iGPUs don't support it. For Apple Silicon, use `HARDWARE_TYPE=apple` instead.
+> **Note:** The base compose uses the official vLLM image (amd64 + arm64). For AMD, the `docker-compose.rocm.yml` override swaps in the ROCm build with device passthrough (requires Docker Compose >= 2.24.0 for the `!reset` merge tag). Both vLLM containers start through `docker/vllm/serve.py`, which picks FP8 or BF16 for your GPU and sizes GPU memory in GB from what is actually free — so they share a GPU (or unified memory) without crash-looping. For Apple Silicon, use `HARDWARE_TYPE=apple` instead.
 
 ---
 
@@ -216,15 +232,15 @@ Use this if you already have Ollama, vLLM, LiteLLM, or any OpenAI-compatible ser
 HARDWARE_TYPE=custom
 
 # Embedding model (OpenAI /v1/embeddings compatible)
-EMBED_URL=http://10.0.0.30:8001
+EMBED_URL=http://your-server:8001
 EMBED_MODEL=BAAI/bge-m3
 
 # Vision / captioning model (supports image_url in messages)
-VLM_URL=http://10.0.0.19:8000
+VLM_URL=http://your-server:8000
 VLM_MODEL=llava-hf/llava-v1.6-vicuna-7b-hf
 
 # Text LLM for summaries
-LLM_URL=http://10.0.0.30:8000
+LLM_URL=http://your-server:8000
 LLM_MODEL=Qwen/Qwen3-8B
 ```
 
@@ -238,16 +254,16 @@ docker compose up -d
 
 `VRAM_TIER` controls which model size is selected for local backends (`ollama`, `ollama-native`, `vllm`). `MODEL_FAMILY` selects the model family (`qwen` = Qwen3-VL, `gemma` = Gemma 3).
 
-| Tier | Ollama (Q4) | vLLM (FP8) | Approx. VRAM |
-|------|-------------|------------|--------------|
-| `low` | 4B | 4B | ≥ 8 GB |
-| `mid` | 8B | 8B | ≥ 10–16 GB |
-| `high` | 32B | 32B | ≥ 20–40 GB |
-| `ultra` | 235B | 235B | ≥ 128 GB |
+| Tier | Model (qwen) | Ollama Q4 | vLLM FP8 | vLLM BF16 (AMD RDNA) |
+|------|--------------|-----------|----------|----------------------|
+| `low` | Qwen3-VL-4B | ≥ 6 GB | ≥ 12 GB | ≥ 16 GB |
+| `mid` | Qwen3-VL-8B | ≥ 10 GB | ≥ 24 GB | ≥ 32 GB |
+| `high` | Qwen3-VL-32B | ≥ 24 GB | ≥ 51 GB | ≥ 81 GB |
+| `ultra` | Qwen3-VL-235B | ≥ 192 GB | multi-GPU | multi-GPU |
 
-> vLLM FP8 quantizes only the LLM decoder; the vision encoder stays BF16 (~8 GB extra). On Apple Silicon, VRAM is unified memory shared with the system — leave headroom.
+> vLLM figures include the embedding model and KV cache. FP8 quantizes only the LLM decoder; the vision encoder stays BF16. On unified-memory machines (Apple Silicon, DGX Spark, Strix Halo) memory is shared with the system — `setup.sh` leaves ~20% free and stays on `mid` there by default, since their memory bandwidth makes the 32B model several times slower per frame.
 >
-> By default vLLM's memory reservation auto-scales to `VRAM_TIER`, so a smaller model won't reserve your entire GPU (handy on large unified-memory boxes). Override it with `VLLM_GPU_MEMORY_UTIL` in `.env`.
+> vLLM's memory reservation is sized in GB to the model and to what is free at startup, so a small model never reserves a whole 128 GB unified pool, and another process holding GPU memory produces a clear error instead of a crash loop. Override with `VLLM_GPU_MEMORY_GB` (budget) or `VLLM_GPU_MEMORY_UTIL` (raw fraction) in `.env`.
 
 ---
 
@@ -301,8 +317,8 @@ docker compose up -d
 ```
 
 That's it for every backend. `HARDWARE_TYPE` is the only switch you set — Docker
-starts the matching model server automatically (or none, for `custom` and
-`apple`).
+starts the matching model server automatically (or none, for `custom`,
+`apple` and `native`).
 
 ### Step 4 — Open the UI
 
@@ -335,9 +351,10 @@ Results link directly to the timestamp in the video. Use the **Min relevance** s
 
 | Value | AI Backend | Description |
 |-------|------------|-------------|
-| `nvidia` | vllm | vLLM runs in Docker. Requires NVIDIA GPU (Hopper/Ada/Blackwell) + nvidia-container-toolkit. |
-| `amd` | vllm | vLLM runs in Docker with AMD ROCm device passthrough. Set `COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml` in `.env`. |
+| `nvidia` | vllm | vLLM runs in Docker. Requires an NVIDIA GPU (Ampere or newer, incl. DGX Spark) + nvidia-container-toolkit. |
+| `amd` | vllm | vLLM runs in Docker with AMD ROCm device passthrough (RDNA 3+ / MI300+, Linux). Set `COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml` in `.env`. |
 | `apple` | ollama-native | Ollama runs on your host machine. **Required for Apple Silicon** — Docker VMs can't access Metal. Run `ollama serve` first. |
+| `native` | ollama-native | Ollama runs on your host and drives any GPU it supports (Intel Arc via Vulkan, AMD/NVIDIA on Windows, older AMD). On Linux set `OLLAMA_HOST=0.0.0.0`. |
 | `cpu` | ollama | Ollama runs in Docker on CPU only. |
 | `custom` | custom | Bring your own servers. Set `EMBED_URL`, `VLM_URL`, `LLM_URL` in `.env` |
 
@@ -377,7 +394,7 @@ All runtime settings can be managed in the **Settings** page of the UI, or via `
 |---------|-------------|
 | `FRAME_EXTRACTION_INTERVAL` | Seconds between extracted frames (default: 5) |
 | `EMBED_BATCH_SIZE` | Captions embedded per batch (default: 16) |
-| `HARDWARE_TYPE` | Hardware platform selection (nvidia/amd/apple/cpu/custom) |
+| `HARDWARE_TYPE` | Hardware platform selection (nvidia/amd/apple/native/cpu/custom) |
 | `VRAM_TIER` | Model size for local backends (low/mid/high/ultra) |
 | `VIDEO_DIR_1..5` | Up to 5 video library directories |
 | `FFMPEG_HWACCEL` | FFmpeg video decode acceleration: `off`, `auto`, `cuda`, `vaapi`, `drm`, or `vulkan` (default: `off`) |

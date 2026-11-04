@@ -4,7 +4,8 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Hardware platform — determines which AI backend is used
-    # nvidia → vllm | amd → vllm | apple → ollama-native | cpu → ollama | custom → custom
+    # nvidia → vllm | amd → vllm | apple/native → ollama-native (Ollama on the host)
+    # cpu → ollama (in Docker) | custom → custom
     hardware_type: str = "custom"
     vram_tier: str = "mid"       # low | mid | high | ultra
     model_family: str = "qwen"   # qwen | gemma
@@ -16,6 +17,7 @@ class Settings(BaseSettings):
             "nvidia": "vllm",
             "amd": "vllm",
             "apple": "ollama-native",
+            "native": "ollama-native",
             "cpu": "ollama",
             "custom": "custom",
         }

@@ -57,7 +57,8 @@ function BackendBanner({ form, hwStatus }: { form: AppSettings; hwStatus: Hardwa
     switch (type) {
       case 'nvidia': return <Zap size={14} style={{ verticalAlign: 'middle' }} />
       case 'amd': return <Monitor size={14} style={{ verticalAlign: 'middle' }} />
-      case 'apple': return <Monitor size={14} style={{ verticalAlign: 'middle' }} />
+      case 'apple':
+      case 'native': return <Monitor size={14} style={{ verticalAlign: 'middle' }} />
       case 'cpu': return <Cpu size={14} style={{ verticalAlign: 'middle' }} />
       default: return null
     }

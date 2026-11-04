@@ -1,0 +1,4 @@
+{
+  "_comment": "HELD-OUT TEST set. Write these queries WITHOUT looking at the search heuristics in src/api/server.py, and never tune the pipeline to make a specific case here pass — that turns it into a second dev set. Aim for 15-20 varied queries (objects, actions, spoken phrases, brand/model names, multi-attribute descriptions), ideally including a second, unrelated library. Same format as search_labels.json: {\"q\": ..., \"expect_top\": name} or {\"q\": ..., \"expect_in\": [names]}.",
+  "cases": []
+}

@@ -18,6 +18,50 @@ warn()  { echo -e "${YELLOW}[!]${NC} $*" >&2; }
 err()   { echo -e "${RED}[✗]${NC} $*" >&2; }
 info()  { echo -e "${CYAN}[i]${NC} $*" >&2; }
 
+# ── Pick the largest model tier that fits ────────────────────────────────────
+# Mirrors the memory math in docker/vllm/serve.py: main model weights + ~8 GB KV
+# cache, plus ~3.5 GB for the embedder and headroom. Unified-memory systems keep
+# ~20% for the OS and stay on "mid" by default: their memory bandwidth makes the
+# 32B model several times slower per frame. Set VRAM_TIER=high in .env to opt in.
+# "ultra" (235B MoE) needs multiple GPUs and is never picked automatically.
+pick_vllm_tier() {
+    local mem_gb="$1" unified="$2" fp8="$3"
+    local usable=$mem_gb
+    (( unified )) && usable=$(( mem_gb * 8 / 10 ))
+    local need_high need_mid need_low
+    if (( fp8 )); then need_high=51; need_mid=24; need_low=12
+    else need_high=81; need_mid=32; need_low=16; fi
+    if (( ! unified && usable >= need_high )); then echo high
+    elif (( usable >= need_mid )); then echo mid
+    else
+        (( usable < need_low )) && warn "${mem_gb}GB GPU memory is below the ~${need_low}GB the smallest vLLM tier needs; consider HARDWARE_TYPE=cpu (Ollama) or custom."
+        echo low
+    fi
+}
+
+# ── Host Ollama (HARDWARE_TYPE=native) ───────────────────────────────────────
+# For GPUs vLLM can't use (Intel Arc, older AMD...), Ollama on the host drives the
+# GPU itself (Metal/CUDA/ROCm/Vulkan) while the Dockerized CPU Ollama can't.
+host_ollama_up() {
+    curl -sf -m 3 http://localhost:11434/api/version &>/dev/null
+}
+
+# Containers reach host Ollama through the Docker bridge, so on Linux it must
+# listen on more than 127.0.0.1 (Docker Desktop on macOS/Windows forwards loopback).
+warn_if_ollama_loopback_only() {
+    command -v ss &>/dev/null || return 0
+    local listen
+    listen=$(ss -ltnH 'sport = :11434' 2>/dev/null || true)
+    if [[ -n "$listen" ]] && ! echo "$listen" | grep -q -E '(\*|0\.0\.0\.0|\[::\]):11434'; then
+        warn "Ollama only listens on 127.0.0.1, so the containers can't reach it. Make it listen on all interfaces:"
+        warn "  sudo mkdir -p /etc/systemd/system/ollama.service.d"
+        warn "  printf '[Service]\\nEnvironment=\"OLLAMA_HOST=0.0.0.0:11434\"\\n' | sudo tee /etc/systemd/system/ollama.service.d/host.conf"
+        warn "  sudo systemctl daemon-reload && sudo systemctl restart ollama"
+        extra_env+=("REQUIRE_OLLAMA_HOST=1")
+    fi
+    return 0
+}
+
 # ── Detect hardware ───────────────────────────────────────────────────────────
 detect_hardware() {
     local hw_type=""
@@ -33,7 +77,8 @@ detect_hardware() {
         local mem_gb=$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))
         info "Detected macOS: $chip (${mem_gb}GB unified memory)"
 
-        if [[ $mem_gb -ge 96 ]]; then vram_tier="ultra"
+        # qwen3-vl:235b is ~143 GB at Q4, so "ultra" needs a 192 GB+ machine.
+        if [[ $mem_gb -ge 192 ]]; then vram_tier="ultra"
         elif [[ $mem_gb -ge 48 ]]; then vram_tier="high"
         elif [[ $mem_gb -ge 16 ]]; then vram_tier="mid"
         else vram_tier="low"; fi
@@ -64,27 +109,40 @@ detect_hardware() {
 
     # Linux
     elif [[ "$(uname -s)" == "Linux" ]]; then
-        # NVIDIA GPU?
-        if command -v nvidia-smi &>/dev/null; then
-            local vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
-            local vram_gb=$(( vram_mb / 1024 ))
-            info "Detected NVIDIA GPU: ${vram_gb}GB VRAM"
+        local sys_mem_gb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) / 1024 / 1024 ))
 
-            if ! command -v nvidia-container-toolkit &>/dev/null && ! dpkg -l | grep -q nvidia-container-toolkit; then
-                warn "nvidia-container-toolkit not installed. Run: curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list && sudo apt update && sudo apt install -y nvidia-container-toolkit && sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+        # NVIDIA GPU?
+        if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null; then
+            local gpu_name vram_mb cc unified=0
+            gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+            vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+            cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')
+            local vram_gb
+            if [[ "$vram_mb" =~ ^[0-9]+$ ]]; then
+                # Round, don't floor: an RTX 4090 reports 24564 MiB, which is a 24 GB card.
+                vram_gb=$(( (vram_mb + 512) / 1024 ))
+            else
+                # Unified-memory GPUs (DGX Spark GB10, Jetson) report [N/A]: the GPU shares system RAM.
+                unified=1
+                vram_gb=$sys_mem_gb
+            fi
+            info "Detected NVIDIA GPU: $gpu_name, ${vram_gb}GB $( ((unified)) && echo unified || echo VRAM ), compute capability ${cc:-unknown}"
+
+            if ! command -v nvidia-container-toolkit &>/dev/null && ! command -v nvidia-ctk &>/dev/null \
+                && ! (command -v dpkg &>/dev/null && dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit); then
+                warn "nvidia-container-toolkit not installed. See https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
                 extra_env+=("REQUIRE_NVIDIA_TOOLKIT=1")
             fi
 
             hw_type="nvidia"
             compose_files="docker-compose.yml"
-            if [[ $vram_gb -ge 80 ]]; then vram_tier="ultra"
-            elif [[ $vram_gb -ge 40 ]]; then vram_tier="high"
-            elif [[ $vram_gb -ge 16 ]]; then vram_tier="mid"
-            else vram_tier="low"; fi
+            # vLLM runs FP8 on Ampere and newer (native on Ada/Hopper/Blackwell, weight-only before).
+            local fp8=0
+            [[ "${cc%%.*}" =~ ^[0-9]+$ ]] && (( ${cc%%.*} >= 8 )) && fp8=1
+            vram_tier=$(pick_vllm_tier "$vram_gb" "$unified" "$fp8")
 
         # AMD GPU (ROCm)?
-        elif [[ -e /dev/kfd ]] || [[ -e /dev/dri/renderD128 ]]; then
-            info "Detected AMD GPU (ROCm)"
+        elif [[ -e /dev/kfd ]]; then
             hw_type="amd"
             compose_files="docker-compose.yml:docker-compose.rocm.yml"
 
@@ -92,22 +150,76 @@ detect_hardware() {
             local compose_ver=$(docker compose version --short 2>/dev/null | sed 's/v//')
             local major=$(echo "$compose_ver" | cut -d. -f1)
             local minor=$(echo "$compose_ver" | cut -d. -f2)
-            if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -lt 24 ]]; then
-                warn "Docker Compose $compose_ver < 2.24.0 — ROCm override needs >=2.24.0 for device passthrough"
+            if [[ -z "$major" ]] || [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -lt 24 ]]; then
+                warn "Docker Compose ${compose_ver:-unknown} < 2.24.0 — ROCm override needs >=2.24.0 for device passthrough"
                 extra_env+=("REQUIRE_COMPOSE_UPGRADE=1")
             fi
 
-            # Estimate VRAM from system memory (unified on APUs)
-            local mem_gb=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024 / 1024 ))
-            if [[ $mem_gb -ge 128 ]]; then vram_tier="ultra"
-            elif [[ $mem_gb -ge 64 ]]; then vram_tier="high"
-            elif [[ $mem_gb -ge 32 ]]; then vram_tier="mid"
-            else vram_tier="low"; fi
+            # GPU family from the KFD topology (gfx_target_version 110501 -> gfx1151).
+            local gfx_ver
+            gfx_ver=$(cat /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null \
+                | awk '$1=="gfx_target_version" && $2>0 {print $2; exit}')
+            local gfx_major=$(( ${gfx_ver:-0} / 10000 ))
+            local gfx_name
+            gfx_name=$(printf 'gfx%d%d%x' "$gfx_major" $(( ${gfx_ver:-0} / 100 % 100 )) $(( ${gfx_ver:-0} % 100 )))
 
-        # CPU only
-        else
-            info "No GPU detected — using CPU mode"
+            # VRAM of the largest AMD GPU. APUs (Strix Halo / Point) have a small BIOS
+            # carve-out and map the rest of system RAM as GTT, so use GTT for those.
+            local vram_b=0 gtt_b=0 f v
+            for f in /sys/class/drm/card*/device/mem_info_vram_total; do
+                [[ -r "$f" ]] || continue
+                v=$(cat "$f")
+                if (( v > vram_b )); then
+                    vram_b=$v
+                    gtt_b=$(cat "${f%vram_total}gtt_total" 2>/dev/null || echo 0)
+                fi
+            done
+            local vram_gb=$(( (vram_b + 536870912) / 1073741824 )) unified=0
+            if (( vram_gb < 8 )) && (( gtt_b > vram_b )); then
+                unified=1
+                vram_gb=$(( gtt_b / 1024 / 1024 / 1024 ))
+            fi
+            info "Detected AMD GPU: $gfx_name, ${vram_gb}GB $( ((unified)) && echo "unified (APU)" || echo VRAM )"
+
+            local fp8=0
+            case "$gfx_name" in
+                gfx94*|gfx95*)
+                    fp8=1
+                    extra_env+=("VLLM_ROCM_IMAGE=rocm/vllm:rocm7.14.1_cdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0") ;;
+                gfx11*|gfx12*)
+                    extra_env+=("VLLM_ROCM_IMAGE=rocm/vllm:rocm7.14.1_rdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0") ;;
+                *)
+                    warn "AMD $gfx_name is not supported by the ROCm vLLM images (need RDNA 3+ or MI300+)."
+                    hw_type=""
+                    compose_files="docker-compose.yml" ;;
+            esac
+            if [[ "$hw_type" == "amd" ]]; then
+                vram_tier=$(pick_vllm_tier "$vram_gb" "$unified" "$fp8")
+            fi
+        fi
+
+        # No GPU vLLM can use: prefer Ollama on the host (it can still use the GPU).
+        if [[ -z "$hw_type" ]]; then
+            local intel_gpu=0
+            command -v lspci &>/dev/null && lspci 2>/dev/null | grep -i -E 'vga|3d|display' | grep -q -i 'intel.*(arc|battlemage|alchemist|dg2)' && intel_gpu=1
+            if host_ollama_up; then
+                hw_type="native"
+                compose_files="docker-compose.yml"
+                vram_tier="mid"
+                info "Using Ollama on the host (HARDWARE_TYPE=native). VRAM_TIER=mid (qwen3-vl:8b, ~6 GB); set low for GPUs under 8 GB."
+                warn_if_ollama_loopback_only
+            elif (( intel_gpu )); then
+                warn "Intel Arc GPU detected. vLLM in Docker can't use it, but Ollama can (Vulkan):"
+                warn "  curl -fsSL https://ollama.com/install.sh | sh   (then set OLLAMA_VULKAN=1 and OLLAMA_HOST=0.0.0.0 for the service)"
+                warn "and re-run setup to use it. Continuing in CPU mode for now."
+            fi
+        fi
+
+        if [[ -z "$hw_type" ]]; then
+
+            info "No supported GPU detected — using CPU mode (Ollama in Docker; analysis will be slow)"
             hw_type="cpu"
+            compose_files="docker-compose.yml"
             vram_tier="low"
         fi
     fi
@@ -174,9 +286,10 @@ FFMPEG_HWACCEL=$ffmpeg_hwaccel
 # QDRANT_PORT=6333
 ENVEOF
 
-    # Append any extra requirements
+    # Append detected settings (KEY=value) and unmet requirements (REQUIRE_*, as comments)
     for e in "${extra_env[@]}"; do
-        [[ -n "$e" ]] && echo "# $e" >> .env
+        [[ -z "$e" ]] && continue
+        if [[ "$e" == REQUIRE_* ]]; then echo "# $e" >> .env; else echo "$e" >> .env; fi
     done
 
     local hw_label=""
@@ -190,12 +303,42 @@ ENVEOF
     ok "Written .env (HARDWARE_TYPE=$hw_type, VRAM_TIER=$vram_tier, MODEL_FAMILY=$model_family, FFMPEG_HWACCEL=$ffmpeg_hwaccel$hw_label)"
 }
 
+# ── Carry user settings over from the previous .env ──────────────────────────
+# Re-running setup re-detects hardware but must not drop the user's own settings
+# (video dirs, data paths, ports, custom URLs...). Keys setup derives from the
+# hardware are rewritten; every other KEY=value from the backup is appended.
+carry_over_env() {
+    local old="$1"
+    [[ -f "$old" ]] || return 0
+    local derived=" HARDWARE_TYPE VRAM_TIER COMPOSE_FILE COMPOSE_PROFILES FFMPEG_HWACCEL VLLM_ROCM_IMAGE "
+    local line key kept=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
+        key="${BASH_REMATCH[1]}"
+        [[ "$derived" == *" $key "* ]] && continue
+        # Older READMEs told AMD users to blank this; serve.py now picks it per GPU.
+        [[ "$line" == "VLLM_QUANTIZATION=" ]] && continue
+        if grep -q "^${key}=" .env; then
+            # Replace the default setup just wrote with the user's value.
+            local tmp; tmp=$(mktemp)
+            awk -v k="$key" -v l="$line" 'index($0, k"=")==1 {print l; next} {print}' .env > "$tmp" && cat "$tmp" > .env
+            rm -f "$tmp"
+        else
+            echo "$line" >> .env
+        fi
+        kept=$((kept + 1))
+    done < "$old"
+    (( kept )) && ok "Kept $kept setting(s) from your previous .env (backup: $old)"
+    return 0
+}
+
 # ── Validate video dirs ────────────────────────────────────────────────────────
 check_video_dirs() {
     local found=0
     for i in {1..5}; do
         local var="VIDEO_DIR_$i"
-        local dir="${!var:-}"
+        local dir
+        dir=$(grep -E "^${var}=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//' || true)
         if [[ -n "$dir" && "$dir" != "/path/to/your/videos" ]]; then
             if [[ -d "$dir" ]]; then
                 ok "VIDEO_DIR_$i: $dir (exists)"
@@ -206,6 +349,7 @@ check_video_dirs() {
         fi
     done
     [[ $found -eq 0 ]] && warn "No video directories configured. Edit .env and set VIDEO_DIR_1."
+    return 0
 }
 
 # ── Pull models for Apple ──────────────────────────────────────────────────────
@@ -230,7 +374,7 @@ pull_apple_models() {
         esac
     fi
 
-    log "Pulling Ollama models for Apple Silicon ($family / $tier)..."
+    log "Pulling Ollama models into host Ollama ($family / $tier)..."
     ollama pull "$embed_model"
     ollama pull "$main_model"
     ok "Models ready: $embed_model, $main_model"
@@ -260,13 +404,11 @@ main() {
     local ffmpeg_hwaccel
     ffmpeg_hwaccel=$(detect_ffmpeg_hwaccel)
     if [[ "$ffmpeg_hwaccel" != "off" ]]; then
-        ok "FFmpeg GPU decode available: $ffmpeg_hwaccel"
-        # Use auto so the container probes at runtime (ffmpeg -hwaccels inside
-        # the container may differ from the host, e.g. Docker Desktop on macOS).
-        ffmpeg_hwaccel="auto"
-    else
-        info "No FFmpeg GPU decode detected — using software decode"
+        ok "FFmpeg GPU decode available on host: $ffmpeg_hwaccel"
     fi
+    # Always "auto": decoding runs in the API container, which probes its own
+    # ffmpeg at runtime (the host may not even have ffmpeg installed).
+    ffmpeg_hwaccel="auto"
 
     # 3. Write .env
     if [[ -f .env ]]; then
@@ -275,13 +417,14 @@ main() {
     fi
     # shellcheck disable=SC2086
     write_env "$hw_type" "$compose_files" "$vram_tier" "$model_family" "$ffmpeg_hwaccel" ${extra_env[@]+"${extra_env[@]}"}
+    carry_over_env .env.bak
 
     # 3. Check video dirs
     check_video_dirs
 
-    # 4. Apple Silicon: pull models
-    if [[ "$hw_type" == "apple" ]]; then
-        if [[ "${extra_env[*]-}" =~ REQUIRE_OLLAMA ]]; then
+    # 4. Ollama on the host (Apple Silicon / native): pull models
+    if [[ "$hw_type" == "apple" || "$hw_type" == "native" ]]; then
+        if [[ " ${extra_env[*]-} " == *" REQUIRE_OLLAMA=1 "* ]]; then
             warn "Install/start Ollama first, then re-run setup.sh"
         else
             pull_apple_models "$vram_tier" "$model_family"
@@ -301,23 +444,35 @@ main() {
     log "Starting stack..."
     COMPOSE_FILE="$compose_files" docker compose up -d
 
+    local fe_port api_port
+    fe_port=$(grep -E '^FRONTEND_PORT=' .env | tail -1 | cut -d= -f2 || true)
+    api_port=$(grep -E '^API_PORT=' .env | tail -1 | cut -d= -f2 || true)
+    fe_port=${fe_port:-3000}; api_port=${api_port:-8000}
+
     echo
     ok "Stack started!"
-    info "Frontend:  http://localhost:3000"
-    info "API docs:  http://localhost:8000/docs"
-    info "Settings:  http://localhost:3000/settings"
+    info "Frontend:  http://localhost:$fe_port"
+    info "API docs:  http://localhost:$api_port/docs"
+    info "Settings:  http://localhost:$fe_port/settings"
+    if [[ "$hw_type" == "nvidia" || "$hw_type" == "amd" ]]; then
+        info "First start downloads the AI models (~20 GB for the mid tier). Follow progress with:"
+        echo "       docker compose logs -f vllm-main"
+    fi
     echo
     info "Next steps:"
-    echo "  1. Add your video directories to .env:"
-    echo "       echo 'VIDEO_DIR_1=/path/to/your/videos' >> .env"
-    echo "       docker compose up -d   # remounts without restarting"
-    echo "  2. Open http://localhost:3000"
-    echo "  3. Go to Settings → verify AI backend shows '$hw_type'"
-    echo "  4. Videos → Import → select videos → Analyze"
-    echo "  5. Search!"
+    local n=1
+    if ! grep -qE '^VIDEO_DIR_[1-5]=.+' .env; then
+        echo "  $n. Add your video directories to .env:"; n=$((n + 1))
+        echo "       echo 'VIDEO_DIR_1=/path/to/your/videos' >> .env"
+        echo "       docker compose up -d   # remounts without restarting"
+    fi
+    echo "  $n. Open http://localhost:$fe_port"; n=$((n + 1))
+    echo "  $n. Go to Settings → verify the AI backend and that all models show as reachable"; n=$((n + 1))
+    echo "  $n. Videos → Import → select videos → Analyze"; n=$((n + 1))
+    echo "  $n. Search!"
     echo
-    if [[ "$hw_type" == "apple" ]]; then
-        info "Note: Ollama runs on host (not in Docker). Keep 'ollama serve' running."
+    if [[ "$hw_type" == "apple" || "$hw_type" == "native" ]]; then
+        info "Note: Ollama runs on the host (not in Docker). Keep it running."
     fi
 }
 
