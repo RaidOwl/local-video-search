@@ -68,6 +68,8 @@ export interface AppSettings {
   vlm_model: string
   llm_model: string
   whisper_model: string
+  whisper_device?: string
+  whisper_compute_type?: string
   frame_extraction_interval: number
   embed_batch_size: number
   max_concurrent_jobs: number

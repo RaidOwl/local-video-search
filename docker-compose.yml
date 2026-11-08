@@ -43,7 +43,7 @@ services:
       EMBED_URL: ${EMBED_URL:-http://localhost:8001}
       VLM_URL: ${VLM_URL:-http://localhost:8002}
       LLM_URL: ${LLM_URL:-http://localhost:8000}
-      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      EMBED_MODEL: ${EMBED_MODEL:-Qwen/Qwen3-Embedding-4B}
       VLM_MODEL: ${VLM_MODEL:-llava-hf/llava-v1.6-vicuna-7b-hf}
       LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3-8B}
       # Infrastructure
@@ -128,23 +128,20 @@ services:
       - /bin/sh
       - -c
       - |
-        # Resolve model names from MODEL_FAMILY + VRAM_TIER
+        # Resolve model names from MODEL_FAMILY + VRAM_TIER. Only low/mid are
+        # served locally; high/ultra are external-endpoint only.
         if [ "$$MODEL_FAMILY" = "gemma" ]; then
           case "$$VRAM_TIER" in
             low)   MAIN_MODEL="gemma3:4b"  ;;
-            high)  MAIN_MODEL="gemma3:27b" ;;
-            ultra) MAIN_MODEL="gemma3:27b" ;;
             *)     MAIN_MODEL="gemma3:12b" ;;
           esac
         else
           case "$$VRAM_TIER" in
             low)   MAIN_MODEL="qwen3-vl:4b"   ;;
-            high)  MAIN_MODEL="qwen3-vl:32b"  ;;
-            ultra) MAIN_MODEL="qwen3-vl:235b" ;;
             *)     MAIN_MODEL="qwen3-vl:8b"   ;;
           esac
         fi
-        EMBED_MODEL="bge-m3"
+        EMBED_MODEL="qwen3-embedding:4b"
         echo "==> Waiting for Ollama to be ready..."
         until ollama list >/dev/null 2>&1; do sleep 2; done
         echo "==> Pulling embed model: $$EMBED_MODEL"
@@ -162,19 +159,25 @@ services:
   # One multimodal model handles both vision captioning and summarization.
 
   # Both services start through docker/vllm/serve.py, which picks the model,
-  # quantization (fp8 where the GPU supports it) and memory budget from the GPU
-  # it actually sees, on NVIDIA and AMD alike. Memory is budgeted in GB from what
-  # is FREE at startup, so a shared or unified-memory GPU (DGX Spark, Strix Halo)
-  # never crash-loops on "free memory is less than desired".
+  # quantization and memory budget from the GPU it actually sees, on NVIDIA and
+  # AMD alike. Quantization is fp8 where the GPU has native FP8 (NVIDIA
+  # Ada/Hopper/Blackwell, AMD MI300+), otherwise BF16. Memory is budgeted in GB
+  # from what is FREE at startup, so a shared or unified-memory GPU (DGX Spark,
+  # Strix Halo) never crash-loops on "free memory is less than desired".
   # vllm-main waits for vllm-embed to finish loading before sizing itself.
   # Overrides: VLLM_GPU_MEMORY_GB (budget), VLLM_GPU_MEMORY_UTIL (raw fraction),
-  # VLLM_QUANTIZATION (auto | fp8 | none = BF16).
+  # VLLM_QUANTIZATION (auto | fp8 | bf16).
   vllm-embed:
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}
     container_name: local-vss-vllm-embed
     profiles: [nvidia, amd]
     environment:
-      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      EMBED_MODEL: ${EMBED_MODEL:-Qwen/Qwen3-Embedding-4B}
+      # Caps the embedder's context. Without it vLLM uses the model's native
+      # window (40960 for Qwen3-Embedding-4B), whose KV cache does not fit in
+      # the embed budget and the engine refuses to start.
+      EMBED_MAX_MODEL_LEN: ${VLLM_EMBED_MAX_MODEL_LEN:-8192}
+      QUANTIZATION: ${VLLM_QUANTIZATION:-auto}
       GPU_MEMORY_UTIL: ${VLLM_EMBED_GPU_MEMORY_UTIL:-auto}
     entrypoint: [python3, /opt/lvs/serve.py, embed]
     # No host port binding needed — the API reaches this via Docker's internal
@@ -200,7 +203,7 @@ services:
     restart: unless-stopped
 
   vllm-main:
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}
     container_name: local-vss-vllm-main
     profiles: [nvidia, amd]
     # The VLM is auto-selected from MODEL_FAMILY + VRAM_TIER, matching the API's

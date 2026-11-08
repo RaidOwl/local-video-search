@@ -24,7 +24,7 @@ class Transcriber:
     MIN_CHUNK_WORDS = 6
     MAX_CHUNK_WORDS = 30
 
-    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8",
+    def __init__(self, model_size: str = "medium", device: str = "cpu", compute_type: str = "int8",
                  beam_size: int = 1, condition_on_previous_text: bool = False):
         self._model_size = model_size
         self._device = device
@@ -150,10 +150,13 @@ class Transcriber:
 class TranscriptionService:
     """Service wrapper for Transcriber."""
 
-    def __init__(self, model_size: str = "base", beam_size: int = 1,
+    def __init__(self, model_size: str = "medium", device: str = "cpu",
+                 compute_type: str = "int8", beam_size: int = 1,
                  condition_on_previous_text: bool = False):
         self.transcriber = Transcriber(
             model_size=model_size,
+            device=device,
+            compute_type=compute_type,
             beam_size=beam_size,
             condition_on_previous_text=condition_on_previous_text,
         )

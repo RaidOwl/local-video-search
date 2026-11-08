@@ -188,6 +188,8 @@ def _effective_cfg() -> dict:
             "vlm_model":   settings.vlm_model,
             "llm_model":       settings.llm_model,
             "whisper_model":    settings.whisper_model,
+            "whisper_device":   settings.whisper_device,
+            "whisper_compute_type": settings.whisper_compute_type,
             "frame_extraction_interval": settings.frame_extraction_interval,
             "embed_batch_size": settings.embed_batch_size,
             "ai_backend":       "custom",
@@ -200,6 +202,8 @@ def _effective_cfg() -> dict:
         )
         base["qdrant_url"]       = settings.qdrant_url
         base["whisper_model"]    = settings.whisper_model
+        base["whisper_device"]   = settings.whisper_device
+        base["whisper_compute_type"] = settings.whisper_compute_type
         base["frame_extraction_interval"] = settings.frame_extraction_interval
         base["embed_batch_size"] = settings.embed_batch_size
         base["ai_backend"]       = ai_backend
@@ -303,6 +307,8 @@ llm_reranker = LLMReranker(_cfg["llm_url"], model=_cfg["llm_model"])
 _llm_rerank_on = bool(_cfg.get("llm_rerank", True))
 transcription_service = TranscriptionService(
     model_size=_cfg["whisper_model"],
+    device=_cfg.get("whisper_device", "cpu"),
+    compute_type=_cfg.get("whisper_compute_type", "int8"),
     beam_size=int(_cfg.get("whisper_beam_size", 1)),
     condition_on_previous_text=bool(_cfg.get("whisper_condition_on_previous", False)),
 )
@@ -330,6 +336,8 @@ def _reinit_services(cfg: dict):
     _llm_rerank_on = bool(cfg.get("llm_rerank", True))
     transcription_service = TranscriptionService(
         model_size=cfg["whisper_model"],
+        device=cfg.get("whisper_device", "cpu"),
+        compute_type=cfg.get("whisper_compute_type", "int8"),
         beam_size=int(cfg.get("whisper_beam_size", 1)),
         condition_on_previous_text=bool(cfg.get("whisper_condition_on_previous", False)),
     )
@@ -406,7 +414,7 @@ _auto_import_task: asyncio.Task | None = None
 
 
 def _load_reranker():
-    """Lazily load the bge-reranker-base cross-encoder (~1.1 GB, CPU).
+    """Lazily load the bge-reranker-v2-m3 cross-encoder (~2.3 GB, CPU).
 
     Returns the model, or None if loading fails.  Weights are cached in
     /data/hf_cache so they survive container rebuilds.
@@ -422,8 +430,8 @@ def _load_reranker():
                   "search falls back to retrieval scores.")
             return None
         try:
-            print("Loading reranker model (BAAI/bge-reranker-base, ~1.1 GB)...")
-            _reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
+            print("Loading reranker model (BAAI/bge-reranker-v2-m3, ~2.3 GB)...")
+            _reranker = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512)
             print("Reranker ready.")
         except Exception as e:
             print(f"Reranker: failed to load: {e}")
@@ -464,7 +472,7 @@ async def _rerank_segments(query, segments: list[dict], damp_short: bool = True)
     that the natural form judged higher.
 
     Architecture: bi-encoder (BGE-M3 / Qdrant) retrieves candidates for recall;
-    this cross-encoder (BAAI/bge-reranker-base, ~1.1 GB, CPU) judges true
+    this cross-encoder (BAAI/bge-reranker-v2-m3, ~2.3 GB, CPU) judges true
     query↔caption relevance for precision.  bge-reranker is the same family as
     the BGE-M3 embeddings and is trained for natural-language semantic relevance,
     so it handles descriptive VLM captions and nuances like gender far better
@@ -1528,6 +1536,8 @@ class SettingsUpdateRequest(BaseModel):
     vlm_model: Optional[str] = None
     llm_model: Optional[str] = None
     whisper_model: Optional[str] = None
+    whisper_device: Optional[str] = None
+    whisper_compute_type: Optional[str] = None
     frame_extraction_interval: Optional[int] = None
     embed_batch_size: Optional[int] = None
     max_concurrent_jobs: Optional[int] = None

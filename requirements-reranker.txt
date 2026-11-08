@@ -1,4 +1,4 @@
-# Cross-encoder reranker (BAAI/bge-reranker-base), installed into the API image.
+# Cross-encoder reranker (BAAI/bge-reranker-v2-m3), installed into the API image.
 # torch itself is installed separately from the CPU-only wheel index in
 # docker/app/Dockerfile; the default PyPI wheel bundles CUDA and adds ~3 GB.
 sentence-transformers==3.3.1

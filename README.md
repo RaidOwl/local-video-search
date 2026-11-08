@@ -37,9 +37,9 @@ Requirements depend on the AI backend you choose:
 
 `./setup.sh` / `./setup.ps1` detect all of this and pick the largest [model tier](#model-size-tiers) that fits. Images are published for both **amd64 and arm64**.
 
-> **Disk space:** The API image is ~0.7 GB to download. Model weights add another ~9 GB (Ollama) to ~20 GB (vLLM mid tier). Docker Desktop's VM filesystem can grow to 60 GB+ over time. Make sure you have **≥20 GB free** on your boot disk. Use `MODELS_DIR` in `.env` to relocate model downloads to a larger volume, and point `QDRANT_STORAGE_PATH` at a data drive for vector collections.
+> **Disk space:** The API image is ~0.7 GB to download. Model weights add another ~9 GB (Ollama) to ~26 GB (vLLM mid tier). The vLLM container images themselves are large — ~10 GB for NVIDIA, ~31 GB for ROCm — and Docker Desktop's VM filesystem can grow to 60 GB+ over time. Make sure you have **≥30 GB free** on your boot disk (≥50 GB if you use the AMD/ROCm path). Use `MODELS_DIR` in `.env` to relocate model downloads to a larger volume, and point `QDRANT_STORAGE_PATH` at a data drive for vector collections.
 
-Transcription (Whisper) runs on CPU inside the API container — no extra GPU needed.
+Transcription (Whisper) runs on CPU inside the API container by default — no extra GPU needed. The default model is `medium`; set `WHISPER_MODEL` in `.env` (or the Whisper model buttons in **Settings**) to trade accuracy against speed, and `WHISPER_DEVICE=cuda` + `WHISPER_COMPUTE_TYPE=float16` to move it onto a GPU.
 
 Video decode (FFmpeg scene detection + frame extraction) can optionally use GPU acceleration when configured — see [FFmpeg Hardware Acceleration](#ffmpeg-hardware-acceleration).
 
@@ -61,13 +61,13 @@ Then open **http://localhost:3000** — done!
 
 The script handles everything:
 - Detects GPU type and memory (discrete, or unified like DGX Spark / Strix Halo) → picks a `VRAM_TIER` that fits
-- Picks the right vLLM image for AMD (RDNA vs. Instinct) and validates Docker Compose `>=2.24.0`
+- Picks the right vLLM image for AMD (the unified `rocm10.x` tag covers RDNA and Instinct) and validates Docker Compose `>=2.24.0`
 - Checks `nvidia-container-toolkit` for NVIDIA
 - Uses Ollama on the host for Apple Silicon and for GPUs vLLM can't drive (Intel Arc, AMD on Windows), and pulls its models
 - Writes `.env` with detected config, keeping your existing settings (video dirs, ports, paths)
 - Starts the stack with `docker compose up -d`
 
-On first start the vLLM backends download their models (~20 GB for the mid tier); follow along with `docker compose logs -f vllm-main`. You can queue videos for analysis right away — they wait until the models are ready.
+On first start the vLLM backends download their models (~26 GB for the mid tier); follow along with `docker compose logs -f vllm-main`. You can queue videos for analysis right away — they wait until the models are ready.
 
 ---
 
@@ -109,7 +109,7 @@ VRAM_TIER=mid         # or low / high depending on your unified memory
 Because Ollama runs on your host, **you pull the models yourself** — unlike the dockerized Ollama backend, `ollama-native` has no auto-pull. Grab the embedding model plus the vision/LLM model for your tier (see the [model size tiers](#model-size-tiers) below):
 
 ```bash
-ollama pull bge-m3               # embeddings (all tiers)
+ollama pull qwen3-embedding:4b   # embeddings (all tiers)
 ollama pull qwen3-vl:8b          # vision + summaries — mid/qwen (4b/8b/32b/235b per tier)
 ```
 
@@ -152,7 +152,11 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml
 docker compose up -d
 ```
 
-> **Note:** Supported AMD GPUs are RDNA 3 / 3.5 / 4 (Radeon RX 7000/9000, Radeon AI PRO, Strix Halo / Point) and Instinct MI300+. `VLLM_ROCM_IMAGE` must match the family — `setup.sh` sets it from your GPU's gfx target (`..._rdna_...` is the default; use `..._cdna_...` for Instinct). Quantization is automatic: FP8 on MI300+, BF16 on RDNA (no FP8 support there). For older AMD GPUs, use `HARDWARE_TYPE=native` with Ollama.
+> **Note:** Supported AMD GPUs are RDNA 3 / 3.5 / 4 (Radeon RX 7000/9000, Radeon AI PRO, Strix Halo / Point) and Instinct MI300+. `setup.sh` sets `VLLM_ROCM_IMAGE` from your GPU's gfx target; the `rocm10.x` images are unified, so one tag covers both families. Quantization is automatic: FP8 on MI300+, BF16 on RDNA (which has no FP8 kernel in vLLM). For older AMD GPUs, use `HARDWARE_TYPE=native` with Ollama.
+
+**vLLM image versions**
+
+Both GPU paths pin vLLM to a specific release rather than `:latest`, which tracks nightly builds that change between pulls. The two paths are not version-locked to each other — ROCm publishes builds less often, so the AMD image trails the NVIDIA one. Override either with `VLLM_IMAGE` / `VLLM_ROCM_IMAGE` in `.env`. The launcher logs the vLLM version it detects at startup, so drift is visible in `docker compose logs vllm-main`.
 
 **Linux with Intel Arc (or any GPU vLLM can't use)**
 
@@ -186,7 +190,7 @@ Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) with 
   HARDWARE_TYPE=native
   VRAM_TIER=mid
   ```
-  Then pull the models (`setup.ps1` does this for you): `ollama pull bge-m3` and `ollama pull qwen3-vl:8b`.
+  Then pull the models (`setup.ps1` does this for you): `ollama pull qwen3-embedding:4b` and `ollama pull qwen3-vl:8b`.
 
 Then start it the same way as everywhere else:
 ```powershell
@@ -201,12 +205,14 @@ Set `VRAM_TIER=low` and `HARDWARE_TYPE=cpu`. The 4B model will run on CPU — sl
 
 #### vLLM (NVIDIA or AMD, higher quality)
 
-vLLM runs models in FP8 (or BF16) rather than Ollama's Q4 quantization, giving better output quality at the cost of needing more GPU memory (NVIDIA Ampere or newer, incl. DGX Spark GB10; or AMD RDNA 3+ / MI300+ with ROCm).
+vLLM runs models quantized rather than in Ollama's Q4 format, giving better output quality at the cost of needing more GPU memory (NVIDIA Ampere or newer, incl. DGX Spark GB10; or AMD RDNA 3+ / MI300+ with ROCm). Quantization is chosen automatically: **FP8** where the GPU has native FP8 hardware, otherwise **BF16**. Set `VLLM_QUANTIZATION=fp8` or `bf16` in `.env` to force one.
+
+> **BF16 on AMD RDNA is not a downgrade.** RDNA 3.5 (`gfx1151`, Strix Halo) has no FP8 matrix units, so vLLM has no FP8 kernel to use there — BF16 is the only option, and it is also the *fastest* one. On a unified-memory machine the bottleneck is memory bandwidth, not capacity, so a smaller quant would trade throughput for memory you already have.
 
 **NVIDIA:**
 ```env
 HARDWARE_TYPE=nvidia
-VRAM_TIER=mid              # 8B FP8 needs ~24 GB incl. the embedder and KV cache
+VRAM_TIER=mid              # 8B FP8 needs ~28 GB incl. the embedder and KV cache
 ```
 
 **AMD (ROCm):**
@@ -233,7 +239,7 @@ HARDWARE_TYPE=custom
 
 # Embedding model (OpenAI /v1/embeddings compatible)
 EMBED_URL=http://your-server:8001
-EMBED_MODEL=BAAI/bge-m3
+EMBED_MODEL=Qwen/Qwen3-Embedding-4B
 
 # Vision / captioning model (supports image_url in messages)
 VLM_URL=http://your-server:8000
@@ -243,6 +249,14 @@ VLM_MODEL=llava-hf/llava-v1.6-vicuna-7b-hf
 LLM_URL=http://your-server:8000
 LLM_MODEL=Qwen/Qwen3-8B
 ```
+
+> **Changing the embedding model requires a full re-index.** Vectors from different
+> embedding models are not comparable, so switching `EMBED_MODEL` (or the model a
+> tier resolves to) invalidates every existing vector. Delete the Qdrant collection
+> and re-analyze your library — otherwise searches will silently return poor or
+> empty results. The vector dimension is probed from the model at runtime, so a
+> mismatch will not raise an error. The reranker and Whisper models can be changed
+> freely; only the embedder is index-affecting.
 
 ```bash
 docker compose up -d
@@ -256,14 +270,16 @@ docker compose up -d
 
 | Tier | Model (qwen) | Ollama Q4 | vLLM FP8 | vLLM BF16 (AMD RDNA) |
 |------|--------------|-----------|----------|----------------------|
-| `low` | Qwen3-VL-4B | ≥ 6 GB | ≥ 12 GB | ≥ 16 GB |
-| `mid` | Qwen3-VL-8B | ≥ 10 GB | ≥ 24 GB | ≥ 32 GB |
-| `high` | Qwen3-VL-32B | ≥ 24 GB | ≥ 51 GB | ≥ 81 GB |
-| `ultra` | Qwen3-VL-235B | ≥ 192 GB | multi-GPU | multi-GPU |
+| `low` | Qwen3-VL-4B | ≥ 6 GB | ≥ 23 GB | ≥ 22 GB |
+| `mid` | Qwen3-VL-8B | ≥ 10 GB | ≥ 28 GB | ≥ 26 GB |
 
-> vLLM figures include the embedding model and KV cache. FP8 quantizes only the LLM decoder; the vision encoder stays BF16. On unified-memory machines (Apple Silicon, DGX Spark, Strix Halo) memory is shared with the system — `setup.sh` leaves ~20% free and stays on `mid` there by default, since their memory bandwidth makes the 32B model several times slower per frame.
+> Only `low` and `mid` are served locally — they are the two tiers that fit on hardware people actually run this on. `high` (Qwen3-VL-32B, ~67 GB) and `ultra` (Qwen3-VL-235B-A22B, ~471 GB) need a multi-GPU host, so they are **external-endpoint only**: set `HARDWARE_TYPE=custom` and point the app at your own vLLM/Ollama server instead. `setup.sh` never selects them, and `serve.py` falls back to `mid` with a log message if one is set by hand.
+>
+> vLLM figures include the embedding model (Qwen3-Embedding-4B, ~10 GB BF16) and KV cache. FP8 quantizes only the LLM decoder; the vision encoder stays BF16. On unified-memory machines (Apple Silicon, DGX Spark, Strix Halo) memory is shared with the system — `setup.sh` leaves ~20% free and stays on `mid` there by default.
 >
 > vLLM's memory reservation is sized in GB to the model and to what is free at startup, so a small model never reserves a whole 128 GB unified pool, and another process holding GPU memory produces a clear error instead of a crash loop. Override with `VLLM_GPU_MEMORY_GB` (budget) or `VLLM_GPU_MEMORY_UTIL` (raw fraction) in `.env`.
+>
+> The embedder runs with a capped context (`VLLM_EMBED_MAX_MODEL_LEN`, default 8192). Embeddings are computed over short chunks, and the model's native 40960-token window would need a KV cache far larger than the embedder's budget — vLLM refuses to start rather than degrading, so do not raise this without also raising the embedder's memory budget.
 
 ---
 
@@ -324,7 +340,7 @@ starts the matching model server automatically (or none, for `custom`,
 
 Navigate to **http://localhost:3000**
 
-Go to **Settings** to verify your AI backend — the banner now shows detected hardware (GPU model, VRAM, ROCm device status), resolved model names, and service connectivity. Configure Whisper transcription quality (Low / Medium / High), set the frame extraction interval, cap the CPU threads FFmpeg uses during analysis (defaults to half your cores so the host stays responsive), tune max concurrent jobs, toggle auto-analyze on import, and choose a hardware acceleration backend for FFmpeg video decoding.
+Go to **Settings** to verify your AI backend — the banner now shows detected hardware (GPU model, VRAM, ROCm device status), resolved model names, and service connectivity. Configure Whisper transcription quality (Low / Medium / High / Very high / Fast large), set the frame extraction interval, cap the CPU threads FFmpeg uses during analysis (defaults to half your cores so the host stays responsive), tune max concurrent jobs, toggle auto-analyze on import, and choose a hardware acceleration backend for FFmpeg video decoding.
 
 ### Step 5 — Add & analyze videos
 
@@ -345,7 +361,7 @@ Results link directly to the timestamp in the video. Use the **Min relevance** s
 
 > Need to narrow results by file type, resolution, or creation date? Open the **Filters** popup beside the search bar. Filters apply as an exact match on top of your query — or apply them with an empty search box to browse your whole library by those criteria.
 
-> On first launch the reranker model (`BAAI/bge-reranker-base`, ~1.1 GB) downloads automatically and is cached under `./data` so it persists across restarts. It runs on CPU inside the API container — no extra GPU required.
+> On first launch the reranker model (`BAAI/bge-reranker-v2-m3`, ~2.3 GB) downloads automatically and is cached under `./data` so it persists across restarts. It runs on CPU inside the API container — no extra GPU required.
 
 ## Hardware Types
 
@@ -394,6 +410,9 @@ All runtime settings can be managed in the **Settings** page of the UI, or via `
 |---------|-------------|
 | `FRAME_EXTRACTION_INTERVAL` | Seconds between extracted frames (default: 5) |
 | `EMBED_BATCH_SIZE` | Captions embedded per batch (default: 16) |
+| `WHISPER_MODEL` | Whisper transcription model: `base`, `small`, `medium` (default), `large-v3`, `distil-large-v3` |
+| `WHISPER_DEVICE` | Device for Whisper: `cpu` (default) or `cuda` |
+| `WHISPER_COMPUTE_TYPE` | Whisper precision: `int8` (default, for CPU) or `float16` (for CUDA) |
 | `HARDWARE_TYPE` | Hardware platform selection (nvidia/amd/apple/native/cpu/custom) |
 | `VRAM_TIER` | Model size for local backends (low/mid/high/ultra) |
 | `VIDEO_DIR_1..5` | Up to 5 video library directories |
@@ -465,7 +484,7 @@ Browser (port 3000)
               (metadata)     (vectors)   (VLM / Embed / LLM)
                                               │
                                         faster-whisper (transcription, CPU)
-                                        bge-reranker   (search reranking, CPU)
+                                        bge-reranker-v2-m3 (search reranking, CPU)
 ```
 
 ## Project Structure

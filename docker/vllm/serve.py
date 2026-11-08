@@ -5,7 +5,9 @@ Runs inside the vLLM image (CUDA or ROCm) before exec'ing the OpenAI server, and
 
 * picks the model for the role from MODEL_FAMILY / VRAM_TIER (main) or EMBED_MODEL;
 * picks quantization when QUANTIZATION=auto: fp8 where the GPU supports it
-  (NVIDIA Ampere or newer, AMD MI300+), otherwise unquantized;
+  (NVIDIA Ampere or newer, AMD MI300+), otherwise BF16. Only the `low` and `mid`
+  tiers are served locally; `high`/`ultra` are external-endpoint only (see
+  MAIN_MODELS);
 * sizes --gpu-memory-utilization from an absolute GB budget and the memory that
   is actually FREE right now (torch.cuda.mem_get_info works on CUDA, ROCm and
   unified-memory systems like DGX Spark / Strix Halo). vLLM refuses to start if
@@ -14,7 +16,8 @@ Runs inside the vLLM image (CUDA or ROCm) before exec'ing the OpenAI server, and
 * for the main model, waits for the embedder to finish loading first so the two
   don't race for the same free memory.
 
-Every choice can be overridden by env (GPU_MEMORY_GB, GPU_MEMORY_UTIL, QUANTIZATION=auto|fp8|none).
+Every choice can be overridden by env (GPU_MEMORY_GB, GPU_MEMORY_UTIL,
+QUANTIZATION=auto|fp8|bf16).
 """
 import os
 import sys
@@ -25,24 +28,30 @@ GIB = 1024 ** 3
 
 # Must match src/local_models.py TIER_MODELS["vllm"]. Second value: approximate
 # BF16 weight size in GiB (vision encoder included).
+#
+# Only `low` and `mid` are served locally: they are the two tiers that fit on
+# hardware people actually run this on (a 12-24 GB GPU, or a unified-memory box).
+# `high` (32B dense, ~67 GiB) and `ultra` (235B MoE, ~471 GiB) need a multi-GPU
+# host, so they are external-endpoint only — point HARDWARE_TYPE=custom at your
+# own vLLM/Ollama server instead of trying to serve them here.
 MAIN_MODELS = {
     "qwen": {
         "low": ("Qwen/Qwen3-VL-4B-Instruct", 9),
         "mid": ("Qwen/Qwen3-VL-8B-Instruct", 18),
-        "high": ("Qwen/Qwen3-VL-32B-Instruct", 67),
-        "ultra": ("Qwen/Qwen3-VL-235B-A22B-Instruct", 471),
     },
     "gemma": {
         "low": ("google/gemma-3-4b-it", 9),
         "mid": ("google/gemma-3-12b-it", 25),
-        "high": ("google/gemma-3-12b-it", 25),
-        "ultra": ("google/gemma-3-27b-it", 55),
     },
 }
-EMBED_WEIGHTS_GB = 1.5
+EMBED_WEIGHTS_GB = 10  # Qwen3-Embedding-4B: 7.55 GiB weights + ~0.6 graph capture
+                       # + ~1.7 vLLM runtime overhead; bge-m3 was ~1.5 GB
 HEADROOM_GB = 1.5   # left free for the CUDA/HIP context and other processes
 MAIN_KV_GB = 8      # KV cache + activations for one user at MAX_MODEL_LEN
-EMBED_KV_GB = 2
+EMBED_KV_GB = 2     # KV cache for one request at EMBED_MAX_MODEL_LEN
+
+# Fraction of the BF16 weight size that survives FP8 quantization.
+FP8_RATIO = 0.55
 
 
 def log(msg: str) -> None:
@@ -75,6 +84,22 @@ def supports_fp8(gpu: dict) -> bool:
     return gpu["capability"] >= (8, 0)
 
 
+def resolve_quant(env: dict, gpu: dict) -> str:
+    """Pick a quantization method. Returns "" (BF16) or "fp8".
+
+    "auto" uses native FP8 where the GPU has it and BF16 everywhere else.
+    """
+    quant = env.get("QUANTIZATION", "auto").strip().lower()
+    if quant == "auto":
+        return "fp8" if supports_fp8(gpu) else ""
+    if quant in ("none", "bf16", "off", "false", "0"):
+        return ""
+    if quant == "fp8":
+        return "fp8"
+    log(f"unknown QUANTIZATION={quant!r}; falling back to auto")
+    return "fp8" if supports_fp8(gpu) else ""
+
+
 def wait_for(url: str, timeout_s: int) -> None:
     deadline = time.time() + timeout_s
     log(f"waiting for {url} before sizing (up to {timeout_s // 60} min)...")
@@ -88,20 +113,42 @@ def wait_for(url: str, timeout_s: int) -> None:
     log("embedder still not up; continuing anyway")
 
 
+def vllm_version() -> str:
+    """Best-effort vLLM version, so image drift is visible in the logs."""
+    try:
+        from importlib.metadata import version
+
+        return version("vllm")
+    except Exception:
+        return "unknown"
+
+
 def main() -> None:
     role = sys.argv[1] if len(sys.argv) > 1 else "main"
     env = os.environ
     quant = ""
 
+    log(f"vLLM {vllm_version()} (role={role})")
+
     if role == "embed":
-        model = env.get("EMBED_MODEL") or "BAAI/bge-m3"
+        model = env.get("EMBED_MODEL") or "Qwen/Qwen3-Embedding-4B"
         port = "8001"
-        extra: list[str] = []
+        # Embeddings are computed over short chunks, so cap the context. Without
+        # this vLLM defaults to the model's native window (40960 for
+        # Qwen3-Embedding-4B), whose KV cache far exceeds EMBED_KV_GB and the
+        # engine refuses to start.
+        extra = ["--max-model-len", env.get("EMBED_MAX_MODEL_LEN", "8192")]
     else:
         family = env.get("MODEL_FAMILY", "qwen")
         family = family if family in MAIN_MODELS else "qwen"
         tier = env.get("VRAM_TIER", "mid")
-        tier = tier if tier in MAIN_MODELS[family] else "mid"
+        if tier not in MAIN_MODELS[family]:
+            if tier in ("high", "ultra"):
+                log(f"VRAM_TIER={tier} is external-endpoint only; serving 'mid' locally. "
+                    f"Set HARDWARE_TYPE=custom to point at your own large-model server.")
+            else:
+                log(f"unknown VRAM_TIER={tier!r}; using 'mid'")
+            tier = "mid"
         model, bf16_gb = MAIN_MODELS[family][tier]
         port = "8002"
         extra = ["--max-model-len", env.get("MAX_MODEL_LEN", "16384"), "--enforce-eager"]
@@ -114,16 +161,14 @@ def main() -> None:
     log(f"GPU: {gpu['name']} ({arch}), {gpu['free_gb']:.1f} GiB free of {gpu['total_gb']:.1f} GiB")
 
     if role == "embed":
-        need_gb = EMBED_WEIGHTS_GB + 1
-        budget_gb = EMBED_WEIGHTS_GB + EMBED_KV_GB
+        quant = resolve_quant(env, gpu)
+        weights_gb = EMBED_WEIGHTS_GB
+        need_gb = weights_gb + 1
+        budget_gb = weights_gb + EMBED_KV_GB
     else:
-        quant = env.get("QUANTIZATION", "auto").strip().lower()
-        if quant == "auto":
-            quant = "fp8" if supports_fp8(gpu) else ""
-        elif quant in ("none", "bf16", "off", "false", "0"):
-            quant = ""
+        quant = resolve_quant(env, gpu)
         # FP8 quantizes the language model only; the vision encoder stays BF16.
-        weights_gb = bf16_gb * (0.55 if quant == "fp8" else 1.0)
+        weights_gb = bf16_gb * (FP8_RATIO if quant == "fp8" else 1.0)
         need_gb = weights_gb + 3
         budget_gb = weights_gb + MAIN_KV_GB
 
@@ -160,7 +205,7 @@ def main() -> None:
     ]
     if quant:
         args += ["--quantization", quant]
-    log(f"starting {role}: {model} quant={quant or 'none'}")
+    log(f"starting {role}: {model} quant={quant or 'bf16'}")
     os.execv(sys.executable, args)
 
 

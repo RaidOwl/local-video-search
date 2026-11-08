@@ -2,17 +2,16 @@
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml   (setup.sh sets this)
 # Requires Docker Compose >= 2.24.0 for the !reset merge tag.
 #
-# VLLM_ROCM_IMAGE must match your GPU family (setup.sh picks it from the GPU's
-# gfx target):
+# VLLM_ROCM_IMAGE is set by setup.sh from the GPU's gfx target. The rocm10.x
+# images are unified (one tag covers both families):
 #   RDNA 3 / 3.5 / 4 (Radeon RX 7000/9000, Radeon AI PRO, Strix Halo / Point)
-#     rocm/vllm:rocm7.14.1_rdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0
 #   CDNA 3+ (Instinct MI300 / MI325 / MI350)
-#     rocm/vllm:rocm7.14.1_cdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0
+#     rocm/vllm:rocm10.1.0_ubuntu24.04_py3.14-pytorch_2.13.0_vllm-0.29.0
 # Quantization is chosen per GPU by docker/vllm/serve.py (fp8 on MI300+, BF16 on
 # RDNA, which has no FP8 support in vLLM).
 
 x-amd-gpu: &amd-gpu
-  image: ${VLLM_ROCM_IMAGE:-rocm/vllm:rocm7.14.1_rdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0}
+  image: ${VLLM_ROCM_IMAGE:-rocm/vllm:rocm10.1.0_ubuntu24.04_py3.14-pytorch_2.13.0_vllm-0.29.0}
   deploy:
     resources:
       reservations:

@@ -35,6 +35,8 @@ const WHISPER_TIERS = [
   { label: 'Low', model: 'base' },
   { label: 'Medium', model: 'small' },
   { label: 'High', model: 'medium' },
+  { label: 'Very high', model: 'large-v3' },
+  { label: 'Fast large', model: 'distil-large-v3' },
 ]
 
 const BACKEND_LABELS: Record<string, string> = {

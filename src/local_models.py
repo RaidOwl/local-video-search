@@ -15,16 +15,16 @@ and text summarization (LLM), so vlm_model == llm_model.
 TIER_MODELS: dict = {
     "ollama": {
         "qwen": {
-            "low":   {"model": "qwen3-vl:4b",   "embed": "bge-m3"},
-            "mid":   {"model": "qwen3-vl:8b",   "embed": "bge-m3"},
-            "high":  {"model": "qwen3-vl:32b",  "embed": "bge-m3"},
-            "ultra": {"model": "qwen3-vl:235b", "embed": "bge-m3"},
+            "low":   {"model": "qwen3-vl:4b",   "embed": "qwen3-embedding:4b"},
+            "mid":   {"model": "qwen3-vl:8b",   "embed": "qwen3-embedding:4b"},
+            "high":  {"model": "qwen3-vl:32b",  "embed": "qwen3-embedding:4b"},
+            "ultra": {"model": "qwen3-vl:235b", "embed": "qwen3-embedding:4b"},
         },
         "gemma": {
-            "low":   {"model": "gemma3:4b",  "embed": "bge-m3"},
-            "mid":   {"model": "gemma3:12b", "embed": "bge-m3"},
-            "high":  {"model": "gemma3:27b", "embed": "bge-m3"},
-            "ultra": {"model": "gemma3:27b", "embed": "bge-m3"},
+            "low":   {"model": "gemma3:4b",  "embed": "qwen3-embedding:4b"},
+            "mid":   {"model": "gemma3:12b", "embed": "qwen3-embedding:4b"},
+            "high":  {"model": "gemma3:27b", "embed": "qwen3-embedding:4b"},
+            "ultra": {"model": "gemma3:27b", "embed": "qwen3-embedding:4b"},
         },
     },
     "vllm": {
@@ -32,19 +32,16 @@ TIER_MODELS: dict = {
         # Practical VRAM needed (with --gpu-memory-utilization 0.75):
         #   4B        → ~4 GB    low GPU
         #   8B        → ~9 GB    mid GPU
-        #   32B       → ~35 GB   high tier (≥40 GB)
-        #   235B-A22B → MoE, ultra tier (≥128 GB, e.g. DGX Spark GB10)
+        # Only low/mid are served locally. high (32B dense, ~67 GB) and ultra
+        # (235B MoE, ~471 GB) need a multi-GPU host, so they are external-endpoint
+        # only — use HARDWARE_TYPE=custom to point at your own server.
         "qwen": {
-            "low":   {"model": "Qwen/Qwen3-VL-4B-Instruct",        "embed": "BAAI/bge-m3"},
-            "mid":   {"model": "Qwen/Qwen3-VL-8B-Instruct",        "embed": "BAAI/bge-m3"},
-            "high":  {"model": "Qwen/Qwen3-VL-32B-Instruct",       "embed": "BAAI/bge-m3"},
-            "ultra": {"model": "Qwen/Qwen3-VL-235B-A22B-Instruct", "embed": "BAAI/bge-m3"},
+            "low":   {"model": "Qwen/Qwen3-VL-4B-Instruct", "embed": "Qwen/Qwen3-Embedding-4B"},
+            "mid":   {"model": "Qwen/Qwen3-VL-8B-Instruct", "embed": "Qwen/Qwen3-Embedding-4B"},
         },
         "gemma": {
-            "low":   {"model": "google/gemma-3-4b-it",  "embed": "BAAI/bge-m3"},
-            "mid":   {"model": "google/gemma-3-12b-it", "embed": "BAAI/bge-m3"},
-            "high":  {"model": "google/gemma-3-12b-it", "embed": "BAAI/bge-m3"},
-            "ultra": {"model": "google/gemma-3-27b-it", "embed": "BAAI/bge-m3"},
+            "low":   {"model": "google/gemma-3-4b-it",  "embed": "Qwen/Qwen3-Embedding-4B"},
+            "mid":   {"model": "google/gemma-3-12b-it", "embed": "Qwen/Qwen3-Embedding-4B"},
         },
     },
 }
@@ -72,7 +69,8 @@ BACKEND_URLS: dict = {
 
 # ---------------------------------------------------------------------------
 # Tier VRAM guidance (for UI display only)
-# vLLM tiers assume FP8 quantization (default). Ollama uses Q4 automatically.
+# vLLM tiers assume FP8 (native FP8 GPUs) or BF16 (everything else) — see
+# docker/vllm/serve.py. Ollama uses Q4 automatically.
 # ---------------------------------------------------------------------------
 TIER_VRAM: dict = {
     "low":   "≤8 GB",

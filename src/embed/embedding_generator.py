@@ -22,9 +22,9 @@ def _clean_for_embed(text: str) -> str:
 
 
 class EmbeddingGenerator:
-    """Generate embeddings via an OpenAI-compatible API (vLLM, Ollama, MLX, or cloud) with bge-m3."""
+    """Generate embeddings via an OpenAI-compatible API (vLLM, Ollama, MLX, or cloud) with Qwen3-Embedding-4B."""
     
-    def __init__(self, base_url: str, model: str = "BAAI/bge-m3"):
+    def __init__(self, base_url: str, model: str = "Qwen/Qwen3-Embedding-4B"):
         self.base_url = base_url.rstrip('/')
         self.model = model
     
@@ -59,7 +59,7 @@ class EmbeddingService:
         base_url: str,
         qdrant_url: str,
         collection_name: str = "video_frames",
-        model: str = "BAAI/bge-m3",
+        model: str = "Qwen/Qwen3-Embedding-4B",
         text_index=None,
     ):
         self.generator = EmbeddingGenerator(base_url, model=model)
@@ -81,7 +81,7 @@ class EmbeddingService:
     async def ensure_collection(self, vector_size: int = None):
         """Ensure the Qdrant collection exists and matches the embed model's dim.
 
-        The vector size is probed from the embed model itself (bge-m3 → 1024,
+        The vector size is probed from the embed model itself (Qwen3-Embedding-4B → 2560,
         nomic-embed-text → 768, etc.) rather than hardcoded, so any embedding
         backend works. If the collection already exists with a different size
         and is empty, it is recreated; if it has points, a warning is logged

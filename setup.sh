@@ -20,19 +20,17 @@ info()  { echo -e "${CYAN}[i]${NC} $*" >&2; }
 
 # ── Pick the largest model tier that fits ────────────────────────────────────
 # Mirrors the memory math in docker/vllm/serve.py: main model weights + ~8 GB KV
-# cache, plus ~3.5 GB for the embedder and headroom. Unified-memory systems keep
-# ~20% for the OS and stay on "mid" by default: their memory bandwidth makes the
-# 32B model several times slower per frame. Set VRAM_TIER=high in .env to opt in.
-# "ultra" (235B MoE) needs multiple GPUs and is never picked automatically.
+# cache, plus ~3.5 GB for the embedder and headroom. Only "low" and "mid" are
+# served locally — "high" (32B dense) and "ultra" (235B MoE) need a multi-GPU
+# host, so they are external-endpoint only (HARDWARE_TYPE=custom).
 pick_vllm_tier() {
     local mem_gb="$1" unified="$2" fp8="$3"
     local usable=$mem_gb
     (( unified )) && usable=$(( mem_gb * 8 / 10 ))
-    local need_high need_mid need_low
-    if (( fp8 )); then need_high=51; need_mid=24; need_low=12
-    else need_high=81; need_mid=32; need_low=16; fi
-    if (( ! unified && usable >= need_high )); then echo high
-    elif (( usable >= need_mid )); then echo mid
+    local need_mid need_low
+    if (( fp8 )); then need_mid=24; need_low=12
+    else need_mid=32; need_low=16; fi
+    if (( usable >= need_mid )); then echo mid
     else
         (( usable < need_low )) && warn "${mem_gb}GB GPU memory is below the ~${need_low}GB the smallest vLLM tier needs; consider HARDWARE_TYPE=cpu (Ollama) or custom."
         echo low
@@ -77,10 +75,9 @@ detect_hardware() {
         local mem_gb=$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))
         info "Detected macOS: $chip (${mem_gb}GB unified memory)"
 
-        # qwen3-vl:235b is ~143 GB at Q4, so "ultra" needs a 192 GB+ machine.
-        if [[ $mem_gb -ge 192 ]]; then vram_tier="ultra"
-        elif [[ $mem_gb -ge 48 ]]; then vram_tier="high"
-        elif [[ $mem_gb -ge 16 ]]; then vram_tier="mid"
+        # Only "low" and "mid" are served locally; "high"/"ultra" are
+        # external-endpoint only (HARDWARE_TYPE=custom).
+        if [[ $mem_gb -ge 16 ]]; then vram_tier="mid"
         else vram_tier="low"; fi
 
         # Check Ollama
@@ -185,9 +182,9 @@ detect_hardware() {
             case "$gfx_name" in
                 gfx94*|gfx95*)
                     fp8=1
-                    extra_env+=("VLLM_ROCM_IMAGE=rocm/vllm:rocm7.14.1_cdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0") ;;
+                    extra_env+=("VLLM_ROCM_IMAGE=rocm/vllm:rocm10.1.0_ubuntu24.04_py3.14-pytorch_2.13.0_vllm-0.29.0") ;;
                 gfx11*|gfx12*)
-                    extra_env+=("VLLM_ROCM_IMAGE=rocm/vllm:rocm7.14.1_rdna_ubuntu24.04_py3.14_pytorch_2.11_vllm_0.23.0") ;;
+                    extra_env+=("VLLM_ROCM_IMAGE=rocm/vllm:rocm10.1.0_ubuntu24.04_py3.14-pytorch_2.13.0_vllm-0.29.0") ;;
                 *)
                     warn "AMD $gfx_name is not supported by the ROCm vLLM images (need RDNA 3+ or MI300+)."
                     hw_type=""
@@ -355,22 +352,18 @@ check_video_dirs() {
 # ── Pull models for Apple ──────────────────────────────────────────────────────
 pull_apple_models() {
     local tier="$1" family="$2"
-    local embed_model="bge-m3"
+    local embed_model="qwen3-embedding:4b"
     local main_model=""
 
     if [[ "$family" == "gemma" ]]; then
         case "$tier" in
             low)   main_model="gemma3:4b" ;;
-            mid)   main_model="gemma3:12b" ;;
-            high)  main_model="gemma3:27b" ;;
-            ultra) main_model="gemma3:27b" ;;
+            *)     main_model="gemma3:12b" ;;
         esac
     else
         case "$tier" in
             low)   main_model="qwen3-vl:4b" ;;
-            mid)   main_model="qwen3-vl:8b" ;;
-            high)  main_model="qwen3-vl:32b" ;;
-            ultra) main_model="qwen3-vl:235b" ;;
+            *)     main_model="qwen3-vl:8b" ;;
         esac
     fi
 

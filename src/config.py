@@ -31,10 +31,12 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
 
     # Model names (used in custom mode or as overrides)
-    embed_model: str = "BAAI/bge-m3"
+    embed_model: str = "Qwen/Qwen3-Embedding-4B"
     vlm_model: str = "llava-hf/llava-v1.6-vicuna-7b-hf"
     llm_model: str = "Qwen/Qwen3-8B"
-    whisper_model: str = "base"
+    whisper_model: str = "medium"
+    whisper_device: str = "cpu"                   # cpu | cuda | auto
+    whisper_compute_type: str = "int8"            # int8 (cpu) | float16 (cuda) | auto
     whisper_beam_size: int = 1                    # 1 = greedy (fast); higher is slower for marginal gain
     whisper_condition_on_previous: bool = False   # False avoids hallucination loops on silence/room noise
 
