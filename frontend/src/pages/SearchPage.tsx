@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api, SearchResult } from '../services/api'
+import { api, apiErrorMessage, SearchResult } from '../services/api'
 import { fmt } from '../utils'
 import { Mic, Film, SlidersHorizontal, Pencil } from 'lucide-react'
 
@@ -61,6 +61,7 @@ export default function SearchPage() {
   const [searchVideo, setSearchVideo] = useState(() => sessionStorage.getItem(SS_SEARCH_VIDEO) !== '0')
   const [searchAudio, setSearchAudio] = useState(() => sessionStorage.getItem(SS_SEARCH_AUDIO) !== '0')
   const [loading, setLoading] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
   const [searched, setSearched] = useState(() => !!sessionStorage.getItem(SS_RESULTS))
   const [refining, setRefining] = useState(false)
   const [refineQuery, setRefineQuery] = useState('')
@@ -130,7 +131,7 @@ export default function SearchPage() {
   const handleSearch = async (e?: React.FormEvent) => {
     e?.preventDefault()
     if (!query.trim() && activeFilterCount === 0) return
-    setLoading(true); setSearched(true)
+    setLoading(true); setSearched(true); setSearchError(null)
     try {
       const res = (await api.search(query, undefined, REL_TIERS[tierIdx].min, sources, {
         media_types: filters.mediaTypes.join(','),
@@ -143,14 +144,14 @@ export default function SearchPage() {
       sessionStorage.setItem(SS_QUERY, query)
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
       sessionStorage.setItem(SS_TIER, String(tierIdx))
-    } catch { /* ignore */ }
+    } catch (error: unknown) { setSearchError(apiErrorMessage(error, 'Search failed. Check the model services and try again.')) }
     finally { setLoading(false) }
   }
 
   const handleRefine = async () => {
     if (!refineQuery.trim()) return
     const combined = `${resultQuery} ${refineQuery.trim()}`
-    setRefineLoading(true)
+    setRefineLoading(true); setSearchError(null)
     try {
       const res = (await api.search(combined, undefined, REL_TIERS[tierIdx].min, sources, {
         media_types: filters.mediaTypes.join(','),
@@ -164,7 +165,7 @@ export default function SearchPage() {
       sessionStorage.setItem(SS_RESULTS, JSON.stringify(res))
       setRefineQuery('')
       setRefining(false)
-    } catch { /* ignore */ }
+    } catch (error: unknown) { setSearchError(apiErrorMessage(error, 'Search failed. Check the model services and try again.')) }
     finally { setRefineLoading(false) }
   }
 
@@ -231,6 +232,8 @@ export default function SearchPage() {
             {loading ? <span className="spinner" /> : 'Search'}
           </button>
         </form>
+
+        {searchError && <p role="alert" style={{ color: 'var(--error)', fontSize: '0.85rem' }}>{searchError}</p>}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem', color: 'var(--muted)', fontSize: '0.82rem' }}>
           <span style={{ flexShrink: 0 }}>Min relevance</span>

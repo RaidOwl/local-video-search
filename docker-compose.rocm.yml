@@ -1,6 +1,10 @@
-# AMD GPU (ROCm) override. Use with:
+# AMD GPU (ROCm) override for HARDWARE_TYPE=amd and amd-vllm. Use with:
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml   (setup.sh sets this)
 # Requires Docker Compose >= 2.24.0 for the !reset merge tag.
+#
+# It adds GPU video decode (VAAPI) to the API and swaps the vLLM services to the
+# ROCm image (amd-vllm only). The default Ollama service (ollama-amd) is fully
+# defined in docker-compose.yml and needs nothing from this file.
 #
 # VLLM_ROCM_IMAGE is set by setup.sh from the GPU's gfx target. The rocm10.x
 # images are unified (one tag covers both families):

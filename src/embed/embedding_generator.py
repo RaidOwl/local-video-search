@@ -1,7 +1,12 @@
 import httpx
+import hashlib
 from typing import List
 import uuid
 import re
+
+
+class EmbeddingIndexError(Exception):
+    """The configured embedder cannot safely use the existing vector index."""
 
 
 def _clean_for_embed(text: str) -> str:
@@ -61,12 +66,23 @@ class EmbeddingService:
         collection_name: str = "video_frames",
         model: str = "Qwen/Qwen3-Embedding-4B",
         text_index=None,
+        backend: str = "custom",
+        legacy_index_model: str = "",
     ):
         self.generator = EmbeddingGenerator(base_url, model=model)
         self.qdrant_url = qdrant_url
         self.collection_name = collection_name
+        self.metadata_collection = f"{collection_name}__embedding_metadata"
+        self.index_identity = {
+            "model": model,
+            "backend": "ollama" if backend == "ollama-native" else backend,
+        }
+        if backend == "custom":
+            self.index_identity["endpoint_hash"] = hashlib.sha256(
+                self.generator.base_url.encode("utf-8")
+            ).hexdigest()
+        self.legacy_index_model = legacy_index_model.strip()
         self._qdrant_client = None
-        self._collection_ready = False
         # Optional lexical (BM25/FTS5) mirror kept in sync with Qdrant so hybrid
         # search has a sparse arm. Duck-typed Database; None disables the mirror.
         self.text_index = text_index
@@ -77,15 +93,72 @@ class EmbeddingService:
             from qdrant_client import QdrantClient
             self._qdrant_client = QdrantClient(url=self.qdrant_url)
         return self._qdrant_client
-    
+
+    def _write_index_identity(self, collections: set[str]) -> None:
+        from qdrant_client.models import Distance, PointStruct, VectorParams
+
+        if self.metadata_collection not in collections:
+            self.qdrant_client.create_collection(
+                collection_name=self.metadata_collection,
+                vectors_config=VectorParams(size=1, distance=Distance.DOT),
+            )
+        self.qdrant_client.upsert(
+            collection_name=self.metadata_collection,
+            points=[PointStruct(id=0, vector=[1.0], payload={"identity": self.index_identity})],
+            wait=True,
+        )
+
+    def assert_index_compatible(self, vector_size: int | None = None) -> None:
+        """Reject unknown or incompatible populated collections without modifying them."""
+        client = self.qdrant_client
+        collections = {c.name for c in client.get_collections().collections}
+        if self.collection_name not in collections:
+            return
+        count = client.count(self.collection_name, exact=True).count
+        if count == 0:
+            return
+        if vector_size is not None:
+            current = client.get_collection(self.collection_name).config.params.vectors.size
+            if current != vector_size:
+                raise EmbeddingIndexError(
+                    f"The existing embedding index has {current} dimensions, but the configured "
+                    f"model produces {vector_size}. Its data was not changed. Switch back to the "
+                    "original model or create a separate library with APP_DATA_DIR and re-analyze "
+                    "your videos; see the README's embedding migration instructions."
+                )
+        records = (
+            client.retrieve(self.metadata_collection, ids=[0], with_payload=True, with_vectors=False)
+            if self.metadata_collection in collections else []
+        )
+        identity = (records[0].payload or {}).get("identity") if records else None
+        if identity is None:
+            if self.legacy_index_model == self.generator.model:
+                self._write_index_identity(collections)
+                print(f"[embedding index] explicitly adopted legacy index for {self.generator.model}", flush=True)
+                return
+            raise EmbeddingIndexError(
+                "The existing embedding index has no recorded model identity. Its data was not "
+                "changed. To keep it, verify the original model and backend and set "
+                "LEGACY_INDEX_EMBED_MODEL to that model; otherwise create a separate library "
+                "with APP_DATA_DIR. See the README's embedding migration instructions."
+            )
+        if identity != self.index_identity:
+            old_model = identity.get("model", "unknown") if isinstance(identity, dict) else "unknown"
+            raise EmbeddingIndexError(
+                f"The existing embedding index belongs to '{old_model}' and a different model "
+                "or backend is configured. Its data was not changed. Switch back to the original "
+                "model/backend or create a separate library with APP_DATA_DIR and re-analyze "
+                "your videos; see the README's embedding migration instructions."
+            )
+
     async def ensure_collection(self, vector_size: int = None):
         """Ensure the Qdrant collection exists and matches the embed model's dim.
 
         The vector size is probed from the embed model itself (Qwen3-Embedding-4B → 2560,
         nomic-embed-text → 768, etc.) rather than hardcoded, so any embedding
         backend works. If the collection already exists with a different size
-        and is empty, it is recreated; if it has points, a warning is logged
-        and the operator must re-analyze to rebuild the index at the new dim.
+        and is empty, it is recreated. A populated incompatible collection is
+        never modified.
         """
         from qdrant_client.models import Distance, VectorParams
 
@@ -115,11 +188,13 @@ class EmbeddingService:
 
         # Collection exists — reconcile dimension if we know the model's size.
         if vector_size is None:
+            self.assert_index_compatible()
             return
         current = client.get_collection(self.collection_name).config.params.vectors.size
         if current == vector_size:
+            self.assert_index_compatible(vector_size)
             return
-        count = client.count(self.collection_name).count
+        count = client.count(self.collection_name, exact=True).count
         if count == 0:
             client.delete_collection(self.collection_name)
             client.create_collection(
@@ -128,11 +203,7 @@ class EmbeddingService:
             )
             print(f"[ensure_collection] recreated '{self.collection_name}' {current}→{vector_size} dim")
         else:
-            print(
-                f"[ensure_collection] WARNING: '{self.collection_name}' is {current}-dim but the "
-                f"embedding model emits {vector_size}-dim and holds {count} points. The embed model "
-                f"changed — re-analyze your library (or clear the collection) to rebuild at {vector_size} dim."
-            )
+            self.assert_index_compatible(vector_size)
     
     async def _ensure_collection_for(self, vector_size: int) -> None:
         """Create the collection on first write if startup couldn't size it.
@@ -141,13 +212,10 @@ class EmbeddingService:
         downloaded its model, so the startup probe in ensure_collection() fails
         and the collection doesn't exist yet when the first video is analyzed.
         """
-        if self._collection_ready:
-            return
-        existing = {c.name for c in self.qdrant_client.get_collections().collections}
-        if self.collection_name not in existing:
-            await self.ensure_collection(vector_size=vector_size)
-            print(f"[ensure_collection] created '{self.collection_name}' ({vector_size}-dim) on first write")
-        self._collection_ready = True
+        await self.ensure_collection(vector_size=vector_size)
+        if self.qdrant_client.count(self.collection_name, exact=True).count == 0:
+            collections = {c.name for c in self.qdrant_client.get_collections().collections}
+            self._write_index_identity(collections)
 
     async def index_frame(
         self,
@@ -159,6 +227,7 @@ class EmbeddingService:
         fused: bool = False,
     ):
         """Index a single frame with its embedding."""
+        self.assert_index_compatible()
         # Embed the caption text; fall back to frame path if no caption
         text_to_embed = caption if caption else frame_path
         embedding = await self.generator.embed_text(_clean_for_embed(text_to_embed))
@@ -243,6 +312,7 @@ class EmbeddingService:
         """Batch-upsert raw points (id + vector + payload) from a library export."""
         if not points:
             return
+        self.assert_index_compatible(len(points[0]["vector"]))
         from qdrant_client.models import PointStruct
         structs = [
             PointStruct(id=p["id"], vector=p["vector"], payload=p.get("payload") or {})
@@ -256,6 +326,7 @@ class EmbeddingService:
 
     def delete_video_points(self, video_id: str):
         """Remove all Qdrant points for a video (used before an overwrite-import)."""
+        self.assert_index_compatible()
         from qdrant_client.models import Filter, FieldCondition, MatchValue
         self.qdrant_client.delete(
             collection_name=self.collection_name,
@@ -273,11 +344,13 @@ class EmbeddingService:
         source_intent: str = 'mixed'
     ) -> List[dict]:
         """Search for similar frames, optionally filtered by source type."""
+        self.assert_index_compatible()
         embedding = await self.generator.embed_text(_clean_for_embed(query))
 
         if not embedding:
             return []
 
+        self.assert_index_compatible(len(embedding))
         from qdrant_client.models import Filter, FieldCondition, MatchValue
 
         # Filter by source intent *inside* the query so the candidate pool isn't

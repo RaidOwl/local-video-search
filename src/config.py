@@ -4,18 +4,21 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Hardware platform — determines which AI backend is used
-    # nvidia → vllm | amd → vllm | apple/native → ollama-native (Ollama on the host)
-    # cpu → ollama (in Docker) | custom → custom
+    # nvidia / amd / cpu → ollama (in Docker, on the GPU or CPU)
+    # nvidia-vllm / amd-vllm → vllm (opt-in) | apple/native → ollama-native (Ollama on the host)
+    # custom → custom
     hardware_type: str = "custom"
-    vram_tier: str = "mid"       # low | mid | high | ultra
+    vram_tier: str = "mid"       # low | mid
     model_family: str = "qwen"   # qwen | gemma
 
     @property
     def ai_backend(self) -> str:
         """Derive the AI backend from hardware_type."""
         mapping = {
-            "nvidia": "vllm",
-            "amd": "vllm",
+            "nvidia": "ollama",
+            "amd": "ollama",
+            "nvidia-vllm": "vllm",
+            "amd-vllm": "vllm",
             "apple": "ollama-native",
             "native": "ollama-native",
             "cpu": "ollama",
@@ -29,6 +32,7 @@ class Settings(BaseSettings):
     vlm_url: str = "http://localhost:8002"
     llm_url: str = "http://localhost:8000"
     qdrant_url: str = "http://localhost:6333"
+    legacy_index_embed_model: str = ""
 
     # Model names (used in custom mode or as overrides)
     embed_model: str = "Qwen/Qwen3-Embedding-4B"
@@ -63,6 +67,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
         protected_namespaces = ('settings_',)
 
 

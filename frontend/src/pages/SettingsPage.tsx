@@ -1,30 +1,29 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { api, AppSettings, QdrantHealth, Video, HardwareStatus } from '../services/api'
+import { api, apiErrorMessage, AppSettings, QdrantHealth, Video, HardwareStatus, ModelStatus } from '../services/api'
 import { RotateCcw, Check, AlertTriangle, Download, Upload, Cpu, Monitor, Zap } from 'lucide-react'
-
-type ModelStatus = { name: string; url: string; ok: boolean; models: string[] }
 
 const URL_GROUPS: Array<{
   urlKey: keyof AppSettings
   modelKey: keyof AppSettings
+  statusName: string
   label: string
   urlDesc: string
   modelDesc: string
 }> = [
   {
-    urlKey: 'embed_url', modelKey: 'embed_model',
+    urlKey: 'embed_url', modelKey: 'embed_model', statusName: 'Embeddings',
     label: 'Embeddings',
     urlDesc: 'Endpoint serving the embedding model (vLLM, Ollama, MLX, or cloud)',
     modelDesc: 'Model ID used for embedding captions and queries',
   },
   {
-    urlKey: 'vlm_url', modelKey: 'vlm_model',
+    urlKey: 'vlm_url', modelKey: 'vlm_model', statusName: 'Vision AI',
     label: 'Vision / VLM',
     urlDesc: 'Endpoint serving the visual captioning model (vLLM, Ollama, MLX, or cloud)',
     modelDesc: 'Model ID used for captioning video frames',
   },
   {
-    urlKey: 'llm_url', modelKey: 'llm_model',
+    urlKey: 'llm_url', modelKey: 'llm_model', statusName: 'Summarization',
     label: 'LLM / Summarizer',
     urlDesc: 'Endpoint serving the text LLM for summarization (vLLM, Ollama, MLX, or cloud)',
     modelDesc: 'Model ID used for generating video summaries',
@@ -57,8 +56,10 @@ function BackendBanner({ form, hwStatus }: { form: AppSettings; hwStatus: Hardwa
 
   const getHwIcon = (type: string) => {
     switch (type) {
-      case 'nvidia': return <Zap size={14} style={{ verticalAlign: 'middle' }} />
-      case 'amd': return <Monitor size={14} style={{ verticalAlign: 'middle' }} />
+      case 'nvidia':
+      case 'nvidia-vllm': return <Zap size={14} style={{ verticalAlign: 'middle' }} />
+      case 'amd':
+      case 'amd-vllm': return <Monitor size={14} style={{ verticalAlign: 'middle' }} />
       case 'apple':
       case 'native': return <Monitor size={14} style={{ verticalAlign: 'middle' }} />
       case 'cpu': return <Cpu size={14} style={{ verticalAlign: 'middle' }} />
@@ -87,9 +88,10 @@ function BackendBanner({ form, hwStatus }: { form: AppSettings; hwStatus: Hardwa
         <div style={{ fontSize: '0.75rem', color: 'var(--muted)', lineHeight: 1.7, marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center' }}>
             <span><strong>Platform:</strong> {hwStatus.platform}</span>
-            {hwStatus.gpus && hwStatus.gpus.length > 0 && (
+            {Array.isArray(hwStatus.gpus) && hwStatus.gpus.length > 0 && (
               <span><strong>GPUs:</strong> {hwStatus.gpus.map(g => `${g.name} (${g.memory})`).join(', ')}</span>
             )}
+            {hwStatus.gpu_error && <span>{hwStatus.gpu_error}</span>}
             {hwStatus.rocm_devices && (
               <span><strong>ROCm:</strong> KFD {hwStatus.rocm_devices.kfd ? '✓' : '✗'} | DRI {hwStatus.rocm_devices.dri ? '✓' : '✗'}</span>
             )}
@@ -112,7 +114,7 @@ function BackendBanner({ form, hwStatus }: { form: AppSettings; hwStatus: Hardwa
       )}
       {isNative && !isWarning && (
         <p style={{ margin: '0.3rem 0 0', fontSize: '0.78rem', color: 'var(--muted)' }}>
-          Ollama is running on your Mac host. Metal/MLX acceleration active.
+          Ollama runs on the host. GPU acceleration depends on the platform and Ollama configuration.
         </p>
       )}
       {backend === 'custom' && (
@@ -156,8 +158,11 @@ export default function SettingsPage() {
   }
 
   useEffect(() => {
-    api.getSettings().then(setForm).catch(() => {})
-    api.modelStatus().then(d => setStatuses(d.services)).catch(() => setStatuses([]))
+    api.getSettings().then(setForm).catch(e => setError(apiErrorMessage(e, 'Failed to load settings')))
+    api.modelStatus().then(d => setStatuses(d.services)).catch(e => {
+      setStatuses([])
+      setError(apiErrorMessage(e, 'Failed to check model availability'))
+    })
     api.hardwareStatus().then(setHwStatus).catch(() => setHwStatus(null))
   }, [])
 
@@ -168,11 +173,12 @@ export default function SettingsPage() {
     if (!form) return
     setSaving(true); setSaved(false); setError(null)
     try {
-      setForm(await api.updateSettings(form))
+      await api.updateSettings(form)
+      setForm(await api.getSettings())
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
-    } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Failed to save settings')
+    } catch (e: unknown) {
+      setError(apiErrorMessage(e, 'Failed to save settings'))
     } finally {
       setSaving(false)
     }
@@ -181,26 +187,26 @@ export default function SettingsPage() {
   const handleProbe = async () => {
     setProbing(true); setStatuses(null)
     try { setStatuses((await api.modelStatus()).services) }
+    catch (e: unknown) { setError(apiErrorMessage(e, 'Failed to check model availability')) }
     finally { setProbing(false) }
   }
 
   if (!form) return (
     <div className="page" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', justifyContent: 'center', marginTop: '4rem', color: 'var(--muted)' }}>
-      <span className="spinner" /> Loading…
+      {error ? <span role="alert">{error}</span> : <><span className="spinner" /> Loading…</>}
     </div>
   )
 
-  const statusByUrl: Record<string, ModelStatus> = {}
-  if (statuses) statuses.forEach(s => { statusByUrl[s.url] = s })
+  const statusByName = new Map(statuses?.map(s => [s.name, s]))
 
   const serviceStatus = statuses && statuses.length > 0 ? (
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
       {statuses.map(svc => (
-        <div key={svc.name} title={svc.ok ? svc.models.join(', ') : `Unreachable: ${svc.url}`}
+        <div key={svc.name} title={svc.ok ? svc.models.join(', ') : svc.reason ?? `Unreachable: ${svc.url}`}
           style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem', color: svc.ok ? 'var(--muted)' : 'var(--error)', cursor: 'default' }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: svc.ok ? 'var(--success)' : 'var(--error)', display: 'inline-block', flexShrink: 0 }} />
           {svc.name}
-          {!svc.ok && <span style={{ fontSize: '0.7rem' }}>offline</span>}
+          {!svc.ok && <span style={{ fontSize: '0.7rem' }}>unavailable</span>}
         </div>
       ))}
       <button className="ghost" onClick={handleProbe} disabled={probing} style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem' }}>
@@ -228,14 +234,19 @@ export default function SettingsPage() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              {URL_GROUPS.map(({ urlKey, modelKey, label, urlDesc, modelDesc }) => {
-                const st = statusByUrl[form[urlKey] as string]
+              {URL_GROUPS.map(({ urlKey, modelKey, statusName, label, urlDesc, modelDesc }) => {
+                const status = statusByName.get(statusName)
+                const st = status?.url === form[urlKey] ? status : undefined
                 const probedModels = st?.models ?? []
+                const available = !!st && probedModels.includes(form[modelKey] as string)
+                const reason = available ? undefined : st?.ok
+                  ? `Model '${form[modelKey]}' is not available at ${st.url}`
+                  : st?.reason ?? undefined
                 return (
                   <div key={urlKey} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
                       <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{label}</span>
-                      {st && <span className={`badge ${st.ok ? 'analyzed' : 'error'}`}><span className="dot" />{st.ok ? 'Connected' : 'Unreachable'}</span>}
+                      {st && <span title={reason} className={`badge ${available ? 'analyzed' : 'error'}`}><span className="dot" />{available ? 'Connected' : 'Unavailable'}</span>}
                     </div>
                     <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>Endpoint URL</label>
                     <input type="url" value={form[urlKey] as string} onChange={e => set(urlKey, e.target.value)}
@@ -491,12 +502,19 @@ export default function SettingsPage() {
                 <option value="vulkan">Vulkan</option>
               </select>
               <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--muted)' }}>
-                {form.ffmpeg_hwaccel === 'auto' && form.ffmpeg_hwaccel_resolved
+                {form.ffmpeg_hwaccel === 'auto' && form.ffmpeg_hwaccel_resolved === 'off'
+                  ? 'No usable GPU decoder detected. Using software decode.'
+                  : form.ffmpeg_hwaccel === 'auto' && form.ffmpeg_hwaccel_resolved
                   ? <>Auto-detected: <strong>{form.ffmpeg_hwaccel_resolved}</strong> — GPU decode for scene detection & frame extraction.</>
                   : form.ffmpeg_hwaccel === 'off'
                     ? 'Software decode only. GPU acceleration can speed up scene detection on long videos.'
                     : 'GPU-accelerated decode. Fallback to CPU if the codec is not supported by the accelerator.'}
               </p>
+              {form.ffmpeg_hwaccel_warning && (
+                <p role="status" style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--error)' }}>
+                  {form.ffmpeg_hwaccel_warning}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -629,4 +647,3 @@ function HiddenVideos() {
     </div>
   )
 }
-

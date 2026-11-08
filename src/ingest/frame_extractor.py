@@ -2,7 +2,8 @@ import subprocess
 import os
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from threading import Lock
+from typing import Callable, List, Optional, Tuple
 import asyncio
 
 
@@ -10,7 +11,7 @@ import asyncio
 # Each tuple is (name, display_label, description).
 HWACCEL_OPTIONS: list[tuple[str, str, str]] = [
     ("off",    "Off (CPU only)",         "Standard software decode — works everywhere."),
-    ("auto",   "Auto-detect",            "Pick the best available GPU decoder (recommended)."),
+    ("auto",   "Auto-detect",            "Use an available CUDA or VAAPI device, otherwise software decode."),
     ("cuda",   "NVIDIA CUDA / NVDEC",    "NVIDIA GPUs — uses cuvid decoders. Fastest on DGX Spark / GB10."),
     ("vaapi",  "VAAPI (AMD / Intel)",    "Linux VAAPI — for AMD GPUs (Radeon, RDNA, ROCm)."),
     ("drm",    "DRM (Direct Rendering)", "Linux DRM — lightweight kernel-level decode."),
@@ -18,54 +19,82 @@ HWACCEL_OPTIONS: list[tuple[str, str, str]] = [
 ]
 
 
-def _probe_hwaccel() -> str:
-    """Auto-detect the best available FFmpeg hardware acceleration backend.
+def _vaapi_devices() -> list[str]:
+    try:
+        return [
+            os.path.join("/dev/dri", name)
+            for name in sorted(os.listdir("/dev/dri"))
+            if name.startswith("renderD")
+        ]
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        print(f"[FFmpeg] Could not inspect VAAPI devices: {e}", flush=True)
+        return []
 
-    Runs ``ffmpeg -hwaccels`` once and returns the name of the most suitable
-    backend, or ``"off"`` if none is found.
 
-    The detection prefers backends backed by real hardware. `vaapi` is preferred
-    over `cuda` when an AMD GPU is present (/dev/dri/renderD* exists), because
-    some ffmpeg builds report ``cuda`` from compile-time support even without an
-    NVIDIA GPU — on AMD systems that would cause decode failures.
-    """
+def _device_usable(device: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-init_hw_device", device,
+                "-f", "lavfi", "-i", "color=c=black:s=16x16:r=1",
+                "-frames:v", "1", "-f", "null", "-",
+            ],
+            capture_output=True, text=True, errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[FFmpeg] Could not probe {device}: {e}", flush=True)
+        return False
+    if result.returncode:
+        print(f"[FFmpeg] {device} unavailable: {result.stderr.strip()}", flush=True)
+        return False
+    return True
+
+
+def _probe_hwaccel() -> tuple[str, Optional[str]]:
+    """Find a usable CUDA or VAAPI device in the API's own environment."""
     try:
         result = subprocess.run(
             ["ffmpeg", "-hide_banner", "-hwaccels"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, errors="replace", timeout=10,
         )
-    except Exception:
-        return "off"
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[FFmpeg] Could not list hardware accelerators: {e}", flush=True)
+        return "off", None
+    if result.returncode:
+        print(f"[FFmpeg] Could not list hardware accelerators: {result.stderr.strip()}", flush=True)
+        return "off", None
 
     available = {line.strip() for line in result.stdout.splitlines()
                  if line.strip() and not line.startswith("Hardware")}
-
-    # On AMD systems: prefer vaapi when the /dev/dri render node is present.
-    has_amd_device = os.path.isdir("/dev/dri") and any(
-        f.startswith("renderD") for f in os.listdir("/dev/dri")
-    )
-    if has_amd_device and "vaapi" in available:
-        return "vaapi"
-
-    # Preference order: cuda > vaapi (no AMD device) > drm > vulkan > vdpau
-    for candidate in ("cuda", "vaapi", "drm", "vulkan", "vdpau"):
-        if candidate in available:
-            return candidate
-    return "off"
+    has_cuda_device = any(os.path.exists(path) for path in ("/dev/nvidiactl", "/dev/nvidia0", "/dev/dxg"))
+    if "cuda" in available and has_cuda_device and _device_usable("cuda=lvs:0"):
+        return "cuda", None
+    if "vaapi" in available:
+        for device in _vaapi_devices():
+            if _device_usable(f"vaapi=lvs:{device}"):
+                return "vaapi", device
+    return "off", None
 
 
-# Cache the probe result so we only pay the subprocess cost once.
-_HWACCEL_CACHE: Optional[str] = None
+_HWACCEL_CACHE: Optional[tuple[str, Optional[str]]] = None
+_HWACCEL_LOCK = Lock()
+
+
+def _auto_hwaccel() -> tuple[str, Optional[str]]:
+    global _HWACCEL_CACHE
+    if _HWACCEL_CACHE is None:
+        with _HWACCEL_LOCK:
+            if _HWACCEL_CACHE is None:
+                _HWACCEL_CACHE = _probe_hwaccel()
+    return _HWACCEL_CACHE
 
 
 def _resolve_hwaccel(hwaccel: str) -> str:
-    """Resolve ``auto`` to a concrete backend, cache, and return it."""
-    global _HWACCEL_CACHE
-    if hwaccel == "auto":
-        if _HWACCEL_CACHE is None:
-            _HWACCEL_CACHE = _probe_hwaccel()
-        return _HWACCEL_CACHE
-    return hwaccel
+    """Resolve ``auto`` to a concrete backend."""
+    return _auto_hwaccel()[0] if hwaccel == "auto" else hwaccel
 
 
 def _hwaccel_decode_args(hwaccel: str) -> list[str]:
@@ -81,14 +110,8 @@ def _hwaccel_decode_args(hwaccel: str) -> list[str]:
         return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
 
     if resolved == "vaapi":
-        # Find the first render node
-        dri_path = "/dev/dri"
-        render = None
-        if os.path.isdir(dri_path):
-            for entry in sorted(os.listdir(dri_path)):
-                if entry.startswith("renderD"):
-                    render = os.path.join(dri_path, entry)
-                    break
+        devices = _vaapi_devices() if hwaccel != "auto" else []
+        render = _auto_hwaccel()[1] if hwaccel == "auto" else next(iter(devices), None)
         args = ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]
         if render:
             args.extend(["-vaapi_device", render])
@@ -143,17 +166,55 @@ class FrameExtractor:
         self.min_gap = min_gap
         self.threads = max(0, int(threads))
         self.hwaccel = hwaccel
+        self._use_software_decode = False
+        self.hwaccel_warning: Optional[str] = None
 
     def _threads_args(self) -> List[str]:
         return ['-threads', str(self.threads)] if self.threads > 0 else []
 
-    def _hwaccel_decode(self) -> List[str]:
-        """Return ``-hwaccel`` and related flags for GPU-accelerated decode."""
-        return _hwaccel_decode_args(self.hwaccel)
+    def resolved_hwaccel(self) -> str:
+        return "off" if self._use_software_decode else _resolve_hwaccel(self.hwaccel)
 
-    def _hwaccel_vf(self, inner_filter: str) -> str:
-        """Wrap a video filter with CUDA/VAAPI frames → CPU transfer."""
-        return _hwaccel_frame_filter(self.hwaccel, inner_filter)
+    def _run_decode(
+        self, command: Callable[[str], list[str]], *, timeout: Optional[float] = None,
+    ) -> subprocess.CompletedProcess[str]:
+        mode = "off" if self._use_software_decode else self.hwaccel
+        resolved = _resolve_hwaccel(mode)
+        result = subprocess.run(command(mode), capture_output=True, text=True, errors="replace", timeout=timeout)
+        if result.returncode and resolved not in ("off", "vdpau"):
+            print(
+                f"[FFmpeg] {resolved} decoding failed; retrying in software: "
+                f"{result.stderr.strip()[-1000:]}",
+                flush=True,
+            )
+            result = subprocess.run(command("off"), capture_output=True, text=True, errors="replace", timeout=timeout)
+            if result.returncode == 0:
+                self._use_software_decode = True
+                self.hwaccel_warning = (
+                    f"{resolved.upper()} decoding failed; using software decoding. See API logs for details."
+                )
+            else:
+                self.hwaccel_warning = (
+                    f"{resolved.upper()} decoding and its software fallback failed. See API logs for details."
+                )
+        if result.returncode:
+            print(f"[FFmpeg] Decoding failed: {result.stderr.strip()[-1000:]}", flush=True)
+        return result
+
+    def _frame_command(
+        self, video_path: str | Path, timestamp: float, output_path: str | Path, mode: str,
+    ) -> list[str]:
+        return [
+            'ffmpeg', '-y',
+            *self._threads_args(),
+            *_hwaccel_decode_args(mode),
+            '-ss', str(timestamp),
+            '-i', str(video_path),
+            '-vframes', '1',
+            '-q:v', '2',
+            '-vf', _hwaccel_frame_filter(mode, 'scale=448:-1'),
+            str(output_path),
+        ]
 
     def extract_frames(
         self,
@@ -187,19 +248,9 @@ class FrameExtractor:
         for i, timestamp in enumerate(timestamps):
             output_path = output_dir / f"{prefix}_{i:04d}.jpg"
 
-            cmd = [
-                'ffmpeg', '-y',
-                *self._threads_args(),
-                *self._hwaccel_decode(),
-                '-ss', str(timestamp),
-                '-i', str(video_path),
-                '-vframes', '1',
-                '-q:v', '2',
-                '-vf', self._hwaccel_vf('scale=448:-1'),
-                str(output_path)
-            ]
-
-            result = subprocess.run(cmd, capture_output=True)
+            result = self._run_decode(
+                lambda mode: self._frame_command(video_path, timestamp, output_path, mode)
+            )
             if result.returncode == 0 and output_path.exists():
                 frames.append((str(output_path), round(timestamp, 2)))
 
@@ -239,22 +290,19 @@ class FrameExtractor:
         detection filter. Degrades gracefully: any failure/timeout returns an
         empty list, leaving the regular grid as the sole source of frames.
         """
-        vf = self._hwaccel_vf(f"select='gt(scene,{self.scene_threshold})',showinfo")
-        cmd = [
-            'ffmpeg', '-hide_banner',
-            *self._threads_args(),
-            *self._hwaccel_decode(),
-            '-i', str(video_path),
-            '-vf', vf,
-            '-an', '-f', 'null', '-'
-        ]
+        def command(mode: str) -> list[str]:
+            return [
+                'ffmpeg', '-hide_banner',
+                *self._threads_args(),
+                *_hwaccel_decode_args(mode),
+                '-i', str(video_path),
+                '-vf', _hwaccel_frame_filter(mode, f"select='gt(scene,{self.scene_threshold})',showinfo"),
+                '-an', '-f', 'null', '-',
+            ]
         try:
-            # Scene detection decodes the whole stream; allow generous headroom.
-            result = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=max(120.0, duration * 3.0)
-            )
-        except Exception:
+            result = self._run_decode(command, timeout=max(120.0, duration * 3.0))
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"[FFmpeg] Scene detection failed: {e}", flush=True)
             return []
 
         cuts: List[float] = []
@@ -274,19 +322,9 @@ class FrameExtractor:
         output_path: str
     ) -> Optional[str]:
         """Extract a single frame at a specific timestamp."""
-        cmd = [
-            'ffmpeg', '-y',
-            *self._threads_args(),
-            *self._hwaccel_decode(),
-            '-ss', str(timestamp),
-            '-i', str(video_path),
-            '-vframes', '1',
-            '-q:v', '2',
-            '-vf', self._hwaccel_vf('scale=448:-1'),
-            output_path
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True)
+        result = self._run_decode(
+            lambda mode: self._frame_command(video_path, timestamp, output_path, mode)
+        )
         if result.returncode == 0 and Path(output_path).exists():
             return output_path
         return None
@@ -301,7 +339,7 @@ class FrameExtractor:
         ]
         
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=30)
             if result.returncode == 0:
                 import json
                 data = json.loads(result.stdout)

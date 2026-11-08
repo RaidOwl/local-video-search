@@ -1,18 +1,90 @@
 # ── How to run ──────────────────────────────────────────────────────────────
 #
-#  1. Copy .env.example to .env
-#  2. Set HARDWARE_TYPE to your platform: nvidia | amd | apple | cpu | custom
+#  1. Copy .env.example to .env (or run ./setup.sh, which does all of this)
+#  2. Set HARDWARE_TYPE to your platform
 #  3. docker compose up -d
 #
 #  HARDWARE_TYPE determines which AI backend is used:
-#    nvidia  → vLLM containers (NVIDIA GPU, requires nvidia-container-toolkit)
-#    amd     → vLLM containers with ROCm GPU device passthrough
-#    apple   → Ollama on host with Metal (brew install ollama && ollama serve)
-#    cpu     → Ollama container on CPU
-#    custom  → Bring your own endpoints (set CUSTOM MODE in .env)
+#    nvidia      → Ollama container on the NVIDIA GPU (needs nvidia-container-toolkit)
+#    amd         → Ollama container on the AMD GPU (ROCm)
+#    cpu         → Ollama container on CPU (slow)
+#    apple       → Ollama on the host with Metal (brew install ollama && ollama serve)
+#    native      → Ollama on the host (any GPU Ollama supports, e.g. Intel Arc)
+#    nvidia-vllm → opt-in: vLLM containers on the NVIDIA GPU (24 GB+)
+#    amd-vllm    → opt-in: vLLM containers on the AMD GPU (24 GB+, needs
+#                  COMPOSE_FILE=docker-compose.yml:docker-compose.rocm.yml)
+#    custom      → Bring your own endpoints (set CUSTOM MODE in .env)
 #
 #  COMPOSE_PROFILES=${HARDWARE_TYPE} in .env auto-starts the right containers.
 # ────────────────────────────────────────────────────────────────────────────
+
+# Ollama in Docker, shared by the cpu / nvidia / amd variants below. On start it
+# pulls the models for MODEL_FAMILY + VRAM_TIER (these names must match
+# src/local_models.py TIER_MODELS["ollama"]) and then serves them.
+x-ollama: &ollama
+  image: ollama/ollama:0.40.15
+  environment:
+    MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
+    VRAM_TIER: ${VRAM_TIER:-mid}
+    # Ollama sizes the context window from free memory (up to 256k on big
+    # GPUs), which balloons the KV cache. The app's prompts fit well within 8k.
+    OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+    # Requests served at once per model. Each slot adds a full context of KV
+    # cache, so raise it only with memory to spare (~+1 GB per slot on mid).
+    OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+    # Keep the embedder and the vision model resident together, indefinitely:
+    # analysis calls them hundreds of times per video.
+    OLLAMA_MAX_LOADED_MODELS: "2"
+    OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
+  entrypoint:
+    - /bin/sh
+    - -c
+    - |
+      # Only low/mid are served locally; high/ultra are external-endpoint only.
+      # The bare qwen3-vl tags are thinking models (empty captions): use -instruct.
+      if [ "$$MODEL_FAMILY" = "gemma" ]; then
+        case "$$VRAM_TIER" in
+          low) MAIN_MODEL="gemma3:4b" ;;
+          *)   MAIN_MODEL="gemma3:12b" ;;
+        esac
+      else
+        case "$$VRAM_TIER" in
+          low) MAIN_MODEL="qwen3-vl:4b-instruct" ;;
+          *)   MAIN_MODEL="qwen3-vl:8b-instruct" ;;
+        esac
+      fi
+      EMBED_MODEL="qwen3-embedding:4b"
+      rm -f /tmp/models-ready
+      ollama serve & pid=$$!
+      trap 'kill $$pid' TERM INT
+      until ollama list >/dev/null 2>&1; do sleep 1; done
+      ready=1
+      for m in "$$EMBED_MODEL" "$$MAIN_MODEL"; do
+        if ollama list | grep -q "^$$m "; then echo "==> $$m already present"
+        else echo "==> Pulling $$m"; ollama pull "$$m" || { echo "==> Pull of $$m FAILED (network?); restart to retry"; ready=0; }
+        fi
+      done
+      [ "$$ready" = 1 ] && echo "==> Models ready: $$EMBED_MODEL, $$MAIN_MODEL" && touch /tmp/models-ready
+      wait $$pid
+  # No host port binding needed — the API reaches it via Docker's internal
+  # network (http://ollama:11434). Left unpublished so it can't clash with an
+  # Ollama already running on the host. Uncomment to expose:
+  # ports:
+  #   - "${OLLAMA_PORT:-11434}:11434"
+  volumes:
+    - ${MODELS_DIR:-./data/models}/ollama:/root/.ollama
+  networks:
+    default:
+      # All three variants answer as "ollama" (see src/local_models.py).
+      aliases: [ollama]
+  healthcheck:
+    # Healthy once the server is up AND the tier's models are pulled.
+    test: ["CMD-SHELL", "test -f /tmp/models-ready && ollama list >/dev/null"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 3600s
+  restart: unless-stopped
 
 services:
 
@@ -24,7 +96,7 @@ services:
     ports:
       - "${QDRANT_PORT:-6333}:6333"
     volumes:
-      - ${QDRANT_STORAGE_PATH:-./data/qdrant}:/qdrant/storage
+      - ${QDRANT_STORAGE_PATH:-${APP_DATA_DIR:-./data}/qdrant}:/qdrant/storage
     restart: unless-stopped
 
   local-vss-api:
@@ -48,9 +120,14 @@ services:
       LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3-8B}
       # Infrastructure
       QDRANT_URL: http://qdrant:6333
+      LEGACY_INDEX_EMBED_MODEL: ${LEGACY_INDEX_EMBED_MODEL:-}
       DATABASE_URL: sqlite+aiosqlite:////data/metadata.db
       FRAME_EXTRACTION_INTERVAL: ${FRAME_EXTRACTION_INTERVAL:-5}
       EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-16}
+      WHISPER_MODEL: ${WHISPER_MODEL:-medium}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      FFMPEG_HWACCEL: ${FFMPEG_HWACCEL:-off}
       # Cache HuggingFace models (reranker, etc.) under the shared models volume
       HF_HOME: /models/huggingface
     volumes:
@@ -63,7 +140,7 @@ services:
       - ${VIDEO_DIR_3:-./data/placeholder}:/data/videos/lib3:ro
       - ${VIDEO_DIR_4:-./data/placeholder}:/data/videos/lib4:ro
       - ${VIDEO_DIR_5:-./data/placeholder}:/data/videos/lib5:ro
-      - ./data:/data
+      - ${APP_DATA_DIR:-./data}:/data
     ports:
       - "${API_PORT:-8000}:8000"
     # Lets HARDWARE_TYPE=apple/native reach Ollama on the host on Linux too
@@ -99,61 +176,46 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Ollama profile ────────────────────────────────────────────────────────
-  # Activated when HARDWARE_TYPE=cpu
-  # (COMPOSE_PROFILES=${HARDWARE_TYPE} in .env handles this automatically)
-  # For Apple Silicon, use HARDWARE_TYPE=apple (Ollama runs on host w/ Metal)
+  # ── Ollama (default backend) ──────────────────────────────────────────────
+  # Exactly one variant starts, picked by COMPOSE_PROFILES=${HARDWARE_TYPE}.
+  # Apple Silicon (HARDWARE_TYPE=apple) runs Ollama on the host instead, since
+  # Docker on macOS has no Metal access.
 
   ollama:
-    image: ollama/ollama:latest
+    <<: *ollama
     container_name: local-vss-ollama
     profiles: [cpu]
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ${MODELS_DIR:-./data/models}/ollama:/root/.ollama
-    restart: unless-stopped
 
-  ollama-init:
-    image: ollama/ollama:latest
-    container_name: local-vss-ollama-init
-    profiles: [cpu]
-    depends_on:
-      - ollama
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-      MODEL_FAMILY: ${MODEL_FAMILY:-qwen}
-      VRAM_TIER: ${VRAM_TIER:-mid}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        # Resolve model names from MODEL_FAMILY + VRAM_TIER. Only low/mid are
-        # served locally; high/ultra are external-endpoint only.
-        if [ "$$MODEL_FAMILY" = "gemma" ]; then
-          case "$$VRAM_TIER" in
-            low)   MAIN_MODEL="gemma3:4b"  ;;
-            *)     MAIN_MODEL="gemma3:12b" ;;
-          esac
-        else
-          case "$$VRAM_TIER" in
-            low)   MAIN_MODEL="qwen3-vl:4b"   ;;
-            *)     MAIN_MODEL="qwen3-vl:8b"   ;;
-          esac
-        fi
-        EMBED_MODEL="qwen3-embedding:4b"
-        echo "==> Waiting for Ollama to be ready..."
-        until ollama list >/dev/null 2>&1; do sleep 2; done
-        echo "==> Pulling embed model: $$EMBED_MODEL"
-        ollama list | grep -q "$$EMBED_MODEL" || ollama pull "$$EMBED_MODEL"
-        echo "==> Pulling main model: $$MAIN_MODEL"
-        ollama list | grep -q "$$MAIN_MODEL" || ollama pull "$$MAIN_MODEL"
-        echo "==> Models ready."
-    restart: "no"
+  ollama-nvidia:
+    <<: *ollama
+    container_name: local-vss-ollama-nvidia
+    profiles: [nvidia]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-  # ── vLLM profile ──────────────────────────────────────────────────────────
-  # Activated when HARDWARE_TYPE=nvidia or HARDWARE_TYPE=amd
+  ollama-amd:
+    <<: *ollama
+    # ROCm build. Detects RDNA 2/3/3.5/4 and Instinct GPUs (incl. Strix Halo
+    # gfx1151) natively, no HSA_OVERRIDE_GFX_VERSION needed.
+    image: ollama/ollama:0.40.15-rocm
+    container_name: local-vss-ollama-amd
+    profiles: [amd]
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    security_opt:
+      - seccomp:unconfined
+
+  # ── vLLM profile (opt-in) ─────────────────────────────────────────────────
+  # Activated when HARDWARE_TYPE=nvidia-vllm or HARDWARE_TYPE=amd-vllm
   # (COMPOSE_PROFILES=${HARDWARE_TYPE} in .env handles this automatically)
+  # Higher-precision weights (FP8/BF16 vs Ollama's Q4) and more throughput,
+  # but ~24 GB+ of GPU memory. Switching backends requires a re-index.
   # NVIDIA requires: nvidia-container-toolkit installed on host
   # AMD requires: ROCm + docker-compose.rocm.yml override (see .env.example)
   # One multimodal model handles both vision captioning and summarization.
@@ -170,9 +232,11 @@ services:
   vllm-embed:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}
     container_name: local-vss-vllm-embed
-    profiles: [nvidia, amd]
+    profiles: [nvidia-vllm, amd-vllm]
     environment:
-      EMBED_MODEL: ${EMBED_MODEL:-Qwen/Qwen3-Embedding-4B}
+      # The bundled API resolves this model from src/local_models.py; custom
+      # EMBED_MODEL values apply only when using external endpoints.
+      EMBED_MODEL: Qwen/Qwen3-Embedding-4B
       # Caps the embedder's context. Without it vLLM uses the model's native
       # window (40960 for Qwen3-Embedding-4B), whose KV cache does not fit in
       # the embed budget and the engine refuses to start.
@@ -205,7 +269,7 @@ services:
   vllm-main:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}
     container_name: local-vss-vllm-main
-    profiles: [nvidia, amd]
+    profiles: [nvidia-vllm, amd-vllm]
     # The VLM is auto-selected from MODEL_FAMILY + VRAM_TIER, matching the API's
     # tier registry (src/local_models.py). Change it via VRAM_TIER in .env.
     environment:

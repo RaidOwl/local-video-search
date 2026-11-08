@@ -7,6 +7,32 @@ const client = axios.create({
   },
 })
 
+export const INDEX_STATUS_EVENT = 'lvs-index-status'
+
+client.interceptors.response.use(undefined, (error: unknown) => {
+  if (axios.isAxiosError<{ code?: string; detail?: string }>(error)
+      && error.response?.data?.code === 'embedding_index_incompatible'
+      && typeof error.response.data.detail === 'string') {
+    window.dispatchEvent(new CustomEvent(INDEX_STATUS_EVENT, { detail: error.response.data.detail }))
+  }
+  return Promise.reject(error)
+})
+
+export function apiErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError<{ detail?: string }>(error) && typeof error.response?.data?.detail === 'string') {
+    return error.response.data.detail
+  }
+  return fallback
+}
+
+export interface ModelStatus {
+  name: string
+  url: string
+  ok: boolean
+  models: string[]
+  reason?: string | null
+}
+
 export interface QdrantIssue {
   type: 'missing' | 'incomplete' | 'orphaned'
   video_id?: string
@@ -44,6 +70,7 @@ export interface HardwareStatus {
   vlm_url: string
   llm_url: string
   gpus?: Array<{ name: string; memory: string }>
+  gpu_error?: string
   rocm_devices?: { kfd: boolean; dri: boolean }
 }
 
@@ -53,6 +80,7 @@ export interface AppSettings {
   vram_tier?: string
   model_family?: string
   backend_warning?: string
+  index_warning?: string | null
   video_dirs?: string[]
   // Resolved model info (local modes only)
   _resolved_model?: string
@@ -76,6 +104,7 @@ export interface AppSettings {
   ffmpeg_threads: number
   ffmpeg_hwaccel: string
   ffmpeg_hwaccel_resolved?: string
+  ffmpeg_hwaccel_warning?: string | null
   cpu_cores?: number
   import_blacklist: string[]
   auto_import_interval: number
@@ -267,7 +296,7 @@ export const api = {
     await client.patch(`/videos/${videoId}/frames/${frameId}`, { caption })
   },
 
-  modelStatus: async (): Promise<{ services: Array<{ name: string; url: string; ok: boolean; models: string[] }> }> => {
+  modelStatus: async (): Promise<{ services: ModelStatus[] }> => {
     const res = await client.get('/status/models')
     return res.data
   },
@@ -284,6 +313,7 @@ export const api = {
 
   getSettings: async (): Promise<AppSettings> => {
     const res = await client.get('/settings')
+    window.dispatchEvent(new CustomEvent(INDEX_STATUS_EVENT, { detail: res.data.index_warning ?? null }))
     return res.data
   },
 

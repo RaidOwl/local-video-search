@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { api, Video, AppSettings } from '../services/api'
+import { api, apiErrorMessage, Video, AppSettings, ModelStatus } from '../services/api'
 import { fmt } from '../utils'
 import { Video as VideoIcon, Square, ArrowRight, X, Check, Play, LayoutGrid, List, Folder, VolumeX, VideoOff, ChevronDown, ChevronRight, Mic, RotateCcw, Sparkles } from 'lucide-react'
 
@@ -71,10 +71,8 @@ function getNodeByPath(root: FolderNode, fullPath: string): FolderNode | null {
   return null
 }
 
-interface ModelService { name: string; url: string; ok: boolean; models: string[] }
-
 function ModelStatusBar() {
-  const [services, setServices] = useState<ModelService[] | null>(null)
+  const [services, setServices] = useState<ModelStatus[] | null>(null)
 
   useEffect(() => {
     api.modelStatus().then(d => setServices(d.services)).catch(() => setServices([]))
@@ -89,7 +87,7 @@ function ModelStatusBar() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
       {services.map(svc => (
-        <div key={svc.name} title={svc.ok ? svc.models.join(', ') : `Unreachable: ${svc.url}`}
+        <div key={svc.name} title={svc.ok ? svc.models.join(', ') : svc.reason ?? `Unreachable: ${svc.url}`}
           style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', color: svc.ok ? 'var(--muted)' : 'var(--error)', cursor: 'default' }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: svc.ok ? 'var(--success)' : 'var(--error)', display: 'inline-block', flexShrink: 0 }} />
           {svc.name}
@@ -738,6 +736,8 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
   const [context, setContext] = useState('')
   const [recents] = useState<string[]>(getRecentContexts)
   const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [pendingIds, setPendingIds] = useState(videoIds)
   // Three independent stages: caption frames (Video), transcribe (Audio), and the
   // cross-modal fusion pass (Fuse). Fuse defaults on and auto-skips windows that
   // lack a channel, matching the old implicit auto-fuse.
@@ -790,14 +790,21 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
   })()
 
   const handleSubmit = async () => {
-    setSubmitting(true)
+    setSubmitting(true); setSubmitError(null)
     const useResume = showResumeChoice && resume
     // Keeping the existing context = send none, so the backend reuses each video's
     // own saved context (correct even when selected videos have different ones).
     const ctx = showContextInput ? (context.trim() || undefined) : undefined
     if (showContextInput && context.trim()) saveContext(context.trim())
-    await Promise.all(videoIds.map(id => api.reprocessVideo(id, ctx, useResume, doVideo, doAudio, fuseActive).catch(() => {})))
-    onDone()
+    const outcomes = await Promise.allSettled(pendingIds.map(id => api.reprocessVideo(id, ctx, useResume, doVideo, doAudio, fuseActive)))
+    const failed = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+    if (failed.length) {
+      setPendingIds(pendingIds.filter((_, index) => outcomes[index].status === 'rejected'))
+      setSubmitError(`${failed.length} of ${pendingIds.length} could not be queued: ${apiErrorMessage(failed[0].reason, 'Check the server and try again.')}`)
+      setSubmitting(false)
+    } else {
+      onDone()
+    }
   }
 
   return createPortal(
@@ -808,6 +815,8 @@ export function AnalyzeModal({ videoIds, videos, onClose, onDone }: {
           <h2 style={{ fontSize: '1.1rem' }}>Analyze {videoIds.length} video{videoIds.length !== 1 ? 's' : ''}</h2>
           <button className="icon-btn" onClick={onClose} style={{ lineHeight: 0 }}><X size={16} /></button>
         </div>
+
+        {submitError && <p role="alert" style={{ color: 'var(--error)', fontSize: '0.82rem', margin: 0 }}>{submitError}</p>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', maxHeight: 120, overflowY: 'auto' }}>
           {selectedVideos.map(v => (

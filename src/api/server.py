@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
 from typing import Optional, List
@@ -20,7 +20,7 @@ from ..local_models import resolve_local_config
 from ..database import Database, Video
 from ..ingest.video_scanner import find_video_files, get_video_metadata, compute_file_hash
 from ..ingest.frame_extractor import FrameExtractor
-from ..embed.embedding_generator import EmbeddingService
+from ..embed.embedding_generator import EmbeddingIndexError, EmbeddingService
 from ..vlm.caption_generator import VLMService
 from ..search.query_processor import QueryProcessor
 from ..search.segment_retriever import SegmentRetriever
@@ -96,16 +96,20 @@ def _disabled_heuristics(param: str = "") -> set[str]:
 async def lifespan(_app: FastAPI):
     global _auto_import_task
     await db.init_db()
-    await embed_service.ensure_collection()
-    stuck = [v for v in await db.get_all_videos() if v.status in ACTIVE_ANALYSIS_STATUSES]
-    for v in stuck:
-        await db.update_video(v.id, {'frame_count': 0})
-        _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
-    # Restart any retranscription that was interrupted
-    stuck_audio = [v for v in await db.get_all_videos() if v.status == 'retranscribing']
-    for v in stuck_audio:
-        task = asyncio.create_task(_retranscribe_audio(v.id, v.path))
-        _active_tasks[v.id] = task
+    try:
+        await embed_service.ensure_collection()
+    except EmbeddingIndexError as e:
+        print(f"[embedding index] {e}", flush=True)
+    else:
+        stuck = [v for v in await db.get_all_videos() if v.status in ACTIVE_ANALYSIS_STATUSES]
+        for v in stuck:
+            await db.update_video(v.id, {'frame_count': 0})
+            _start_analysis(v.path, v.id, context=getattr(v, 'context', '') or '')
+        # Restart any retranscription that was interrupted
+        stuck_audio = [v for v in await db.get_all_videos() if v.status == 'retranscribing']
+        for v in stuck_audio:
+            task = asyncio.create_task(_retranscribe_audio(v.id, v.path))
+            _active_tasks[v.id] = task
     _auto_import_task = asyncio.create_task(_auto_import_loop())
     # Warm the reranker after a short delay (see _warm_reranker) so the API can
     # pass its healthcheck before the GIL-heavy model load stalls the event loop.
@@ -149,6 +153,15 @@ app = FastAPI(
     swagger_ui_parameters={"defaultModelsExpandDepth": -1, "tryItOutEnabled": True},
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(EmbeddingIndexError)
+async def embedding_index_error_handler(_request, exc: EmbeddingIndexError):
+    return JSONResponse(status_code=409, content={
+        "code": "embedding_index_incompatible",
+        "detail": str(exc),
+    })
+
 
 # CORS
 app.add_middleware(
@@ -296,7 +309,14 @@ ACTIVE_ANALYSIS_STATUSES = ('queued', 'scene_detection', 'video_processing', 'au
 CORE_ANALYSIS_STATUSES = ('queued', 'scene_detection', 'video_processing', 'audio_processing')
 
 # Services
-embed_service = EmbeddingService(_cfg["embed_url"], _cfg["qdrant_url"], model=_cfg["embed_model"], text_index=db)
+def _make_embedding_service(cfg: dict) -> EmbeddingService:
+    return EmbeddingService(
+        cfg["embed_url"], cfg["qdrant_url"], model=cfg["embed_model"], text_index=db,
+        backend=cfg["ai_backend"], legacy_index_model=settings.legacy_index_embed_model,
+    )
+
+
+embed_service = _make_embedding_service(_cfg)
 vlm_service = VLMService(_cfg["vlm_url"], model=_cfg["vlm_model"])
 summarizer_service = SummarizationService(_cfg["llm_url"], model=_cfg["llm_model"])
 # Fusion (3rd analysis pass) reuses the summarizer's text LLM endpoint.
@@ -328,7 +348,7 @@ frame_extractor = FrameExtractor(
 
 def _reinit_services(cfg: dict):
     global embed_service, vlm_service, summarizer_service, fusion_service, llm_reranker, _llm_rerank_on, frame_extractor, transcription_service, _analysis_semaphore, _transcribe_semaphore
-    embed_service = EmbeddingService(cfg["embed_url"], cfg["qdrant_url"], model=cfg["embed_model"], text_index=db)
+    embed_service = _make_embedding_service(cfg)
     vlm_service = VLMService(cfg["vlm_url"], model=cfg["vlm_model"])
     summarizer_service = SummarizationService(cfg["llm_url"], model=cfg["llm_model"])
     fusion_service = FusionService(cfg["llm_url"], model=cfg["llm_model"])
@@ -471,12 +491,9 @@ async def _rerank_segments(query, segments: list[dict], damp_short: bool = True)
     and as "a video of a dog" without the templated form ever lowering a score
     that the natural form judged higher.
 
-    Architecture: bi-encoder (BGE-M3 / Qdrant) retrieves candidates for recall;
-    this cross-encoder (BAAI/bge-reranker-v2-m3, ~2.3 GB, CPU) judges true
-    query↔caption relevance for precision.  bge-reranker is the same family as
-    the BGE-M3 embeddings and is trained for natural-language semantic relevance,
-    so it handles descriptive VLM captions and nuances like gender far better
-    than passage-ranking models such as ms-marco-MiniLM.  The cross-encoder is
+    Architecture: the configured bi-encoder and Qdrant retrieve candidates for
+    recall; the BAAI/bge-reranker-v2-m3 cross-encoder judges query↔caption
+    relevance for precision. The cross-encoder is
     the *sole* authority on the final score — we deliberately do NOT blend in the
     Qdrant cosine, because blending re-injects the bi-encoder's mistakes.
 
@@ -605,6 +622,7 @@ async def _purge_points(video_id: str, is_transcript: Optional[bool] = None,
     """Delete a video's points from BOTH the dense (Qdrant) and lexical (FTS5)
     indexes, keeping the two recall arms in sync. Same filter semantics as
     _delete_video_points."""
+    embed_service.assert_index_compatible()
     _delete_video_points(video_id, is_transcript=is_transcript, fused=fused)
     try:
         await db.delete_segment_text(video_id, is_transcript=is_transcript, fused=fused)
@@ -612,19 +630,25 @@ async def _purge_points(video_id: str, is_transcript: Optional[bool] = None,
         print(f"[purge] lexical delete failed: {e}")
 
 
+def _model_listed(model: str, models: list) -> bool:
+    # Ollama lists untagged names with an explicit ":latest" tag.
+    return model in models or f"{model}:latest" in models
+
+
 async def _ai_services_ready(need_vlm: bool) -> list[str]:
     """Return the names of required AI endpoints that aren't answering yet."""
     import httpx
     cfg = _effective_cfg()
-    targets = [("embeddings", cfg["embed_url"])]
+    targets = [("embeddings", cfg["embed_url"], cfg["embed_model"])]
     if need_vlm:
-        targets.append(("vision model", cfg["vlm_url"]))
+        targets.append(("vision model", cfg["vlm_url"], cfg["vlm_model"]))
     down = []
     async with httpx.AsyncClient(timeout=4.0) as client:
-        for name, url in targets:
+        for name, url, model in targets:
             try:
                 r = await client.get(f"{url.rstrip('/')}/v1/models")
-                if r.status_code != 200:
+                models = [item.get("id") for item in r.json().get("data", [])] if r.status_code == 200 else []
+                if not _model_listed(model, models):
                     down.append(name)
             except Exception:
                 down.append(name)
@@ -672,12 +696,15 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
     """
     if not do_visual and not do_audio and not do_fuse:
         do_visual = do_audio = True  # nothing selected: fall back to full analysis
+    index_checked = False
     try:
         await db.update_video(video_id, {'status': 'queued'})
         async with _analysis_semaphore:
             if not await _wait_for_ai_services(video_id, need_vlm=do_visual or do_fuse):
                 return
             loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, embed_service.assert_index_compatible)
+            index_checked = True
             if not resume:
                 # Start over: clear ONLY the modalities we're about to redo, so an
                 # audio-only re-run never wipes existing visual frames and vice versa.
@@ -811,7 +838,9 @@ async def process_video(video_path: str, video_id: str, context: str = '', resum
         await db.update_video(video_id, {'status': 'error'})
         # Only clear the modalities this run was (re)building, so cancelling an
         # audio-only re-run doesn't discard the existing visual index.
-        if do_visual and do_audio:
+        if not index_checked:
+            pass
+        elif do_visual and do_audio:
             await _purge_points(video_id, is_transcript=None)
         elif do_visual:
             await _purge_points(video_id, is_transcript=False)
@@ -1119,18 +1148,29 @@ def _dict_to_row(d: dict, cols: list[str], dt_cols: set) -> dict:
     return row
 
 
+def _collection_vector_size() -> int | None:
+    """Dimension of the live Qdrant collection, or None if it doesn't exist yet."""
+    client = embed_service.qdrant_client
+    if embed_service.collection_name not in {c.name for c in client.get_collections().collections}:
+        return None
+    return client.get_collection(embed_service.collection_name).config.params.vectors.size
+
+
 @app.get("/export", tags=["System"])
 async def export_library(include_images: bool = True):
     """Export the entire analyzed library as a single .zip (DB rows + Qdrant
     vectors + optional frame thumbnails). Does not include source video files."""
     videos = await db.get_all_videos(include_all=True)
     loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, embed_service.assert_index_compatible)
+    vector_size = await loop.run_in_executor(None, _collection_vector_size)
 
     manifest = {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "embed_model": _effective_cfg().get("embed_model"),
-        "vector_size": 1024,
+        "embedding_identity": embed_service.index_identity,
+        "vector_size": vector_size,
         "distance": "Cosine",
         "include_images": include_images,
         "videos": [_row_to_dict(v, _VIDEO_COLS) for v in videos],
@@ -1141,7 +1181,7 @@ async def export_library(include_images: bool = True):
     for v in videos:
         frames = await db.get_frames_for_video(v.id)
         manifest["frames"].extend(_row_to_dict(f, _FRAME_COLS) for f in frames)
-        pts = await loop.run_in_executor(None, embed_service.export_points, v.id)
+        pts = await loop.run_in_executor(None, embed_service.export_points, v.id) if vector_size is not None else []
         point_lines.extend(json.dumps(p) for p in pts)
 
     tmp = tempfile.NamedTemporaryFile(prefix="vss_export_", suffix=".zip", dir="/data", delete=False)
@@ -1189,48 +1229,89 @@ async def import_library(file: UploadFile = File(...)):
     except Exception:
         raise HTTPException(status_code=400, detail="Could not read manifest.json.")
 
-    # Vectors are only meaningful if produced by the same embedding model + size.
-    if manifest.get("vector_size") != 1024:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Vector size mismatch: archive has {manifest.get('vector_size')}, expected 1024.",
-        )
-    local_model = _effective_cfg().get("embed_model")
-    arch_model = manifest.get("embed_model")
-    if local_model and arch_model and arch_model != local_model:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Embedding model mismatch: archive '{arch_model}' vs local '{local_model}'. "
-                   "The vectors would be invalid — re-export from a matching setup.",
-        )
-
-    # Group points and frames by video id.
+    # Validate all vectors before deleting or overwriting any local records.
     points_by_video: dict[str, list] = {}
     try:
-        for line in zf.read("points.jsonl").decode().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            p = json.loads(line)
-            vid = (p.get("payload") or {}).get("video_id")
-            if vid:
-                points_by_video.setdefault(vid, []).append(p)
+        point_data = zf.read("points.jsonl").decode().splitlines()
     except KeyError:
-        pass
+        raise HTTPException(status_code=400, detail="Archive is missing points.jsonl.")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Archive points.jsonl is not valid UTF-8.")
+    arch_size = manifest.get("vector_size")
+    if arch_size is not None and (type(arch_size) is not int or arch_size <= 0):
+        raise HTTPException(status_code=400, detail="Archive manifest has no valid vector_size.")
+    import math
+    for line in point_data:
+        if not line.strip():
+            continue
+        try:
+            p = json.loads(line)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Archive contains invalid point JSON.")
+        if not isinstance(p, dict) or not isinstance(p.get("payload"), dict):
+            raise HTTPException(status_code=400, detail="Archive contains an invalid point payload.")
+        vid = p["payload"].get("video_id")
+        vector = p.get("vector")
+        point_id = p.get("id")
+        try:
+            if isinstance(point_id, str):
+                uuid.UUID(point_id)
+            elif type(point_id) is not int or point_id < 0:
+                raise ValueError("invalid point id")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Archive contains an invalid point ID.")
+        if (not isinstance(vid, str) or not vid or not isinstance(vector, list)
+                or arch_size is None or len(vector) != arch_size
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in vector)):
+            raise HTTPException(status_code=400, detail="Archive contains an invalid point vector or video ID.")
+        points_by_video.setdefault(vid, []).append(p)
+
+    incoming_ids = {vd.get("id") for vd in manifest.get("videos", []) if vd.get("id")}
+    if not set(points_by_video).issubset(incoming_ids):
+        raise HTTPException(status_code=400, detail="Archive contains points for a video missing from its manifest.")
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, embed_service.assert_index_compatible)
+    local_size = await loop.run_in_executor(None, _collection_vector_size)
+    if points_by_video:
+        local_model = embed_service.generator.model
+        if manifest.get("embed_model") != local_model:
+            raise HTTPException(status_code=400, detail="Archive embedding model does not match the configured model.")
+        identity = manifest.get("embedding_identity")
+        if identity is None:
+            if settings.legacy_index_embed_model != local_model:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Archive has no embedding backend identity. Verify its model and backend and set "
+                           "LEGACY_INDEX_EMBED_MODEL before importing; see the README.",
+                )
+        elif identity != embed_service.index_identity:
+            raise HTTPException(status_code=400, detail="Archive embedding backend does not match the configured index.")
+        probe = await embed_service.generator.embed_text("dimension probe")
+        if not probe or len(probe) != arch_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Archive vectors have {arch_size} dimensions, but the configured embedding model "
+                       f"produces {len(probe)}.",
+            )
+        if local_size is not None and arch_size != local_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Vector size mismatch: archive has {arch_size}, local library expects {local_size}.",
+            )
+        await embed_service._ensure_collection_for(arch_size)
+        local_size = arch_size
 
     frames_by_video: dict[str, list] = {}
     for f in manifest.get("frames", []):
         frames_by_video.setdefault(f.get("video_id"), []).append(f)
 
     include_images = bool(manifest.get("include_images"))
-    loop = asyncio.get_running_loop()
     imported = 0
 
     # Ids carried in this archive. A hash-match whose id is also in the archive is
     # a distinct incoming video that will be overwritten by its own iteration, so
     # we must NOT collapse it here (that would lose duplicate-content videos).
-    incoming_ids = {vd.get("id") for vd in manifest.get("videos", []) if vd.get("id")}
-
     for vd in manifest.get("videos", []):
         vid = vd.get("id")
         if not vid:
@@ -1259,9 +1340,11 @@ async def import_library(file: UploadFile = File(...)):
         # incoming id, so the overwrite is clean and idempotent.
         for mid in to_delete:
             await db.delete_video(mid)
-            await loop.run_in_executor(None, embed_service.delete_video_points, mid)
+            if local_size is not None:
+                await loop.run_in_executor(None, embed_service.delete_video_points, mid)
             await db.delete_segment_text(mid)
-        await loop.run_in_executor(None, embed_service.delete_video_points, vid)
+        if local_size is not None:
+            await loop.run_in_executor(None, embed_service.delete_video_points, vid)
         await db.delete_segment_text(vid)
 
         # Insert the imported records verbatim (ids preserved).
@@ -1301,7 +1384,8 @@ async def import_library(file: UploadFile = File(...)):
 
     # Ensure the is_transcript payload index exists (no-op if already present);
     # required for the Video/Audio source filter on a fresh target machine.
-    await loop.run_in_executor(None, _do_source_backfill)
+    if local_size is not None:
+        await loop.run_in_executor(None, _do_source_backfill)
 
     total = len(await db.get_all_videos(include_all=True))
     return {"imported": imported, "total": total}
@@ -1313,19 +1397,24 @@ async def model_status():
     """Check reachability of each AI model endpoint."""
     import httpx
     cfg = _effective_cfg()
-    async def probe(url: str, name: str) -> dict:
+    async def probe(url: str, name: str, model: str) -> dict:
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
                 r = await client.get(f"{url}/v1/models")
                 models = [m["id"] for m in r.json().get("data", [])] if r.status_code == 200 else []
-                return {"name": name, "url": url, "ok": r.status_code == 200, "models": models}
+                ok = r.status_code == 200 and _model_listed(model, models)
+                reason = None if ok else (
+                    f"Model '{model}' is not available at {url}" if r.status_code == 200
+                    else f"Endpoint returned HTTP {r.status_code}"
+                )
+                return {"name": name, "url": url, "ok": ok, "models": models, "reason": reason}
         except Exception:
-            return {"name": name, "url": url, "ok": False, "models": []}
+            return {"name": name, "url": url, "ok": False, "models": [], "reason": f"Unreachable: {url}"}
 
     results = await asyncio.gather(
-        probe(cfg["embed_url"], "Embeddings"),
-        probe(cfg["vlm_url"], "Vision AI"),
-        probe(cfg["llm_url"], "Summarization"),
+        probe(cfg["embed_url"], "Embeddings", cfg["embed_model"]),
+        probe(cfg["vlm_url"], "Vision AI", cfg["vlm_model"]),
+        probe(cfg["llm_url"], "Summarization", cfg["llm_model"]),
     )
     return {"services": list(results)}
 
@@ -1334,12 +1423,13 @@ async def model_status():
 async def hardware_status():
     """Report detected hardware configuration and AI backend."""
     cfg = _effective_cfg()
+    hw_type = settings.hardware_type
     import platform, subprocess, json
 
     hw_info = {
         "platform": platform.platform(),
         "python": platform.python_version(),
-        "hardware_type": cfg.get("hardware_type", "custom"),
+        "hardware_type": hw_type,
         "ai_backend": cfg.get("ai_backend", "custom"),
         "model_family": cfg.get("model_family", "qwen"),
         "vram_tier": cfg.get("vram_tier", "mid"),
@@ -1352,7 +1442,7 @@ async def hardware_status():
 
     # GPU detection
     try:
-        if cfg.get("hardware_type") == "nvidia":
+        if hw_type.startswith("nvidia"):
             result = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
                                   capture_output=True, text=True, timeout=3)
             if result.returncode == 0:
@@ -1361,11 +1451,13 @@ async def hardware_status():
                     name, mem = line.split(", ")
                     gpus.append({"name": name.strip(), "memory": mem.strip()})
                 hw_info["gpus"] = gpus
-    except Exception:
-        hw_info["gpus"] = "nvidia-smi unavailable"
+            else:
+                hw_info["gpu_error"] = "nvidia-smi did not report GPUs in the API container"
+    except (OSError, subprocess.SubprocessError, ValueError):
+        hw_info["gpu_error"] = "nvidia-smi unavailable in the API container"
 
     try:
-        if cfg.get("hardware_type") == "amd":
+        if hw_type.startswith("amd"):
             import os
             hw_info["rocm_devices"] = {
                 "kfd": os.path.exists("/dev/kfd"),
@@ -1518,13 +1610,21 @@ async def qdrant_purge_orphans():
 @app.get("/settings", tags=["System"])
 async def get_settings_endpoint():
     """Return current effective settings."""
-    from ..ingest.frame_extractor import _resolve_hwaccel
+    from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
     cfg = _effective_cfg()
     warning = _backend_warning(cfg)
+    index_warning = None
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, embed_service.assert_index_compatible)
+    except EmbeddingIndexError as e:
+        index_warning = str(e)
+    except (ResponseHandlingException, UnexpectedResponse) as e:
+        print(f"[embedding index] could not check Qdrant: {e}", flush=True)
+        index_warning = "Cannot verify the embedding index. Check the Qdrant service and settings."
     video_dirs = [str(d) for d in VIDEO_SCAN_DIRS if d.exists() and any(d.iterdir())]
-    hw = cfg.get("ffmpeg_hwaccel", "off")
-    cfg["ffmpeg_hwaccel_resolved"] = _resolve_hwaccel(hw)
-    return {**cfg, "backend_warning": warning, "video_dirs": video_dirs}
+    cfg["ffmpeg_hwaccel_resolved"] = frame_extractor.resolved_hwaccel()
+    cfg["ffmpeg_hwaccel_warning"] = frame_extractor.hwaccel_warning
+    return {**cfg, "backend_warning": warning, "index_warning": index_warning, "video_dirs": video_dirs}
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -1570,8 +1670,14 @@ async def _sync_blacklist():
 async def update_settings_endpoint(req: SettingsUpdateRequest):
     """Persist settings overrides and reinitialize services."""
     global _auto_import_task
+    current = _effective_cfg()
+    changes = req.model_dump(exclude_none=True)
+    if (any(changes.get(key, current.get(key)) != current.get(key)
+            for key in ("embed_url", "embed_model", "qdrant_url"))
+            and any(not task.done() for task in _active_tasks.values())):
+        raise HTTPException(status_code=409, detail="Stop active analysis before changing the embedding service or index.")
     override = _load_override()
-    for field, val in req.model_dump(exclude_none=True).items():
+    for field, val in changes.items():
         override[field] = val
     SETTINGS_OVERRIDE_PATH.write_text(json.dumps(override, indent=2))
     cfg = _effective_cfg()
@@ -1680,8 +1786,8 @@ async def search_videos(
 ):
     """Search for videos by natural language query, with optional metadata filters.
 
-    Every search runs the full retrieve-then-rerank pipeline: BGE-M3 / Qdrant
-    retrieves candidates (recall), then the bge-reranker cross-encoder assigns
+    Every search runs the full retrieve-then-rerank pipeline: the configured
+    embedder and Qdrant retrieve candidates, then the cross-encoder assigns
     the final relevance score (precision).
 
     The optional ``media_types`` / ``resolution`` / ``date_from`` / ``date_to``
@@ -2526,6 +2632,8 @@ async def update_frame_caption(video_id: str, frame_id: str, req: FrameUpdateReq
     frame = await db.get_frame(frame_id)
     if not frame or frame.video_id != video_id:
         raise HTTPException(status_code=404, detail="Frame not found")
+    if frame.embedding_id:
+        await asyncio.get_running_loop().run_in_executor(None, embed_service.assert_index_compatible)
     is_transcript = (frame.caption or '').startswith('[transcript]')
     new_caption = req.caption.strip()
     if is_transcript and not new_caption.startswith('[transcript]'):
@@ -2661,6 +2769,7 @@ async def _run_analyze(video_id: str, req: AnalyzeRequest) -> dict:
     video = await db.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+    await asyncio.get_running_loop().run_in_executor(None, embed_service.assert_index_compatible)
     updates: dict = {'status': 'queued'}
     if not req.resume:
         updates['summary'] = None
@@ -2693,6 +2802,7 @@ async def reprocess_video(video_id: str, req: AnalyzeRequest = AnalyzeRequest())
 async def _retranscribe_audio(video_id: str, video_path: str):
     """Replace only the transcript segments for a video, leaving visual frames intact."""
     try:
+        await asyncio.get_running_loop().run_in_executor(None, embed_service.assert_index_compatible)
         # Remove ALL existing transcript points for this video from Qdrant by
         # payload filter — this covers per-segment points AND any legacy sliding-
         # window points regardless of how their ids were assigned (deleting by
@@ -2754,6 +2864,7 @@ async def retranscribe_video(video_id: str):
         raise HTTPException(status_code=404, detail="Video not found")
     if video.status in ACTIVE_ANALYSIS_STATUSES:
         raise HTTPException(status_code=409, detail="Full analysis in progress — stop it first")
+    await asyncio.get_running_loop().run_in_executor(None, embed_service.assert_index_compatible)
     # Cancel any existing (possibly orphaned) retranscription task
     existing = _active_tasks.pop(video_id, None)
     if existing and not existing.done():
